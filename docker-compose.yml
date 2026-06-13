@@ -1,0 +1,23 @@
+# Glyph — Local Development
+#
+# Usage:
+#   docker compose up
+#       → Vite dev server on http://localhost:5173 (localStorage mode, live reload)
+#
+# Full stack (API + Postgres):
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up
+#       → Vite on http://localhost:5173, Go API with live reload via Air
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "5173:5173"
+    environment:
+      - ORIGIN=http://localhost:5173
+    volumes:
+      - .:/app
+      - /app/node_modules
+

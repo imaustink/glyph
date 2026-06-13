@@ -1,0 +1,14 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  bin = "./tmp/api"
+  cmd = "go build -o ./tmp/api ./cmd/api"
+  delay = 1000
+  exclude_dir = ["tmp", "migrations"]
+  exclude_regex = ["_test\\.go$"]
+  include_ext = ["go", "mod", "sum"]
+  kill_delay = 500
+
+[log]
+  main_only = true

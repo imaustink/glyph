@@ -1,0 +1,57 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: arc-runner-set
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Docker login
+        run: |
+          echo "$REGISTRY_PASSWORD" | docker login registry.kurpuis.com:5000 \
+            -u "$REGISTRY_USERNAME" --password-stdin
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Sync migrations
+        run: |
+          rm -rf helm/glyph/migrations
+          cp -r api/migrations helm/glyph/migrations
+
+      - name: Build & push frontend
+        run: |
+          docker build \
+            --build-arg VITE_STORAGE_MODE=api \
+            --build-arg VITE_API_URL= \
+            -t registry.kurpuis.com:5000/glyph-frontend:latest \
+            -f Dockerfile .
+          docker push registry.kurpuis.com:5000/glyph-frontend:latest
+
+      - name: Build & push API
+        run: |
+          docker build \
+            -t registry.kurpuis.com:5000/glyph-api:latest \
+            -f api/Dockerfile api/
+          docker push registry.kurpuis.com:5000/glyph-api:latest
+
+      - name: Helm upgrade
+        run: |
+          helm upgrade glyph helm/glyph \
+            -f values-production.yaml \
+            -n glyph --timeout 5m
+
+      - name: Rollout restart
+        run: |
+          kubectl rollout restart deploy/glyph-frontend deploy/glyph-api -n glyph
+          kubectl rollout status deploy/glyph-frontend deploy/glyph-api -n glyph --timeout=5m

@@ -1,0 +1,84 @@
+# Glyph — Postgres overlay (local development)
+#
+# Layer this over the base file to add the Go API, Postgres, migrations,
+# and an Nginx reverse proxy — all with live reload.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up
+#
+# Migrations run automatically before the API starts.
+# Frontend: https://localhost (via Nginx) with Vite HMR
+# Go API: rebuilt on save via Air
+
+services:
+  # ─── Override frontend → API storage mode ──────────────────────────────────
+  app:
+    environment:
+      - VITE_STORAGE_MODE=api
+      - VITE_API_URL=
+      - API_PROXY_TARGET=http://api:8080
+
+  # ─── Nginx reverse proxy ──────────────────────────────────────────────────
+  nginx:
+    build: ./nginx
+    ports:
+      - "443:443"
+      - "80:80"
+    depends_on:
+      - app
+      - api
+
+  # ─── Postgres ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-glyph}
+      POSTGRES_USER: ${POSTGRES_USER:-glyph}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-glyph}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U glyph"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ─── DB migrations (run once then exit) ────────────────────────────────────
+  migrate:
+    image: migrate/migrate:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./api/migrations:/migrations
+    command:
+      - "-path=/migrations"
+      - "-database"
+      - "postgres://${POSTGRES_USER:-glyph}:${POSTGRES_PASSWORD:-glyph}@postgres:5432/${POSTGRES_DB:-glyph}?sslmode=disable"
+      - "up"
+    restart: "no"
+
+  # ─── Go API with Air hot-reload ────────────────────────────────────────────
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./api:/app
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - path: ./api/.env
+        required: false
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-glyph}:${POSTGRES_PASSWORD:-glyph}@postgres:5432/${POSTGRES_DB:-glyph}?sslmode=disable
+      PORT: "8080"
+
+volumes:
+  postgres_data:

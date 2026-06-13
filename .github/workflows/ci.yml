@@ -1,0 +1,218 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  frontend:
+    runs-on: arc-runner-set
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm check
+
+      - name: Build
+        run: pnpm build
+
+      - name: Unit tests
+        run: pnpm test
+
+  api:
+    runs-on: arc-runner-set
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: api/go.mod
+          cache: true
+          cache-dependency-path: api/go.sum
+
+      - name: Cache golangci-lint
+        id: cache-lint
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin/golangci-lint
+          key: golangci-lint-${{ runner.os }}-${{ hashFiles('api/go.mod') }}
+
+      - name: Install golangci-lint
+        if: steps.cache-lint.outputs.cache-hit != 'true'
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin latest
+
+      - name: Lint
+        working-directory: api
+        run: golangci-lint run ./...
+
+      - name: Vet
+        working-directory: api
+        run: go vet ./...
+
+      - name: Build
+        working-directory: api
+        run: go build ./...
+
+      - name: Unit tests
+        working-directory: api
+        run: go test ./... -short -count=1
+
+  e2e-local:
+    runs-on: arc-runner-set
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        id: cache-pw-local
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install Playwright browsers
+        if: steps.cache-pw-local.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install chromium
+
+      - name: Install Playwright system dependencies
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Build frontend (local mode)
+        run: VITE_STORAGE_MODE=local pnpm build && mv build build-local
+
+      - name: E2E tests (local)
+        run: pnpm test:e2e:local
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results-local
+          path: test-results/
+          retention-days: 7
+
+  e2e-api:
+    runs-on: arc-runner-set
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: glyph
+          POSTGRES_USER: glyph
+          POSTGRES_PASSWORD: glyph
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: api/go.mod
+          cache: true
+          cache-dependency-path: api/go.sum
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        id: cache-pw-api
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install Playwright browsers
+        if: steps.cache-pw-api.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install chromium
+
+      - name: Install Playwright system dependencies
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Build API
+        working-directory: api
+        run: go build -o server ./cmd/api
+
+      - name: Cache migrate binary
+        id: cache-migrate
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin/migrate
+          key: migrate-${{ runner.os }}-${{ hashFiles('api/go.mod') }}
+
+      - name: Install migrate
+        if: steps.cache-migrate.outputs.cache-hit != 'true'
+        run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+
+      - name: Run migrations
+        run: migrate -path api/migrations -database "postgres://glyph:glyph@localhost:5432/glyph?sslmode=disable" up
+
+      - name: Build frontend (api mode)
+        run: VITE_STORAGE_MODE=api VITE_API_URL= pnpm build && mv build build-api
+
+      - name: E2E tests (api)
+        run: pnpm test:e2e:api
+        env:
+          DATABASE_URL: postgres://glyph:glyph@localhost:5432/glyph?sslmode=disable
+          API_SERVER_CMD: ./api/server
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results-api
+          path: test-results/
+          retention-days: 7

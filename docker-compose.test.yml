@@ -1,0 +1,77 @@
+# Glyph — Isolated E2E test environment
+#
+# Runs the Go API + Postgres on separate ports so tests never conflict
+# with a local development stack (which uses 5432 for Postgres).
+#
+# Usage (managed automatically by scripts/test-e2e.sh):
+#   docker compose -f docker-compose.test.yml up -d --wait
+#   pnpm test:e2e:api
+#   docker compose -f docker-compose.test.yml down -v
+#
+# Ports (chosen to avoid collision with local dev):
+#   Postgres → localhost:5433  (dev uses 5432)
+#   Go API   → localhost:8083  (dev API is container-internal only)
+#
+# The project name "glyph-test" keeps all resources (network, volumes)
+# namespaced away from the dev "glyph" compose project.
+
+name: glyph-test
+
+services:
+  # ─── Postgres ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-glyph}
+      POSTGRES_USER: ${POSTGRES_USER:-glyph}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-glyph}
+    ports:
+      - "127.0.0.1:5433:5432"
+    # No named volume → ephemeral data; each `up` starts with a clean DB.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U glyph"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ─── DB migrations (run once then exit) ────────────────────────────────────
+  migrate:
+    image: migrate/migrate:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./api/migrations:/migrations
+    command:
+      - "-path=/migrations"
+      - "-database"
+      - "postgres://${POSTGRES_USER:-glyph}:${POSTGRES_PASSWORD:-glyph}@postgres:5432/${POSTGRES_DB:-glyph}?sslmode=disable"
+      - "up"
+    restart: "no"
+
+  # ─── Go API (production binary in Alpine for healthcheck support) ──────────
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile.test
+    ports:
+      - "127.0.0.1:8083:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-glyph}:${POSTGRES_PASSWORD:-glyph}@postgres:5432/${POSTGRES_DB:-glyph}?sslmode=disable
+      PORT: "8080"
+      OIDC_ISSUER_URL: ""
+      OIDC_CLIENT_ID: ""
+      OIDC_CLIENT_SECRET: ""
+      GIN_MODE: test
+      E2E_RESET_ENABLED: "true"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s

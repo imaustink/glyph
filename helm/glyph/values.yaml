@@ -1,0 +1,162 @@
+# -- Override the chart name
+nameOverride: ""
+# -- Override the full release name
+fullnameOverride: ""
+
+# =============================================================================
+# Frontend (SvelteKit app)
+# =============================================================================
+frontend:
+  replicaCount: 2
+
+  image:
+    repository: ghcr.io/glyph/frontend
+    tag: ""  # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+
+  imagePullSecrets: []
+
+  # ORIGIN used by SvelteKit for CSRF protection — must match the public URL
+  origin: "https://glyph.example.com"
+
+  service:
+    type: ClusterIP
+    port: 3000
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  nodeSelector: {}
+  tolerations: []
+
+# =============================================================================
+# API (Go / Gin)
+# =============================================================================
+api:
+  replicaCount: 2
+
+  image:
+    repository: ghcr.io/glyph/api
+    tag: ""  # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+
+  imagePullSecrets: []
+
+  # Public URL the frontend runs on — used for CORS and OIDC redirects
+  frontendUrl: "https://glyph.example.com"
+  cookieDomain: "glyph.example.com"
+  cookieSecure: "true"
+
+  # Session secret — leave empty to auto-generate a random one
+  sessionSecret: ""
+
+  # Use an existing secret for both session and OIDC credentials.
+  # The secret must contain keys matching existingSecretKeys below.
+  existingSecret: ""
+  existingSecretKeys:
+    sessionSecret: "secret"
+    oidcClientSecret: "client-secret"
+
+  # OIDC (OpenID Connect) configuration
+  oidc:
+    enabled: false
+    issuerUrl: ""
+    clientId: ""
+    clientSecret: ""
+    redirectUrl: ""
+    # Use an existing secret instead of creating one (key: client-secret)
+    existingSecret: ""
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  nodeSelector: {}
+  tolerations: []
+
+# =============================================================================
+# Database — CloudNativePG (CNPG)
+# =============================================================================
+cnpg:
+  # Number of PostgreSQL instances (1 primary + N-1 replicas)
+  instances: 3
+
+  # PostgreSQL image
+  imageName: "ghcr.io/cloudnative-pg/postgresql:16.4"
+
+  # Database bootstrap settings
+  database: glyph
+  owner: glyph
+
+  # PostgreSQL parameters
+  parameters:
+    shared_buffers: "256MB"
+    max_connections: "100"
+
+  storage:
+    size: 10Gi
+    # storageClass: ""  # Uses default StorageClass if not set
+
+  backup:
+    enabled: false
+    # Cron schedule for backups
+    schedule: "0 0 * * *"
+    retentionPolicy: "30d"
+    # S3-compatible object storage destination: s3://<bucket>/<prefix>
+    destinationPath: ""
+    # Custom S3 endpoint (required for non-AWS providers like Cloudflare R2, MinIO).
+    # Leave empty for AWS S3.
+    endpointURL: ""
+    s3:
+      secretName: ""  # Secret with ACCESS_KEY_ID and ACCESS_SECRET_KEY keys
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+  monitoring:
+    enabled: false
+
+# =============================================================================
+# Database migrations (golang-migrate)
+# =============================================================================
+migrate:
+  image:
+    repository: migrate/migrate
+    tag: "v4.17.0"
+    pullPolicy: IfNotPresent
+
+  imagePullSecrets: []
+
+# =============================================================================
+# Ingress
+# =============================================================================
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    # nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+  hosts:
+    - host: glyph.example.com
+  tls: []
+    # - secretName: glyph-tls
+    #   hosts:
+    #     - glyph.example.com
