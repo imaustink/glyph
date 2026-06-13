@@ -4,11 +4,36 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: arc-runner-set
+    # Self-hosted runner: only ever reachable via push to main (collaborators only).
+    # Guard so a fork that somehow re-targets this job cannot run it on our infra.
+    if: github.repository == 'imaustink/glyph'
     steps:
       - uses: actions/checkout@v4
+
+      # Mint a short-lived token scoped to the private homelab repo so we can
+      # fetch the production Helm values (which live outside this repo).
+      - name: Generate homelab access token
+        id: homelab-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.HOMELAB_APP_ID }}
+          private-key: ${{ secrets.HOMELAB_APP_PRIVATE_KEY }}
+          owner: imaustink
+          repositories: homelab
+
+      - name: Checkout homelab (production values)
+        uses: actions/checkout@v4
+        with:
+          repository: imaustink/homelab
+          token: ${{ steps.homelab-token.outputs.token }}
+          path: homelab
+          persist-credentials: false
 
       - name: Install Helm
         uses: azure/setup-helm@v4
@@ -48,7 +73,7 @@ jobs:
       - name: Helm upgrade
         run: |
           helm upgrade glyph helm/glyph \
-            -f values-production.yaml \
+            -f homelab/kubernetes/helm/deployments/glyph/values-production.yaml \
             -n glyph --timeout 5m
 
       - name: Rollout restart

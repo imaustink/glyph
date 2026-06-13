@@ -4,9 +4,12 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   frontend:
-    runs-on: arc-runner-set
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -37,7 +40,7 @@ jobs:
         run: pnpm test
 
   api:
-    runs-on: arc-runner-set
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -75,7 +78,7 @@ jobs:
         run: go test ./... -short -count=1
 
   e2e-local:
-    runs-on: arc-runner-set
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -126,7 +129,7 @@ jobs:
           retention-days: 7
 
   e2e-api:
-    runs-on: arc-runner-set
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
       postgres:
