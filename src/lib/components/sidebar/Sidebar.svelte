@@ -12,6 +12,8 @@
 
   let showTemplateDropdown = $state(false);
   let showTemplateManager = $state(false);
+  let rootDragOver = $state(false);
+  let headerDragOver = $state(false);
 
   async function handleNewPage() {
     const template = templatesStore.defaultTemplate;
@@ -37,6 +39,80 @@
     await pagesStore.createFolder(null);
   }
 
+  /**
+   * Drop zone for the empty area of the page tree. Dropping a node here moves
+   * it to the root level (parentId = null). This is the only way to pull a
+   * folder or page out of a containing folder — dropping onto a folder always
+   * nests inside it, and dropping onto a page reparents to that page's level.
+   */
+  function handleRootDragOver(e: DragEvent) {
+    if (!e.dataTransfer?.types.includes('text/plain')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    rootDragOver = true;
+  }
+
+  function handleRootDragLeave(e: DragEvent) {
+    const related = e.relatedTarget as HTMLElement | null;
+    const currentTarget = e.currentTarget as HTMLElement;
+    if (!related || !currentTarget.contains(related)) {
+      rootDragOver = false;
+    }
+  }
+
+  async function handleRootDrop(e: DragEvent) {
+    e.preventDefault();
+    rootDragOver = false;
+
+    const draggedId = e.dataTransfer?.getData('text/plain');
+    if (!draggedId) return;
+
+    const dragged = pagesStore.nodes.find((n) => n.id === draggedId);
+    if (!dragged || dragged.parentId === null) return; // already at root
+
+    const siblings = pagesStore.getChildren(null);
+    const maxOrder = siblings.reduce((m, n) => Math.max(m, n.order), -1);
+    await pagesStore.moveNode(draggedId, null, maxOrder + 1);
+  }
+
+  /**
+   * The "Pages" section header doubles as an always-visible "move to top level"
+   * drop target. The empty tree area below also works, but it can be far away
+   * (or fully covered when there are many pages), so the header guarantees a
+   * reachable, discoverable place to drop a node to un-nest it.
+   */
+  function handleHeaderDragOver(e: DragEvent) {
+    if (!e.dataTransfer?.types.includes('text/plain')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    headerDragOver = true;
+  }
+
+  function handleHeaderDragLeave(e: DragEvent) {
+    const related = e.relatedTarget as HTMLElement | null;
+    const currentTarget = e.currentTarget as HTMLElement;
+    if (!related || !currentTarget.contains(related)) {
+      headerDragOver = false;
+    }
+  }
+
+  async function handleHeaderDrop(e: DragEvent) {
+    headerDragOver = false;
+    await handleRootDrop(e);
+  }
+
+  /**
+   * Safety net: `dragend` always fires on the drag source when the operation
+   * ends, regardless of where (or whether) it was dropped. Dropping onto a
+   * child node-row calls stopPropagation, so the container/header drop and
+   * dragleave handlers never run — leaving their highlight flags stuck `true`.
+   * Clearing both here guarantees the highlight is always reset.
+   */
+  function handleDragEnd() {
+    rootDragOver = false;
+    headerDragOver = false;
+  }
+
   const isTasksActive = $derived(page.url.pathname.startsWith('/tasks'));
   const isSearchActive = $derived(page.url.pathname.startsWith('/search'));
   const isOrgsActive = $derived(page.url.pathname.startsWith('/settings/orgs'));
@@ -58,6 +134,8 @@
     return m;
   });
 </script>
+
+<svelte:window ondragend={handleDragEnd} />
 
 <aside class="sidebar">
   <div class="sidebar-header">
@@ -101,8 +179,15 @@
     {/if}
   </nav>
 
-  <div class="section-header">
-    <span class="section-label">Pages</span>
+  <div
+    class="section-header"
+    class:header-drag-over={headerDragOver}
+    role="group"
+    ondragover={handleHeaderDragOver}
+    ondragleave={handleHeaderDragLeave}
+    ondrop={handleHeaderDrop}
+  >
+    <span class="section-label">{headerDragOver ? 'Move to top level' : 'Pages'}</span>
     <div class="section-actions">
       <div
         class="new-page-btn-wrapper"
@@ -151,7 +236,15 @@
     </div>
   </div>
 
-  <div class="page-tree-container">
+  <div
+    class="page-tree-container"
+    class:root-drag-over={rootDragOver}
+    role="tree"
+    tabindex="-1"
+    ondragover={handleRootDragOver}
+    ondragleave={handleRootDragLeave}
+    ondrop={handleRootDrop}
+  >
     <PageTree {childrenByParent} parentId={null} />
   </div>
 </aside>
@@ -230,6 +323,16 @@
     align-items: center;
     justify-content: space-between;
     padding: 10px 12px 4px;
+    border-radius: var(--radius-sm);
+  }
+
+  .section-header.header-drag-over {
+    background: var(--accent-bg);
+    box-shadow: inset 0 0 0 1px var(--accent-muted);
+  }
+
+  .section-header.header-drag-over .section-label {
+    color: var(--accent);
   }
 
   .section-label {
@@ -250,6 +353,12 @@
     flex: 1;
     overflow-y: auto;
     padding: 4px 6px 16px;
+  }
+
+  .page-tree-container.root-drag-over {
+    background: var(--accent-bg);
+    box-shadow: inset 0 0 0 1px var(--accent-muted);
+    border-radius: var(--radius-sm);
   }
 
   .new-page-btn-wrapper {
