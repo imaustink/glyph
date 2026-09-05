@@ -32,11 +32,12 @@
 		"vitest": "^4.1.4"
 	},
 	"dependencies": {
-		"@tiptap/core": "^3.22.3",
-		"@tiptap/extension-list-item": "^3.22.3",
-		"@tiptap/extension-placeholder": "^3.22.3",
-		"@tiptap/pm": "^3.22.3",
-		"@tiptap/starter-kit": "^3.22.3",
+		"@tiptap/core": "^3.31.3",
+		"@tiptap/extension-list-item": "^3.31.3",
+		"@tiptap/extension-placeholder": "^3.31.3",
+		"@tiptap/markdown": "^3.31.3",
+		"@tiptap/pm": "^3.31.3",
+		"@tiptap/starter-kit": "^3.31.3",
 		"date-fns": "^4.1.0",
 		"fuse.js": "^7.3.0",
 		"nanoid": "^5.1.9",

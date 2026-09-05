@@ -153,10 +153,10 @@ test.describe('Tasks', () => {
 		const prioritySelect = page.locator('.meta-row:has(.meta-label:has-text("Priority")) select');
 		await prioritySelect.selectOption('high');
 
-		// Add a description.
-		const textarea = page.locator('textarea#task-desc');
-		await textarea.click();
-		await textarea.pressSequentially('This is an important task', { delay: 20 });
+		// Add a description (WYSIWYG markdown editor).
+		const desc = page.locator('.md-editor');
+		await desc.click();
+		await desc.pressSequentially('This is an important task', { delay: 20 });
 
 		// Wait for debounced save (description debounce is 600ms) and API round-trip.
 		await page.waitForTimeout(1_500);
@@ -168,7 +168,45 @@ test.describe('Tasks', () => {
 		await expect(
 			page.locator('.meta-row:has(.meta-label:has-text("Priority")) select')
 		).toHaveValue('high');
-		await expect(page.locator('textarea#task-desc')).toHaveValue('This is an important task');
+		await expect(page.locator('.md-editor')).toContainText('This is an important task');
+	});
+
+	test('task description is a WYSIWYG markdown editor', async ({ page }) => {
+		// Create a task.
+		const editor = page.locator('main .tiptap-editor');
+		await editor.click();
+		await editor.pressSequentially('# TODO', { delay: 30 });
+		await editor.press('Enter');
+		await editor.pressSequentially('- Markdown desc task', { delay: 30 });
+
+		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
+		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await popover.locator('button.btn-primary').click();
+
+		// Navigate to task board → task detail.
+		await navigateToTaskBoard(page);
+		await page.locator('.card-title:has-text("Markdown desc task")').click({ timeout: 5_000 });
+		await expect(page.locator('.task-detail-page')).toBeVisible();
+
+		// Type markdown shortcuts — they should convert to formatted nodes live.
+		const desc = page.locator('.md-editor');
+		await desc.click();
+		await desc.pressSequentially('# Heading one', { delay: 20 });
+		await desc.press('Enter');
+		await desc.pressSequentially('- bullet item', { delay: 20 });
+
+		// The "#" became a real heading and "-" became a real list item.
+		await expect(desc.locator('h1')).toHaveText('Heading one');
+		await expect(desc.locator('ul li')).toContainText('bullet item');
+
+		// Wait for debounced save + round-trip, then reload to confirm persistence.
+		await page.waitForTimeout(1_500);
+		await page.reload();
+		await expect(page.locator('.task-detail-page')).toBeVisible();
+
+		const descAfter = page.locator('.md-editor');
+		await expect(descAfter.locator('h1')).toHaveText('Heading one');
+		await expect(descAfter.locator('ul li')).toContainText('bullet item');
 	});
 
 	test('add a new lane to the board', async ({ page }) => {

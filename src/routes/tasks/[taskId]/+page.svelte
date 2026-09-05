@@ -8,6 +8,7 @@
   import LinkPreview from '$lib/components/tasks/LinkPreview.svelte';
   import ShareDialog from '$lib/components/shared/ShareDialog.svelte';
   import VisibilityPicker from '$lib/components/shared/VisibilityPicker.svelte';
+  import MarkdownEditor from '$lib/components/shared/MarkdownEditor.svelte';
   import { authStore } from '$lib/stores/auth.svelte';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
   import { storageMode } from '$lib/storage/config';
@@ -83,14 +84,16 @@
 
   // ── Description ──────────────────────────────────────────────────────────
   // Single debounce timer; only one save can be in-flight for description at a time.
-  let descValue = $state('');
-  $effect(() => { if (task) descValue = task.description; });
+  // The MarkdownEditor owns the editing state; we only track the latest markdown
+  // to persist on the debounced save.
+  let _pendingDesc = '';
   let _descTimer: ReturnType<typeof setTimeout> | null = null;
-  function handleDescInput() {
+  function handleDescChange(markdown: string) {
+    _pendingDesc = markdown;
     if (_descTimer) clearTimeout(_descTimer);
     _descTimer = setTimeout(() => {
       _descTimer = null;
-      updateField('description', descValue).catch(() => {
+      updateField('description', _pendingDesc).catch(() => {
         // Error already surfaced via notificationsStore inside updateField
       });
     }, 600);
@@ -284,15 +287,15 @@
 
       <!-- Description -->
       <div class="description-section">
-        <label class="desc-label" for="task-desc">Description</label>
-        <textarea
-          id="task-desc"
-          class="desc-textarea"
-          bind:value={descValue}
-          oninput={handleDescInput}
-          placeholder="Add a description…"
-          rows="8"
-        ></textarea>
+        <span class="desc-label">Description</span>
+        {#key task.id}
+          <MarkdownEditor
+            value={task.description}
+            placeholder="Add a description…"
+            ariaLabel="Task description"
+            onchange={handleDescChange}
+          />
+        {/key}
       </div>
 
       <!-- External Link -->
@@ -510,19 +513,6 @@
     letter-spacing: 0.06em;
     color: var(--text-muted);
     margin-bottom: 8px;
-  }
-
-  .desc-textarea {
-    width: 100%;
-    resize: vertical;
-    min-height: 120px;
-    font-size: var(--font-size-base);
-    line-height: 1.6;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    padding: 12px 14px;
-    color: var(--text-primary);
   }
 
   .timestamps {
