@@ -118,10 +118,18 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 		}
 	}
 	var req UpdatePageRequest
-	if !bindJSON(c, &req) {
+	keys, ok := bindJSONWithKeys(c, &req)
+	if !ok {
 		return
 	}
 	req.ApplyTo(existing)
+
+	// ApplyTo cannot distinguish {"parentId": null} (move to the top level) from
+	// an omitted parentId (leave unchanged) — both decode to a nil pointer. When
+	// the client explicitly sends null, clear the parent so the node moves to root.
+	if raw, present := keys["parentId"]; present && isJSONNull(raw) {
+		existing.ParentID = nil
+	}
 
 	// Guard against reparenting a node into one of its own descendants (cycle).
 	if existing.ParentID != nil {

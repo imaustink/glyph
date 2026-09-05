@@ -197,6 +197,12 @@ test.describe('Drag and drop in sidebar', () => {
 		});
 		// But it should still exist in the sidebar at root level.
 		await expect(page.locator('.node-label:has-text("Page A")')).toBeVisible();
+
+		// Reload to prove the move was persisted by the backend — not just an
+		// optimistic UI update that snaps back after the server responds.
+		await page.reload();
+		await expect(page.locator('.node-label:has-text("Page A")')).toBeVisible({ timeout: 10_000 });
+		await expect(page.locator('.children .node-label:has-text("Page A")')).toHaveCount(0);
 	});
 
 	test('drag a page out of a folder via the "Pages" header drop target', async ({ page }) => {
@@ -229,6 +235,11 @@ test.describe('Drag and drop in sidebar', () => {
 			timeout: 5_000
 		});
 		await expect(page.locator('.node-label:has-text("Page A")')).toBeVisible();
+
+		// Reload to prove the move persisted server-side (not just optimistic UI).
+		await page.reload();
+		await expect(page.locator('.node-label:has-text("Page A")')).toBeVisible({ timeout: 10_000 });
+		await expect(page.locator('.children .node-label:has-text("Page A")')).toHaveCount(0);
 	});
 
 	test('root drop highlight is cleared after dropping onto a child row', async ({ page }) => {

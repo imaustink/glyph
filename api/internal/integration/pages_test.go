@@ -179,6 +179,52 @@ func TestPages(t *testing.T) {
 			assert.Equal(t, 99, Decode[model.Page](t, w).Order)
 		},
 
+		// An explicit {"parentId": null} means "move to the top level" and must
+		// clear the parent — distinct from omitting parentId (leave unchanged).
+		"UpdatePageMoveToRoot": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			parent := createTestPage(t, h, h.UserA.ID, "Parent Folder")
+			body := map[string]interface{}{
+				"title": "Child Page", "type": "page", "parentId": parent.ID.String(),
+			}
+			w := h.Do(t, "POST", "/api/v1/pages", body, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code)
+			child := Decode[model.Page](t, w)
+			require.NotNil(t, child.ParentID)
+
+			// Move the child out of the folder to the top level.
+			w = h.Do(t, "PATCH", fmt.Sprintf("/api/v1/pages/%s", child.ID),
+				map[string]interface{}{"parentId": nil, "order": 0}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code)
+			assert.Nil(t, Decode[model.Page](t, w).ParentID, "explicit null parentId should move node to root")
+
+			// Confirm it persisted.
+			w = h.Do(t, "GET", fmt.Sprintf("/api/v1/pages/%s", child.ID), nil, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code)
+			assert.Nil(t, Decode[model.Page](t, w).ParentID)
+		},
+
+		// Omitting parentId in a PATCH must leave the existing parent untouched.
+		"UpdatePageOmittedParentUnchanged": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			parent := createTestPage(t, h, h.UserA.ID, "Parent Folder")
+			body := map[string]interface{}{
+				"title": "Child Page", "type": "page", "parentId": parent.ID.String(),
+			}
+			w := h.Do(t, "POST", "/api/v1/pages", body, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code)
+			child := Decode[model.Page](t, w)
+			require.NotNil(t, child.ParentID)
+
+			// PATCH a different field without sending parentId.
+			w = h.Do(t, "PATCH", fmt.Sprintf("/api/v1/pages/%s", child.ID),
+				map[string]interface{}{"title": "Renamed"}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code)
+			updated := Decode[model.Page](t, w)
+			require.NotNil(t, updated.ParentID, "omitting parentId must not clear the parent")
+			assert.Equal(t, parent.ID, *updated.ParentID)
+		},
+
 		"UpdatePageAddTodoTrigger": func(t *testing.T, h *Harness) {
 			h.ResetDB(t)
 			created := createTestPage(t, h, h.UserA.ID, "No Trigger")
