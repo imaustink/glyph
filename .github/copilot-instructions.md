@@ -117,7 +117,7 @@ src/
       tasks/
         Lane.svelte                # Single lane column — filters + sorts tasks, skeleton while loading
         LaneConfig.svelte          # Modal to configure lane title, filters, sort
-        TaskCard.svelte            # Card in a lane — status dot, title, priority badge, due, tags
+        TaskCard.svelte            # Card in a lane — status dot, title, priority badge, due, tags, source-note label
       search/
         SearchModal.svelte         # ⌘K overlay, inline search
       shared/

@@ -3,11 +3,16 @@
   import type { Task } from '$lib/models/types';
   import { STATUS_LABELS, PRIORITY_LABELS, STATUS_CYCLE } from '$lib/models/constants';
   import { tasksStore } from '$lib/stores/tasks.svelte';
+  import { pagesStore } from '$lib/stores/pages.svelte';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
   import { format, parseISO, isPast } from 'date-fns';
   import LinkChip from './LinkChip.svelte';
 
   let { task }: { task: Task } = $props();
+
+  const sourcePage = $derived(
+    task.sourcePageId ? pagesStore.getById(task.sourcePageId) : undefined
+  );
 
   const isOverdue = $derived(
     task.dueDate !== null && task.status !== 'done' && task.status !== 'cancelled' &&
@@ -71,6 +76,21 @@
         <span class="tag-pill">+{task.tags.length - 3}</span>
       {/if}
     </div>
+  {/if}
+
+  {#if sourcePage}
+    <a
+      href="/notes/{sourcePage.id}"
+      class="source-note"
+      title="From note: {sourcePage.title || 'Untitled'}"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+      </svg>
+      <span class="source-note-name">{sourcePage.title || 'Untitled'}</span>
+    </a>
   {/if}
 
   {#if task.link}
@@ -159,5 +179,24 @@
 
   .card-link {
     margin-top: 4px;
+  }
+
+  .source-note {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    margin-top: 6px;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    text-decoration: none;
+    line-height: 1.2;
+  }
+  .source-note:hover { color: var(--accent); }
+  .source-note svg { flex-shrink: 0; }
+  .source-note-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>
