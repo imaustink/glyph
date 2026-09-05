@@ -652,9 +652,25 @@ func (s *taskStore) ListByFilter(ctx context.Context, userID uuid.UUID, fs model
 	if len(fs.Rules) == 0 {
 		return all, nil
 	}
+
+	// Snapshot page tags so the synthetic `sourcePageTags` field can be resolved
+	// without holding the lock during matching.
+	pageTags := make(map[uuid.UUID][]string)
+	s.r.mu.RLock()
+	for id, p := range s.r.pages {
+		pageTags[id] = append([]string(nil), p.Tags...)
+	}
+	s.r.mu.RUnlock()
+	sourceTags := func(t *model.Task) []string {
+		if t.SourcePageID == nil {
+			return nil
+		}
+		return pageTags[*t.SourcePageID]
+	}
+
 	result := make([]*model.Task, 0)
 	for _, t := range all {
-		if memstoreTaskMatchesFilter(t, fs) {
+		if memstoreTaskMatchesFilter(t, fs, sourceTags) {
 			result = append(result, t)
 		}
 	}
@@ -663,9 +679,17 @@ func (s *taskStore) ListByFilter(ctx context.Context, userID uuid.UUID, fs model
 
 // memstoreTaskMatchesFilter applies the FilterSet in-process, mirroring the
 // client-side filterUtils logic so that memstore integration tests work correctly.
-func memstoreTaskMatchesFilter(t *model.Task, fs model.FilterSet) bool {
+func memstoreTaskMatchesFilter(t *model.Task, fs model.FilterSet, sourceTags func(*model.Task) []string) bool {
 	results := make([]bool, 0, len(fs.Rules))
 	for _, rule := range fs.Rules {
+		if rule.Field == "sourcePageTags" {
+			var tags []string
+			if sourceTags != nil {
+				tags = sourceTags(t)
+			}
+			results = append(results, memstoreMatchesTagRule(tags, rule))
+			continue
+		}
 		results = append(results, memstoreMatchesRule(t, rule))
 	}
 	if fs.Conjunction == model.ConjunctionOr {
@@ -732,8 +756,47 @@ func memstoreMatchesRule(t *model.Task, rule model.FilterRule) bool {
 	}
 }
 
-func memstoreField(t *model.Task, field string) interface{} {
-	switch field {
+// memstoreMatchesTagRule evaluates a rule against a list of tags (used by the
+// synthetic sourcePageTags field). Case-insensitive, mirroring filterUtils.
+func memstoreMatchesTagRule(tags []string, rule model.FilterRule) bool {
+	has := func(v interface{}) bool {
+		needle := strings.ToLower(fmt.Sprint(v))
+		for _, tag := range tags {
+			if strings.ToLower(tag) == needle {
+				return true
+			}
+		}
+		return false
+	}
+	intersects := func(v interface{}) bool {
+		for _, val := range memstoreToStringSlice(v) {
+			if has(val) {
+				return true
+			}
+		}
+		return false
+	}
+	switch rule.Operator {
+	case model.FilterOpAny:
+		return true
+	case model.FilterOpContains, model.FilterOpEq:
+		return has(rule.Value)
+	case model.FilterOpNeq:
+		return !has(rule.Value)
+	case model.FilterOpIn:
+		return intersects(rule.Value)
+	case model.FilterOpNotIn:
+		return !intersects(rule.Value)
+	case model.FilterOpExists:
+		return len(tags) > 0
+	case model.FilterOpNotExists:
+		return len(tags) == 0
+	default:
+		return true
+	}
+}
+
+func memstoreField(t *model.Task, field string) interface{} {	switch field {
 	case "status":
 		return string(t.Status)
 	case "priority":

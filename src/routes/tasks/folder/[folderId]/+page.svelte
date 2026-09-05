@@ -3,6 +3,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { folderBoardStore } from '$lib/stores/folderBoard.svelte';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
+  import { pagesStore } from '$lib/stores/pages.svelte';
   import { storageMode } from '$lib/storage/config';
   import { applyFilter } from '$lib/storage/filterUtils';
   import Lane from '$lib/components/tasks/Lane.svelte';
@@ -26,9 +27,15 @@
   // Compute filtered tasks per lane from the folder board's task list.
   const filteredByLane = $derived.by(() => {
     const tasks = folderBoardStore.tasks;
+    // Track page nodes so lanes re-filter when a note's tags change.
+    const _nodes = pagesStore.nodes;
+    const filterCtx = {
+      getSourcePageTags: (task: Task) =>
+        task.sourcePageId ? (pagesStore.getById(task.sourcePageId)?.tags ?? []) : []
+    };
     const map = new Map<string, Task[]>();
     for (const lane of folderBoardStore.lanes) {
-      map.set(lane.id, applyFilter(tasks, lane.filterSet));
+      map.set(lane.id, applyFilter(tasks, lane.filterSet, filterCtx));
     }
     return map;
   });

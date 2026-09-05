@@ -343,6 +343,89 @@ func TestBuildTagsClause_Default(t *testing.T) {
 	assert.Equal(t, 2, next)
 }
 
+// ─── buildSourcePageTagsClause ────────────────────────────────────────────────
+
+func TestBuildTaskFilterSQL_SourcePageIdEq(t *testing.T) {
+	fs := model.FilterSet{
+		Conjunction: model.ConjunctionAnd,
+		Rules: []model.FilterRule{
+			{Field: "sourcePageId", Operator: model.FilterOpEq, Value: "page-1"},
+		},
+	}
+	clause, args := BuildTaskFilterSQL(fs, 2)
+	assert.Equal(t, "(source_page_id = $2)", clause)
+	assert.Equal(t, []interface{}{"page-1"}, args)
+}
+
+func TestBuildSourcePageTagsClause_Contains(t *testing.T) {
+	rule := model.FilterRule{Field: "sourcePageTags", Operator: model.FilterOpContains, Value: "work"}
+	clause, args, next := buildSourcePageTagsClause(rule, 2)
+	assert.Contains(t, clause, "EXISTS (SELECT 1 FROM pages p WHERE p.id = tasks.source_page_id")
+	assert.Contains(t, clause, "$2 = ANY(p.tags)")
+	assert.Equal(t, []interface{}{"work"}, args)
+	assert.Equal(t, 3, next)
+}
+
+func TestBuildSourcePageTagsClause_Neq(t *testing.T) {
+	rule := model.FilterRule{Field: "sourcePageTags", Operator: model.FilterOpNeq, Value: "work"}
+	clause, _, _ := buildSourcePageTagsClause(rule, 2)
+	assert.True(t, strings.HasPrefix(clause, "NOT EXISTS ("))
+	assert.Contains(t, clause, "$2 = ANY(p.tags)")
+}
+
+func TestBuildSourcePageTagsClause_In(t *testing.T) {
+	rule := model.FilterRule{Field: "sourcePageTags", Operator: model.FilterOpIn, Value: []interface{}{"a", "b"}}
+	clause, args, next := buildSourcePageTagsClause(rule, 2)
+	assert.Contains(t, clause, "p.tags && ARRAY[$2, $3]")
+	assert.Equal(t, []interface{}{"a", "b"}, args)
+	assert.Equal(t, 4, next)
+}
+
+func TestBuildSourcePageTagsClause_NotIn(t *testing.T) {
+	rule := model.FilterRule{Field: "sourcePageTags", Operator: model.FilterOpNotIn, Value: []interface{}{"a"}}
+	clause, args, next := buildSourcePageTagsClause(rule, 2)
+	assert.True(t, strings.HasPrefix(clause, "NOT EXISTS ("))
+	assert.Contains(t, clause, "p.tags && ARRAY[$2]")
+	assert.Equal(t, []interface{}{"a"}, args)
+	assert.Equal(t, 3, next)
+}
+
+func TestBuildSourcePageTagsClause_InEmptySkipped(t *testing.T) {
+	rule := model.FilterRule{Field: "sourcePageTags", Operator: model.FilterOpIn, Value: []interface{}{}}
+	clause, args, next := buildSourcePageTagsClause(rule, 2)
+	assert.Equal(t, "", clause)
+	assert.Nil(t, args)
+	assert.Equal(t, 2, next)
+}
+
+func TestBuildSourcePageTagsClause_Exists(t *testing.T) {
+	rule := model.FilterRule{Field: "sourcePageTags", Operator: model.FilterOpExists}
+	clause, args, next := buildSourcePageTagsClause(rule, 2)
+	assert.Contains(t, clause, "EXISTS (")
+	assert.Contains(t, clause, "array_length(p.tags, 1) > 0")
+	assert.Nil(t, args)
+	assert.Equal(t, 2, next)
+}
+
+func TestBuildSourcePageTagsClause_NotExists(t *testing.T) {
+	rule := model.FilterRule{Field: "sourcePageTags", Operator: model.FilterOpNotExists}
+	clause, _, _ := buildSourcePageTagsClause(rule, 2)
+	assert.True(t, strings.HasPrefix(clause, "NOT EXISTS ("))
+	assert.Contains(t, clause, "array_length(p.tags, 1) > 0")
+}
+
+func TestBuildTaskFilterSQL_SourcePageTagsIntegrated(t *testing.T) {
+	fs := model.FilterSet{
+		Conjunction: model.ConjunctionAnd,
+		Rules: []model.FilterRule{
+			{Field: "sourcePageTags", Operator: model.FilterOpContains, Value: "work"},
+		},
+	}
+	clause, args := BuildTaskFilterSQL(fs, 2)
+	assert.Contains(t, clause, "p.id = tasks.source_page_id")
+	assert.Equal(t, []interface{}{"work"}, args)
+}
+
 // ─── toStringSlice ────────────────────────────────────────────────────────────
 
 func TestToStringSlice_InterfaceSlice(t *testing.T) {

@@ -644,6 +644,87 @@ test.describe('Tasks', () => {
 		await modal.locator('button.btn-ghost:has-text("Cancel")').click();
 	});
 
+	// ── Source-note filtering tests ────────────────────────────────────
+
+	test('filter a lane by source note and by source note tag', async ({ page }) => {
+		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
+
+		// ── Page 1: "Alpha Note" with a task and a tag ──
+		await createNewPage(page);
+		const alphaTitle = page.locator('input.title-edit');
+		await alphaTitle.fill('Alpha Note');
+		await alphaTitle.press('Enter');
+
+		const editor = page.locator('main .tiptap-editor');
+		await editor.click();
+		await editor.pressSequentially('# TODO', { delay: 30 });
+		await editor.press('Enter');
+		await editor.pressSequentially('- Alpha task', { delay: 30 });
+		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await popover.locator('button.btn-primary').click();
+		await expect(popover).not.toBeVisible();
+
+		// Tag the Alpha Note with "alpha".
+		await page.locator('.tags-display').click();
+		const tagInput = page.locator('.tags-edit-wrapper input');
+		await tagInput.fill('alpha');
+		await tagInput.press('Enter');
+		await page.locator('button:has-text("Done")').click();
+
+		// ── Page 2: "Beta Note" with a task, no tag ──
+		await createNewPage(page);
+		const betaTitle = page.locator('input.title-edit');
+		await betaTitle.fill('Beta Note');
+		await betaTitle.press('Enter');
+
+		const editor2 = page.locator('main .tiptap-editor');
+		await editor2.click();
+		await editor2.pressSequentially('# TODO', { delay: 30 });
+		await editor2.press('Enter');
+		await editor2.pressSequentially('- Beta task', { delay: 30 });
+		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await popover.locator('button.btn-primary').click();
+		await expect(popover).not.toBeVisible();
+
+		await navigateToTaskBoard(page);
+		const allTasksLane = page.locator('.lane').filter({
+			has: page.locator('.lane-title:has-text("All Tasks")')
+		});
+
+		// Both tasks visible before filtering.
+		await expect(allTasksLane.locator('.task-card:has-text("Alpha task")')).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Beta task")')).toBeVisible({ timeout: 5_000 });
+
+		const modal = page.locator('[role="dialog"][aria-label="Configure lane"]');
+
+		// ── Filter by specific source note (Alpha Note) ──
+		await allTasksLane.locator('.icon-btn[title="Configure lane"]').click();
+		await expect(modal).toBeVisible({ timeout: 5_000 });
+		await modal.locator('button.add-rule-btn').click();
+		const ruleRow = modal.locator('.rule-row').last();
+		await ruleRow.locator('.rule-select').first().selectOption('sourcePageId');
+		await ruleRow.locator('.rule-select').nth(1).selectOption('eq');
+		await ruleRow.locator('select.rule-value').selectOption({ label: 'Alpha Note' });
+		await modal.locator('button.btn-primary:has-text("Save")').click();
+		await expect(modal).not.toBeVisible();
+
+		await expect(allTasksLane.locator('.task-card:has-text("Alpha task")')).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Beta task")')).toHaveCount(0);
+
+		// ── Re-filter by source note tag (alpha) ──
+		await allTasksLane.locator('.icon-btn[title="Configure lane"]').click();
+		await expect(modal).toBeVisible({ timeout: 5_000 });
+		const ruleRow2 = modal.locator('.rule-row').first();
+		await ruleRow2.locator('.rule-select').first().selectOption('sourcePageTags');
+		await ruleRow2.locator('.rule-select').nth(1).selectOption('contains');
+		await ruleRow2.locator('input.rule-value').fill('alpha');
+		await modal.locator('button.btn-primary:has-text("Save")').click();
+		await expect(modal).not.toBeVisible();
+
+		await expect(allTasksLane.locator('.task-card:has-text("Alpha task")')).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Beta task")')).toHaveCount(0);
+	});
+
 	// ── Status-based auto-sort tests ───────────────────────────────────
 
 	test('auto sort sinks done tasks below active tasks', async ({ page }) => {

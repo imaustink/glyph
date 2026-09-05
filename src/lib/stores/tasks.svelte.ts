@@ -1,5 +1,6 @@
 import { repositories } from '$lib/storage/config';
 import type { ITaskRepository } from '$lib/storage/interfaces';
+import type { FilterContext } from '$lib/storage/filterUtils';
 import type { Task, FilterSet, Priority, TaskStatus, TreeNode } from '$lib/models/types';
 import { now, makeTimestamps } from '$lib/utils/time';
 import { nextOrder } from '$lib/utils/order';
@@ -52,8 +53,8 @@ export function createTasksStore(injectedRepo?: ITaskRepository) {
     return _nodeIdIndex.get(nodeId);
   }
 
-  function getFiltered(filterSet: FilterSet): Task[] | Promise<Task[]> {
-    return repo.applyFilter(tasks, filterSet);
+  function getFiltered(filterSet: FilterSet, ctx?: FilterContext): Task[] | Promise<Task[]> {
+    return repo.applyFilter(tasks, filterSet, ctx);
   }
 
   async function createTask(params: {

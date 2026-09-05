@@ -1,6 +1,7 @@
 <script lang="ts">
   import { lanesStore } from '$lib/stores/lanes.svelte';
   import { tasksStore } from '$lib/stores/tasks.svelte';
+  import { pagesStore } from '$lib/stores/pages.svelte';
   import Lane from '$lib/components/tasks/Lane.svelte';
   import LaneConfig from '$lib/components/tasks/LaneConfig.svelte';
   import type { Lane as LaneType, Task } from '$lib/models/types';
@@ -15,12 +16,21 @@
     // Track reactive dependencies: tasks array ref and lanes array.
     const _tasks = tasksStore.tasks;
     const lanes = lanesStore.lanes;
+    // Track page nodes so lanes re-filter when a note's tags change.
+    const _nodes = pagesStore.nodes;
+
+    // Resolves the tags of a task's source note for the synthetic
+    // `sourcePageTags` filter field (local-mode / client-side filtering only).
+    const filterCtx = {
+      getSourcePageTags: (task: Task) =>
+        task.sourcePageId ? (pagesStore.getById(task.sourcePageId)?.tags ?? []) : []
+    };
 
     const newMap = new Map<string, Task[]>();
     const asyncWork: Promise<void>[] = [];
 
     for (const lane of lanes) {
-      const result = tasksStore.getFiltered(lane.filterSet);
+      const result = tasksStore.getFiltered(lane.filterSet, filterCtx);
       if (result instanceof Promise) {
         asyncWork.push(result.then((filtered) => { newMap.set(lane.id, filtered); }));
       } else {

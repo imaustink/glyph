@@ -7,6 +7,7 @@
  */
 
 import type { TreeNode, PageContent, Task, Lane, NoteTemplate, FilterSet } from '$lib/models/types';
+import type { FilterContext } from '$lib/storage/filterUtils';
 
 // ─── Base Repository Interface ────────────────────────────────────────────────
 
@@ -38,7 +39,7 @@ export interface IPageRepository extends IRepository<TreeNode> {
 export interface ITaskRepository extends IRepository<Task> {
   getByPageId(pageId: string): Promise<Task[]>;
   getByNodeId(nodeId: string): Promise<Task | null>;
-  applyFilter(tasks: Task[], filterSet: FilterSet): Task[] | Promise<Task[]>;
+  applyFilter(tasks: Task[], filterSet: FilterSet, ctx?: FilterContext): Task[] | Promise<Task[]>;
 }
 
 // ─── Lane Repository Interface ────────────────────────────────────────────────

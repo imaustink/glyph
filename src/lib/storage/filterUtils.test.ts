@@ -164,6 +164,45 @@ describe('matchesRule', () => {
       expect(matchesRule(makeTask(), rule({ operator: 'unknown' as any }))).toBe(true);
     });
   });
+
+  describe('sourcePageId (specific source note)', () => {
+    it('eq matches tasks from the given note', () => {
+      expect(matchesRule(makeTask({ sourcePageId: 'page-1' }), rule({ field: 'sourcePageId', operator: 'eq', value: 'page-1' }))).toBe(true);
+      expect(matchesRule(makeTask({ sourcePageId: 'page-2' }), rule({ field: 'sourcePageId', operator: 'eq', value: 'page-1' }))).toBe(false);
+    });
+    it('in matches tasks from any of the given notes', () => {
+      expect(matchesRule(makeTask({ sourcePageId: 'page-2' }), rule({ field: 'sourcePageId', operator: 'in', value: ['page-1', 'page-2'] }))).toBe(true);
+      expect(matchesRule(makeTask({ sourcePageId: 'page-3' }), rule({ field: 'sourcePageId', operator: 'in', value: ['page-1', 'page-2'] }))).toBe(false);
+    });
+  });
+
+  describe('sourcePageTags (source note tags)', () => {
+    const ctx = {
+      getSourcePageTags: (task: Task) =>
+        task.sourcePageId === 'page-work' ? ['work', 'urgent'] : []
+    };
+
+    it('contains matches when the source note has the tag (case-insensitive)', () => {
+      expect(matchesRule(makeTask({ sourcePageId: 'page-work' }), rule({ field: 'sourcePageTags', operator: 'contains', value: 'Work' }), ctx)).toBe(true);
+      expect(matchesRule(makeTask({ sourcePageId: 'page-work' }), rule({ field: 'sourcePageTags', operator: 'contains', value: 'home' }), ctx)).toBe(false);
+    });
+    it('in matches when the source note has any of the tags', () => {
+      expect(matchesRule(makeTask({ sourcePageId: 'page-work' }), rule({ field: 'sourcePageTags', operator: 'in', value: ['home', 'urgent'] }), ctx)).toBe(true);
+      expect(matchesRule(makeTask({ sourcePageId: 'page-work' }), rule({ field: 'sourcePageTags', operator: 'in', value: ['home', 'later'] }), ctx)).toBe(false);
+    });
+    it('not_in matches when the source note has none of the tags', () => {
+      expect(matchesRule(makeTask({ sourcePageId: 'page-work' }), rule({ field: 'sourcePageTags', operator: 'not_in', value: ['home'] }), ctx)).toBe(true);
+      expect(matchesRule(makeTask({ sourcePageId: 'page-work' }), rule({ field: 'sourcePageTags', operator: 'not_in', value: ['work'] }), ctx)).toBe(false);
+    });
+    it('exists / not_exists reflect whether the note has tags', () => {
+      expect(matchesRule(makeTask({ sourcePageId: 'page-work' }), rule({ field: 'sourcePageTags', operator: 'exists', value: null }), ctx)).toBe(true);
+      expect(matchesRule(makeTask({ sourcePageId: 'page-other' }), rule({ field: 'sourcePageTags', operator: 'exists', value: null }), ctx)).toBe(false);
+      expect(matchesRule(makeTask({ sourcePageId: 'page-other' }), rule({ field: 'sourcePageTags', operator: 'not_exists', value: null }), ctx)).toBe(true);
+    });
+    it('resolves to no tags (matches nothing on contains) when context is absent', () => {
+      expect(matchesRule(makeTask({ sourcePageId: 'page-work' }), rule({ field: 'sourcePageTags', operator: 'contains', value: 'work' }))).toBe(false);
+    });
+  });
 });
 
 // ─── applyFilter ─────────────────────────────────────────────────────────────
@@ -229,5 +268,20 @@ describe('applyFilter', () => {
       rules: [{ id: 'r1', field: 'dueDate', operator: 'after', value: '2026-05-01' }]
     };
     expect(applyFilter(tasks, fs).map((t) => t.id)).toEqual(['t2']);
+  });
+
+  it('filters by source note tags using the provided context', () => {
+    const ctxTasks = [
+      makeTask({ id: 'a', sourcePageId: 'p1' }),
+      makeTask({ id: 'b', sourcePageId: 'p2' }),
+      makeTask({ id: 'c', sourcePageId: null })
+    ];
+    const pageTags: Record<string, string[]> = { p1: ['work'], p2: ['home'] };
+    const ctx = { getSourcePageTags: (t: Task) => (t.sourcePageId ? pageTags[t.sourcePageId] ?? [] : []) };
+    const fs: FilterSet = {
+      conjunction: 'and',
+      rules: [{ id: 'r1', field: 'sourcePageTags', operator: 'contains', value: 'work' }]
+    };
+    expect(applyFilter(ctxTasks, fs, ctx).map((t) => t.id)).toEqual(['a']);
   });
 });

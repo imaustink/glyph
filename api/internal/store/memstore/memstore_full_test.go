@@ -396,6 +396,65 @@ func makeTask(status model.TaskStatus, title string, tags []string, dueDate *str
 	return &model.Task{Status: status, Title: title, Tags: tags, DueDate: dueDate}
 }
 
+func TestTaskStore_ListByFilter_SourcePageTags(t *testing.T) {
+	s := &taskStore{r: NewRegistry()}
+	ps := &pageStore{r: s.r}
+	userID := uuid.New()
+
+	workPage, _ := ps.Create(ctx, &model.Page{UserID: userID, Type: "page", Title: "Work", Tags: []string{"work", "urgent"}})
+	homePage, _ := ps.Create(ctx, &model.Page{UserID: userID, Type: "page", Title: "Home", Tags: []string{"home"}})
+
+	s.Create(ctx, &model.Task{UserID: userID, Title: "FromWork", SourcePageID: &workPage.ID}) //nolint:errcheck
+	s.Create(ctx, &model.Task{UserID: userID, Title: "FromHome", SourcePageID: &homePage.ID}) //nolint:errcheck
+	s.Create(ctx, &model.Task{UserID: userID, Title: "Standalone"})                            //nolint:errcheck
+
+	fs := model.FilterSet{
+		Conjunction: model.ConjunctionAnd,
+		Rules: []model.FilterRule{
+			{Field: "sourcePageTags", Operator: model.FilterOpContains, Value: "work"},
+		},
+	}
+	tasks, err := s.ListByFilter(ctx, userID, fs)
+	if err != nil || len(tasks) != 1 || tasks[0].Title != "FromWork" {
+		t.Fatalf("sourcePageTags contains: expected 1 (FromWork), got %d: %v", len(tasks), err)
+	}
+}
+
+func TestMemstoreMatchesTagRule(t *testing.T) {
+	tags := []string{"Work", "urgent"}
+	cases := []struct {
+		op   model.FilterOperator
+		val  interface{}
+		want bool
+	}{
+		{model.FilterOpAny, nil, true},
+		{model.FilterOpContains, "work", true}, // case-insensitive
+		{model.FilterOpContains, "home", false},
+		{model.FilterOpEq, "urgent", true},
+		{model.FilterOpNeq, "home", true},
+		{model.FilterOpNeq, "work", false},
+		{model.FilterOpIn, []string{"home", "urgent"}, true},
+		{model.FilterOpIn, []string{"home"}, false},
+		{model.FilterOpNotIn, []string{"home"}, true},
+		{model.FilterOpNotIn, []string{"work"}, false},
+		{model.FilterOpExists, nil, true},
+		{model.FilterOpNotExists, nil, false},
+	}
+	for _, c := range cases {
+		got := memstoreMatchesTagRule(tags, model.FilterRule{Operator: c.op, Value: c.val})
+		if got != c.want {
+			t.Errorf("op %s val %v: want %v got %v", c.op, c.val, c.want, got)
+		}
+	}
+	// Empty tags: exists false, not_exists true.
+	if memstoreMatchesTagRule(nil, model.FilterRule{Operator: model.FilterOpExists}) {
+		t.Error("exists on empty tags should be false")
+	}
+	if !memstoreMatchesTagRule(nil, model.FilterRule{Operator: model.FilterOpNotExists}) {
+		t.Error("not_exists on empty tags should be true")
+	}
+}
+
 func TestMatchesRule_FilterOpAny(t *testing.T) {
 	if !memstoreMatchesRule(makeTask(model.StatusTodo, "T", nil, nil), model.FilterRule{Operator: model.FilterOpAny}) {
 		t.Error("FilterOpAny should always match")

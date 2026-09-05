@@ -1,8 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { nanoid } from 'nanoid';
-  import type { Lane, FilterRule, FilterSet, SortConfig, SortMode, SortDirection } from '$lib/models/types';
+  import type { Lane, FilterRule, FilterSet, SortConfig, SortMode, SortDirection, TaskFilterField, Task } from '$lib/models/types';
   import { lanesStore } from '$lib/stores/lanes.svelte';
+  import { pagesStore } from '$lib/stores/pages.svelte';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
 
   let {
@@ -29,7 +30,8 @@
   let sortField = $state<keyof import('$lib/models/types').Task>(init.sortConfig.field ?? 'createdAt');
   let sortDir = $state<SortDirection>(init.sortConfig.direction ?? 'asc');
 
-  const FIELD_OPTIONS: { value: keyof import('$lib/models/types').Task; label: string }[] = [
+  // Sort can only target concrete Task fields.
+  const FIELD_OPTIONS: { value: keyof Task; label: string }[] = [
     { value: 'status', label: 'Status' },
     { value: 'priority', label: 'Priority' },
     { value: 'dueDate', label: 'Due Date' },
@@ -38,6 +40,26 @@
     { value: 'title', label: 'Title' },
     { value: 'tags', label: 'Tags' }
   ];
+
+  // Filters can additionally target synthetic note-derived fields.
+  const FILTER_FIELD_OPTIONS: { value: TaskFilterField; label: string }[] = [
+    ...FIELD_OPTIONS,
+    { value: 'sourcePageId', label: 'Source Note' },
+    { value: 'sourcePageTags', label: 'Source Note Tag' }
+  ];
+
+  // Notes (pages) available as source-note filter targets.
+  const noteOptions = $derived(
+    pagesStore.nodes
+      .filter((n) => n.type === 'page')
+      .map((n) => ({ id: n.id, title: n.title?.trim() || 'Untitled' }))
+      .sort((a, b) => a.title.localeCompare(b.title))
+  );
+
+  // Distinct tags across all notes, for the source-note-tag autocomplete.
+  const noteTagOptions = $derived(
+    Array.from(new Set(pagesStore.nodes.flatMap((n) => n.tags ?? []))).sort()
+  );
 
   const OPERATOR_OPTIONS: { value: import('$lib/models/types').FilterOperator; label: string }[] = [
     { value: 'any', label: 'is any value' },
@@ -58,6 +80,17 @@
 
   function addRule() {
     rules = [...rules, { id: nanoid(), field: 'status', operator: 'eq', value: 'todo' }];
+  }
+
+  /** Reset a rule's value to a sensible default when its target field changes. */
+  function onFieldChange(rule: FilterRule) {
+    if (rule.field === 'sourcePageId') {
+      rule.value = isMultiValue(rule) ? [] : '';
+    } else if (rule.field === 'sourcePageTags') {
+      rule.value = isMultiValue(rule) ? [] : '';
+    } else {
+      rule.value = '';
+    }
   }
 
   function removeRule(id: string) {
@@ -108,6 +141,34 @@
       rule.value = raw;
     }
   }
+
+  /** True when the rule targets a specific source note (needs a note picker). */
+  function isNoteField(rule: FilterRule): boolean {
+    return rule.field === 'sourcePageId';
+  }
+
+  /** True when the operator selects multiple values (renders a multi-select). */
+  function isMultiValue(rule: FilterRule): boolean {
+    return rule.operator === 'in' || rule.operator === 'not_in';
+  }
+
+  function getSelectedNoteIds(rule: FilterRule): string[] {
+    if (Array.isArray(rule.value)) return rule.value as string[];
+    return rule.value ? [String(rule.value)] : [];
+  }
+
+  function setSingleNote(rule: FilterRule, id: string) {
+    rule.value = id;
+  }
+
+  function setMultiNotes(rule: FilterRule, select: HTMLSelectElement) {
+    rule.value = Array.from(select.selectedOptions).map((o) => o.value);
+  }
+
+  /** Whether the value control should be hidden entirely for this operator. */
+  function hidesValue(rule: FilterRule): boolean {
+    return rule.operator === 'exists' || rule.operator === 'not_exists' || rule.operator === 'any';
+  }
 </script>
 
 <div class="modal-backdrop" onclick={handleBackdropClick} onkeydown={(e) => e.key === 'Escape' && onclose()} role="dialog" aria-modal="true" aria-label="Configure lane" tabindex="-1">
@@ -143,8 +204,8 @@
       <div class="rules-list">
         {#each rules as rule (rule.id)}
           <div class="rule-row">
-            <select bind:value={rule.field} class="rule-select">
-              {#each FIELD_OPTIONS as opt}
+            <select bind:value={rule.field} onchange={() => onFieldChange(rule)} class="rule-select">
+              {#each FILTER_FIELD_OPTIONS as opt}
                 <option value={opt.value}>{opt.label}</option>
               {/each}
             </select>
@@ -153,13 +214,46 @@
                 <option value={opt.value}>{opt.label}</option>
               {/each}
             </select>
-            {#if rule.operator !== 'exists' && rule.operator !== 'not_exists' && rule.operator !== 'any'}
-              <input
-                class="rule-value"
-                value={getRuleValue(rule)}
-                oninput={(e) => setRuleValue(rule, (e.target as HTMLInputElement).value)}
-                placeholder="value…"
-              />
+            {#if !hidesValue(rule)}
+              {#if isNoteField(rule)}
+                {#if isMultiValue(rule)}
+                  <select
+                    class="rule-value note-multi"
+                    multiple
+                    onchange={(e) => setMultiNotes(rule, e.currentTarget as HTMLSelectElement)}
+                  >
+                    {#each noteOptions as note}
+                      <option value={note.id} selected={getSelectedNoteIds(rule).includes(note.id)}>{note.title}</option>
+                    {/each}
+                  </select>
+                {:else}
+                  <select
+                    class="rule-value"
+                    value={getSelectedNoteIds(rule)[0] ?? ''}
+                    onchange={(e) => setSingleNote(rule, (e.target as HTMLSelectElement).value)}
+                  >
+                    <option value="" disabled>Select a note…</option>
+                    {#each noteOptions as note}
+                      <option value={note.id}>{note.title}</option>
+                    {/each}
+                  </select>
+                {/if}
+              {:else if rule.field === 'sourcePageTags'}
+                <input
+                  class="rule-value"
+                  list="note-tag-options"
+                  value={getRuleValue(rule)}
+                  oninput={(e) => setRuleValue(rule, (e.target as HTMLInputElement).value)}
+                  placeholder={isMultiValue(rule) ? 'tag1, tag2…' : 'tag…'}
+                />
+              {:else}
+                <input
+                  class="rule-value"
+                  value={getRuleValue(rule)}
+                  oninput={(e) => setRuleValue(rule, (e.target as HTMLInputElement).value)}
+                  placeholder="value…"
+                />
+              {/if}
             {/if}
             <button class="btn-ghost icon-btn remove-rule" onclick={() => removeRule(rule.id)} aria-label="Remove rule">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -170,6 +264,12 @@
           </div>
         {/each}
       </div>
+
+      <datalist id="note-tag-options">
+        {#each noteTagOptions as tag}
+          <option value={tag}></option>
+        {/each}
+      </datalist>
 
       <button class="btn-ghost add-rule-btn" onclick={addRule}>+ Add filter</button>
     </div>
@@ -276,6 +376,9 @@
   .rule-select { flex: 1; min-width: 0; }
 
   .rule-value { flex: 1.2; min-width: 0; }
+
+  .rule-row:has(.note-multi) { align-items: flex-start; }
+  .note-multi { min-height: 68px; padding: 4px; }
 
   .remove-rule { flex-shrink: 0; color: var(--text-muted); }
 

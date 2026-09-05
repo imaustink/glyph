@@ -341,7 +341,7 @@ describe('tasksStore', () => {
       const filter: FilterSet = { conjunction: 'and', rules: [] };
       const result = store.getFiltered(filter);
 
-      expect(repo.applyFilter).toHaveBeenCalledWith(tasks, filter);
+      expect(repo.applyFilter).toHaveBeenCalledWith(tasks, filter, undefined);
       expect(result).toEqual([tasks[0]]);
     });
   });

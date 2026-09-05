@@ -53,6 +53,16 @@ func BuildTaskFilterSQL(fs model.FilterSet, argOffset int) (clause string, args 
 			continue
 		}
 
+		if rule.Field == "sourcePageTags" {
+			c, a, n := buildSourcePageTagsClause(rule, nextArg)
+			if c != "" {
+				clauses = append(clauses, c)
+				args = append(args, a...)
+				nextArg = n
+			}
+			continue
+		}
+
 		col, ok := allowedTaskFields[rule.Field]
 		if !ok {
 			// Skip unknown fields — forward-compat with new TS fields
@@ -113,6 +123,41 @@ func buildScalarClause(col string, rule model.FilterRule, offset int) (string, [
 		return fmt.Sprintf("%s IS NOT NULL", col), nil, offset
 	case model.FilterOpNotExists:
 		return fmt.Sprintf("%s IS NULL", col), nil, offset
+	default:
+		return "", nil, offset
+	}
+}
+
+// buildSourcePageTagsClause filters tasks by the tags of their source note
+// (source_page_id → pages.tags) using a correlated EXISTS subquery.
+func buildSourcePageTagsClause(rule model.FilterRule, offset int) (string, []interface{}, int) {
+	const existsBase = "SELECT 1 FROM pages p WHERE p.id = tasks.source_page_id"
+
+	switch rule.Operator {
+	case model.FilterOpContains, model.FilterOpEq:
+		return fmt.Sprintf("EXISTS (%s AND $%d = ANY(p.tags))", existsBase, offset),
+			[]interface{}{fmt.Sprint(rule.Value)}, offset + 1
+	case model.FilterOpNeq:
+		return fmt.Sprintf("NOT EXISTS (%s AND $%d = ANY(p.tags))", existsBase, offset),
+			[]interface{}{fmt.Sprint(rule.Value)}, offset + 1
+	case model.FilterOpIn:
+		vals, err := toStringSlice(rule.Value)
+		if err != nil || len(vals) == 0 {
+			return "", nil, offset
+		}
+		ps, iargs := buildInArgs(vals, offset)
+		return fmt.Sprintf("EXISTS (%s AND p.tags && ARRAY[%s])", existsBase, ps), iargs, offset + len(vals)
+	case model.FilterOpNotIn:
+		vals, err := toStringSlice(rule.Value)
+		if err != nil || len(vals) == 0 {
+			return "", nil, offset
+		}
+		ps, iargs := buildInArgs(vals, offset)
+		return fmt.Sprintf("NOT EXISTS (%s AND p.tags && ARRAY[%s])", existsBase, ps), iargs, offset + len(vals)
+	case model.FilterOpExists:
+		return fmt.Sprintf("EXISTS (%s AND array_length(p.tags, 1) > 0)", existsBase), nil, offset
+	case model.FilterOpNotExists:
+		return fmt.Sprintf("NOT EXISTS (%s AND array_length(p.tags, 1) > 0)", existsBase), nil, offset
 	default:
 		return "", nil, offset
 	}
