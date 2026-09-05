@@ -12,7 +12,10 @@
 package handler
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -33,6 +36,42 @@ func bindJSON(c *gin.Context, v interface{}) bool {
 		return false
 	}
 	return true
+}
+
+// bindJSONWithKeys binds the request body into v (with the same validation as
+// bindJSON) and additionally returns the set of top-level JSON keys that were
+// present in the raw body.
+//
+// This lets PATCH handlers distinguish an explicitly-null field (e.g.
+// {"parentId": null}, meaning "move to the top level") from an omitted field
+// (meaning "leave unchanged"). A pointer-based DTO alone cannot tell these
+// apart — both decode to a nil pointer.
+func bindJSONWithKeys(c *gin.Context, v interface{}) (map[string]json.RawMessage, bool) {
+	raw, err := c.GetRawData()
+	if err != nil {
+		slog.Debug("request read error", "method", c.Request.Method, "path", c.Request.URL.Path, "error", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return nil, false
+	}
+	// Restore the body so ShouldBindJSON (with validation) can read it again.
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+	if !bindJSON(c, v) {
+		return nil, false
+	}
+	keys := map[string]json.RawMessage{}
+	if len(bytes.TrimSpace(raw)) > 0 {
+		if err := json.Unmarshal(raw, &keys); err != nil {
+			// v already bound successfully, so this should not happen; treat a
+			// malformed top-level object as "no keys" rather than failing.
+			slog.Debug("request key scan error", "method", c.Request.Method, "path", c.Request.URL.Path, "error", err)
+		}
+	}
+	return keys, true
+}
+
+// isJSONNull reports whether a raw JSON value is the literal `null`.
+func isJSONNull(raw json.RawMessage) bool {
+	return string(bytes.TrimSpace(raw)) == "null"
 }
 
 func parseUUID(c *gin.Context, param string) (uuid.UUID, bool) {
