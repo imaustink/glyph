@@ -30,7 +30,7 @@ Glyph is a notes-taking and task-tracking app. Key ideas:
 |---|---|
 | Framework | SvelteKit 2 + Svelte 5 (runes) |
 | Language | TypeScript (strict) |
-| Editor | TipTap 3 (`@tiptap/core`, `@tiptap/starter-kit`) |
+| Editor | TipTap 3 (`@tiptap/core`, `@tiptap/starter-kit`, `@tiptap/markdown`) |
 | Styling | Svelte scoped `<style>` + CSS custom properties (no CSS-in-JS library) |
 | Search | Fuse.js 7 (`FuseSearchProvider`) |
 | IDs | `nanoid` |
@@ -122,6 +122,7 @@ src/
         SearchModal.svelte         # ⌘K overlay, inline search
       shared/
         TagInput.svelte            # Reusable tag pill input with autocomplete
+        MarkdownEditor.svelte      # Reusable WYSIWYG markdown editor (TipTap StarterKit + @tiptap/markdown); value in/out is a markdown string
   routes/
     +layout.svelte                 # App shell: loads all stores, sidebar, ⌘K / ⌘N handlers
     +page.svelte                   # Root — redirects to first page on first load
@@ -318,6 +319,8 @@ Page content is stored separately from the tree to keep the tree reads lightweig
 - `$effect` in `.svelte.ts` store files does **not** run during SSR. Stores call `load()` from `onMount` in the layout to avoid SSR issues.
 - `LaneConfig` intentionally initializes its local `$state` from `lane` prop at mount time (not reactively). This is correct — the modal is destroyed and recreated each time it opens for a different lane. The `const init = lane` pattern suppresses the Svelte 5 `state_referenced_locally` warning while making the intent explicit.
 - The `@tiptap/extension-list-item` package must be installed separately even though `@tiptap/starter-kit` includes list items internally. `TaskLinkExtension` extends the exported `ListItem` class directly.
+- **Task description is a WYSIWYG markdown editor** (`MarkdownEditor.svelte`), not the heavy page `Editor.svelte`. It uses `StarterKit` + the official `@tiptap/markdown` extension. `Task.description` remains a plain `string` but now stores **markdown text** (via `editor.getMarkdown()` / `setContent(md, { contentType: 'markdown' })`). This keeps it directly searchable (`FuseSearchProvider` indexes `t.description` as body text with no HTML/JSON pollution) and backward-compatible with pre-existing plain-text descriptions. The task detail page wraps the editor in `{#key task.id}` so it remounts per task, and debounce-saves the markdown (600ms) via its `onchange` callback. Creating subtasks from bullets inside a description is intentionally out of scope.
+- All `@tiptap/*` packages must share the **exact same version** — `@tiptap/markdown` declares a strict `=3.31.3` peer on `@tiptap/core`/`@tiptap/pm`. When upgrading, bump every `@tiptap/*` dependency together.
 - **`TaskHoverPreview` must not close on `mouseenter`.** The preview floats *above* the bullet, so reaching its "Open" link means the pointer leaves the bullet and travels over other editor content. `Editor.svelte` therefore uses a **deferred close** (`scheduleHoverClose`, ~180 ms) on `mouseout`/non-bullet `mouseover`, and the preview's own `onenter`/`onleave` callbacks (`cancelHoverClose` / `clearHoverPreview`) keep it open while hovered. Never wire the preview's `onmouseenter` to `onclose` — that regresses the "Open" button (it hides before it can be clicked).
 - `TaskCreationPopover` has a **URL/link field** mirroring the task-detail page. It is gated by `canUnfurl` (`storageMode === 'api'`) OR an existing `task.link`, so the input only appears in API mode (the `/api/v1/unfurl` endpoint is API-only). The link is persisted immediately via `tasksStore.updateTask(taskId, { link })` (not through the debounced priority/dueDate/tags persist effect). A saved link renders via the shared `LinkPreview` component with a remove button.
 
