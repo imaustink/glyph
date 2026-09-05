@@ -53,8 +53,7 @@ test.describe('Tasks', () => {
 		});
 	});
 
-	test('create a task via TODO bullet in editor', async ({ page }) => {
-		// Navigate to the Getting Started page.
+	test('create a task via TODO bullet in editor', async ({ page }) => {		// Navigate to the Getting Started page.
 		const editor = page.locator('main .tiptap-editor');
 		await editor.click();
 
@@ -753,5 +752,65 @@ test.describe('Tasks', () => {
 		await expect(newLane.locator('.task-card')).toHaveCount(
 			await page.locator('.lane').first().locator('.task-card').count()
 		);
+	});
+
+	test('task creation popover exposes a URL field', async ({ page, storageMode }) => {
+		// The URL/unfurl input only renders in API mode (needs the unfurl endpoint).
+		test.skip(storageMode !== 'api', 'Link unfurl only available in API mode');
+
+		const editor = page.locator('main .tiptap-editor');
+		await editor.click();
+		await editor.pressSequentially('# TODO', { delay: 30 });
+		await editor.press('Enter');
+		await editor.pressSequentially('- Task with URL', { delay: 30 });
+
+		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
+		await expect(popover).toBeVisible({ timeout: 5_000 });
+
+		// Reveal the optional fields.
+		await popover.locator('.expand-btn').click();
+
+		const linkInput = popover.locator('.link-input');
+		await expect(linkInput).toBeVisible();
+
+		// Invalid URLs are rejected with an inline error.
+		await linkInput.fill('not a valid url');
+		await linkInput.press('Enter');
+		await expect(popover.locator('.link-error')).toBeVisible({ timeout: 3_000 });
+
+		await popover.locator('button.btn-primary').click();
+		await expect(popover).not.toBeVisible();
+	});
+
+	test('hover preview stays open when moving the pointer onto it', async ({ page }) => {
+		const editor = page.locator('main .tiptap-editor');
+		await editor.click();
+		await editor.pressSequentially('# TODO', { delay: 30 });
+		await editor.press('Enter');
+		await editor.pressSequentially('- Hover preview task', { delay: 30 });
+
+		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
+		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await popover.locator('button.btn-primary').click();
+		await expect(popover).not.toBeVisible();
+
+		// Hover the linked bullet to trigger the floating preview.
+		const bullet = page.locator('main .tiptap-editor li[data-task-id]', {
+			hasText: 'Hover preview task'
+		});
+		await bullet.hover();
+
+		const preview = page.locator('.preview[role="tooltip"]');
+		await expect(preview).toBeVisible({ timeout: 5_000 });
+
+		// Move the pointer onto the preview — it must stay visible so "Open" is clickable.
+		const openLink = preview.locator('.preview-link');
+		await openLink.hover();
+		await expect(preview).toBeVisible();
+		await expect(openLink).toBeVisible();
+
+		// Clicking "Open" navigates to the task detail page.
+		await openLink.click();
+		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 5_000 });
 	});
 });

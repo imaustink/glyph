@@ -108,8 +108,8 @@ src/
     components/
       editor/
         Editor.svelte              # Mounts TipTap; handles hover preview state; debounced save
-        TaskCreationPopover.svelte # Modal shown when a new TODO bullet is detected
-        TaskHoverPreview.svelte    # Floating tooltip anchored near the linked bullet
+        TaskCreationPopover.svelte # Modal shown when a new TODO bullet is detected (title, priority, due date, tags, and URL/link)
+        TaskHoverPreview.svelte    # Floating tooltip anchored near the linked bullet (stays open while hovered so "Open" is clickable)
       sidebar/
         Sidebar.svelte             # App name, nav links, section header, new page/folder buttons
         PageTree.svelte            # Renders children of a given parentId
@@ -318,6 +318,8 @@ Page content is stored separately from the tree to keep the tree reads lightweig
 - `$effect` in `.svelte.ts` store files does **not** run during SSR. Stores call `load()` from `onMount` in the layout to avoid SSR issues.
 - `LaneConfig` intentionally initializes its local `$state` from `lane` prop at mount time (not reactively). This is correct — the modal is destroyed and recreated each time it opens for a different lane. The `const init = lane` pattern suppresses the Svelte 5 `state_referenced_locally` warning while making the intent explicit.
 - The `@tiptap/extension-list-item` package must be installed separately even though `@tiptap/starter-kit` includes list items internally. `TaskLinkExtension` extends the exported `ListItem` class directly.
+- **`TaskHoverPreview` must not close on `mouseenter`.** The preview floats *above* the bullet, so reaching its "Open" link means the pointer leaves the bullet and travels over other editor content. `Editor.svelte` therefore uses a **deferred close** (`scheduleHoverClose`, ~180 ms) on `mouseout`/non-bullet `mouseover`, and the preview's own `onenter`/`onleave` callbacks (`cancelHoverClose` / `clearHoverPreview`) keep it open while hovered. Never wire the preview's `onmouseenter` to `onclose` — that regresses the "Open" button (it hides before it can be clicked).
+- `TaskCreationPopover` has a **URL/link field** mirroring the task-detail page. It is gated by `canUnfurl` (`storageMode === 'api'`) OR an existing `task.link`, so the input only appears in API mode (the `/api/v1/unfurl` endpoint is API-only). The link is persisted immediately via `tasksStore.updateTask(taskId, { link })` (not through the debounced priority/dueDate/tags persist effect). A saved link renders via the shared `LinkPreview` component with a remove button.
 
 ---
 

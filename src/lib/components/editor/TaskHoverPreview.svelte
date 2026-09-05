@@ -7,12 +7,16 @@
     taskId,
     x,
     y,
-    onclose
+    onclose,
+    onenter,
+    onleave
   }: {
     taskId: string;
     x: number;
     y: number;
     onclose: () => void;
+    onenter?: () => void;
+    onleave?: () => void;
   } = $props();
 
   const task = $derived(tasksStore.getById(taskId));
@@ -22,7 +26,8 @@
   <div
     class="preview"
     style="left: {x}px; top: {y}px; transform: translate(-50%, -100%);"
-    onmouseenter={onclose}
+    onmouseenter={onenter}
+    onmouseleave={onleave}
     role="tooltip"
   >
     <div class="preview-header">
