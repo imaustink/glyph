@@ -34,6 +34,7 @@
   let pending = $state<PendingTaskDetails | null>(null);
   let hoverPreview = $state<{ taskId: string; x: number; y: number } | null>(null);
   let hoverTimer: ReturnType<typeof setTimeout> | null = null;
+  let hoverCloseTimer: ReturnType<typeof setTimeout> | null = null;
   let removedBulletTimer: ReturnType<typeof setTimeout> | null = null;
 
   // ─── Composables ────────────────────────────────────────────────────────────
@@ -147,11 +148,12 @@
   function handleEditorMouseover(e: MouseEvent) {
     const target = e.target as HTMLElement;
     const li = target.closest('[data-task-id]') as HTMLElement | null;
-    if (!li) { clearHoverPreview(); return; }
+    if (!li) { scheduleHoverClose(); return; }
 
     const taskId = li.getAttribute('data-task-id');
     if (!taskId) return;
 
+    cancelHoverClose();
     if (hoverTimer) clearTimeout(hoverTimer);
     hoverTimer = setTimeout(() => {
       const rect = li.getBoundingClientRect();
@@ -162,12 +164,28 @@
   function handleEditorMouseout(e: MouseEvent) {
     const related = e.relatedTarget as HTMLElement | null;
     if (related?.closest('[data-task-id]')) return;
-    clearHoverPreview();
+    // Delay the close so the pointer can travel from the bullet onto the
+    // floating preview (to click "Open") without it disappearing.
+    scheduleHoverClose();
   }
 
+  /** Cancel a pending open and close the preview immediately. */
   function clearHoverPreview() {
     if (hoverTimer) clearTimeout(hoverTimer);
+    if (hoverCloseTimer) { clearTimeout(hoverCloseTimer); hoverCloseTimer = null; }
     hoverPreview = null;
+  }
+
+  /** Schedule closing the preview shortly, allowing the pointer to reach it. */
+  function scheduleHoverClose() {
+    if (hoverTimer) clearTimeout(hoverTimer);
+    if (hoverCloseTimer) clearTimeout(hoverCloseTimer);
+    hoverCloseTimer = setTimeout(() => { hoverPreview = null; }, 180);
+  }
+
+  /** Keep the preview open (pointer entered it). */
+  function cancelHoverClose() {
+    if (hoverCloseTimer) { clearTimeout(hoverCloseTimer); hoverCloseTimer = null; }
   }
 
   // ─── Lifecycle ──────────────────────────────────────────────────────────────
@@ -257,6 +275,7 @@
     const flushPromise = contentSave.flushAll();
     uiStore.registerPendingFlush(flushPromise);
     if (hoverTimer) clearTimeout(hoverTimer);
+    if (hoverCloseTimer) clearTimeout(hoverCloseTimer);
     if (removedBulletTimer) clearTimeout(removedBulletTimer);
     contentSave.destroy();
     bulletRemoval.destroy();
@@ -285,6 +304,8 @@
     x={hoverPreview.x}
     y={hoverPreview.y}
     onclose={clearHoverPreview}
+    onenter={cancelHoverClose}
+    onleave={clearHoverPreview}
   />
 {/if}
 

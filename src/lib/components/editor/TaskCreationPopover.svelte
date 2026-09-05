@@ -2,9 +2,12 @@
   import { onDestroy } from 'svelte';
   import { tasksStore } from '$lib/stores/tasks.svelte';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
-  import type { Priority } from '$lib/models/types';
+  import type { Priority, LinkMeta } from '$lib/models/types';
   import TagInput from '$lib/components/shared/TagInput.svelte';
   import DatePicker from '$lib/components/shared/DatePicker.svelte';
+  import LinkPreview from '$lib/components/tasks/LinkPreview.svelte';
+  import { storageMode } from '$lib/storage/config';
+  import { api } from '$lib/storage/apiClient';
 
   let {
     taskId,
@@ -26,6 +29,13 @@
   let initializedForTaskId = $state<string | null>(null);
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // ── Link / URL unfurl ──────────────────────────────────────────────────────
+  const canUnfurl = storageMode === 'api';
+  let link = $state<LinkMeta | null>(null);
+  let linkInput = $state('');
+  let linkLoading = $state(false);
+  let linkError = $state('');
+
   const allTags = $derived(
     [...new Set(tasksStore.tasks.flatMap((t) => t.tags))]
   );
@@ -40,7 +50,9 @@
     priority = task.priority;
     dueDate = task.dueDate ?? '';
     tags = [...task.tags];
-    expanded = task.priority !== 'none' || !!task.dueDate || task.tags.length > 0;
+    link = task.link;
+    expanded =
+      task.priority !== 'none' || !!task.dueDate || task.tags.length > 0 || !!task.link;
     initializedForTaskId = taskId;
   });
 
@@ -68,6 +80,63 @@
 
   function handleTitleInput() {
     ontitlechange(title);
+  }
+
+  async function addLink() {
+    const raw = linkInput.trim();
+    if (!raw) return;
+
+    let normalizedUrl: string;
+    try {
+      const parsed = new URL(raw.startsWith('http') ? raw : `https://${raw}`);
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        linkError = 'Only http/https URLs are supported';
+        return;
+      }
+      if (!parsed.hostname.includes('.')) {
+        linkError = 'Please enter a valid URL';
+        return;
+      }
+      normalizedUrl = parsed.href;
+    } catch {
+      linkError = 'Please enter a valid URL';
+      return;
+    }
+
+    linkError = '';
+    linkLoading = true;
+    try {
+      const meta = await api.post<LinkMeta>('/api/v1/unfurl', { url: normalizedUrl });
+      await tasksStore.updateTask(taskId, { link: meta });
+      link = meta;
+      linkInput = '';
+    } catch {
+      linkError = 'Failed to fetch link preview';
+    } finally {
+      linkLoading = false;
+    }
+  }
+
+  function handleLinkKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.stopPropagation();
+      void addLink();
+    }
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      linkInput = '';
+      linkError = '';
+    }
+  }
+
+  async function removeLink() {
+    try {
+      await tasksStore.updateTask(taskId, { link: null });
+      link = null;
+    } catch {
+      notificationsStore.error('Failed to remove link.');
+    }
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -123,6 +192,43 @@
         <span class="field-label">Tags</span>
         <TagInput bind:tags suggestions={allTags} />
       </div>
+
+      {#if canUnfurl || link}
+        <div class="link-field">
+          <span class="field-label link-field-label">URL</span>
+          <div class="link-field-body">
+            {#if link}
+              <LinkPreview {link} onremove={removeLink} />
+            {:else if canUnfurl}
+              <div class="link-input-row">
+                <input
+                  type="url"
+                  class="link-input"
+                  placeholder="Paste a URL…"
+                  bind:value={linkInput}
+                  onkeydown={handleLinkKeydown}
+                  disabled={linkLoading}
+                />
+                <button
+                  class="btn-ghost link-add-btn"
+                  onclick={addLink}
+                  disabled={linkLoading || !linkInput.trim()}
+                  type="button"
+                >
+                  {#if linkLoading}
+                    <span class="link-spinner"></span>
+                  {:else}
+                    Add
+                  {/if}
+                </button>
+              </div>
+              {#if linkError}
+                <p class="link-error">{linkError}</p>
+              {/if}
+            {/if}
+          </div>
+        </div>
+      {/if}
     </div>
   {/if}
 
@@ -206,6 +312,66 @@
     font-size: var(--font-size-sm);
     color: var(--text-secondary);
     text-align: right;
+  }
+
+  .link-field {
+    display: grid;
+    grid-template-columns: 80px 1fr;
+    gap: 10px;
+  }
+
+  .link-field-label {
+    padding-top: 8px;
+  }
+
+  .link-field-body {
+    min-width: 0;
+  }
+
+  .link-input-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .link-input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
+    padding: 6px 10px;
+    color: var(--text-primary);
+  }
+  .link-input:focus { border-color: var(--accent); outline: none; }
+
+  .link-add-btn {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    min-width: 52px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .link-error {
+    margin: 6px 0 0;
+    font-size: var(--font-size-xs);
+    color: var(--priority-urgent);
+  }
+
+  .link-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--text-muted);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: link-spin 0.6s linear infinite;
+  }
+
+  @keyframes link-spin {
+    to { transform: rotate(360deg); }
   }
 
   .popover-footer {
