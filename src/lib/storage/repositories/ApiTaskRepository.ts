@@ -1,4 +1,5 @@
 import { api } from '$lib/storage/apiClient';
+import type { FilterContext } from '$lib/storage/filterUtils';
 import type { Task, FilterSet } from '$lib/models/types';
 
 /**
@@ -39,7 +40,9 @@ export class ApiTaskRepository {
 		return (tasks ?? [])[0] ?? null;
 	}
 
-	applyFilter(tasks: Task[], filterSet: FilterSet): Task[] | Promise<Task[]> {
+	// The server resolves synthetic fields (e.g. sourcePageTags) via SQL, so the
+	// client-side FilterContext is accepted for interface parity but unused here.
+	applyFilter(tasks: Task[], filterSet: FilterSet, _ctx?: FilterContext): Task[] | Promise<Task[]> {
 		if (filterSet.rules.length === 0) return tasks;
 		return api.post<Task[]>('/api/v1/tasks/filter', filterSet);
 	}

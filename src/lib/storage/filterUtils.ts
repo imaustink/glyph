@@ -10,9 +10,62 @@
 import type { Task, FilterSet, FilterRule, FilterValue } from '$lib/models/types';
 
 /** Fields on Task that hold ISO date strings and may be compared with before/after operators. */
-const DATE_FIELDS: ReadonlySet<keyof Task> = new Set(['dueDate', 'createdAt', 'updatedAt']);
+const DATE_FIELDS: ReadonlySet<string> = new Set(['dueDate', 'createdAt', 'updatedAt']);
 
-export function matchesRule(task: Task, rule: FilterRule): boolean {
+/**
+ * Context that resolves synthetic (computed) filter fields which are not direct
+ * properties of a Task. Supplied by callers that have access to related data
+ * (e.g. the page tree). Optional — when absent, synthetic fields resolve to
+ * empty values so their rules simply match nothing.
+ */
+export interface FilterContext {
+  /** Return the tags of the note (source page) a task was created from. */
+  getSourcePageTags?: (task: Task) => string[];
+}
+
+/** Case-insensitive membership test for a tag within a tag list. */
+function hasTag(tags: string[], value: FilterValue): boolean {
+  const needle = String(value ?? '').toLowerCase();
+  return tags.some((t) => t.toLowerCase() === needle);
+}
+
+/** True when the tag list intersects any of the provided values. */
+function intersectsTags(tags: string[], value: FilterValue): boolean {
+  const values = Array.isArray(value) ? value : [value];
+  const lowered = new Set(tags.map((t) => t.toLowerCase()));
+  return values.some((v) => lowered.has(String(v ?? '').toLowerCase()));
+}
+
+/** Evaluate a rule against an array of tags (used for the synthetic sourcePageTags field). */
+function matchesTagRule(tags: string[], rule: FilterRule): boolean {
+  switch (rule.operator) {
+    case 'any':
+      return true;
+    case 'contains':
+    case 'eq':
+      return hasTag(tags, rule.value);
+    case 'neq':
+      return !hasTag(tags, rule.value);
+    case 'in':
+      return intersectsTags(tags, rule.value);
+    case 'not_in':
+      return !intersectsTags(tags, rule.value);
+    case 'exists':
+      return tags.length > 0;
+    case 'not_exists':
+      return tags.length === 0;
+    default:
+      return true;
+  }
+}
+
+export function matchesRule(task: Task, rule: FilterRule, ctx?: FilterContext): boolean {
+  // Synthetic field: tags of the task's source note.
+  if (rule.field === 'sourcePageTags') {
+    const tags = ctx?.getSourcePageTags?.(task) ?? [];
+    return matchesTagRule(tags, rule);
+  }
+
   const raw = task[rule.field];
 
   switch (rule.operator) {
@@ -42,10 +95,10 @@ export function matchesRule(task: Task, rule: FilterRule): boolean {
   }
 }
 
-export function applyFilter(tasks: Task[], filterSet: FilterSet): Task[] {
+export function applyFilter(tasks: Task[], filterSet: FilterSet, ctx?: FilterContext): Task[] {
   if (filterSet.rules.length === 0) return tasks;
   return tasks.filter((task) => {
-    const results = filterSet.rules.map((rule) => matchesRule(task, rule));
+    const results = filterSet.rules.map((rule) => matchesRule(task, rule, ctx));
     return filterSet.conjunction === 'and'
       ? results.every(Boolean)
       : results.some(Boolean);

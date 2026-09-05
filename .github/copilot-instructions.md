@@ -16,7 +16,7 @@ Glyph is a notes-taking and task-tracking app. Key ideas:
 
 - A **WYSIWYG markdown editor** (TipTap / ProseMirror). Typing `#` instantly becomes a heading, `-` becomes a bullet, etc.
 - Bullet list items placed under a heading called **TODO** automatically trigger task creation. The bullet and the resulting task are **bidirectionally linked** via a stable `nodeId` attribute in the ProseMirror document.
-- A **kanban-style task board** with user-configurable lanes. Each lane has filter rules and a sort mode (auto / field / manual). The sort system is abstracted for future AI sorting.
+- A **kanban-style task board** with user-configurable lanes. Each lane has filter rules (including by source note or source-note tag) and a sort mode (auto / field / manual). The sort system is abstracted for future AI sorting.
 - A **hierarchical page tree** — pages and folders, unlimited depth.
 - A **full-text search** page and `⌘K` modal, powered by Fuse.js. The search layer is abstracted for future AI/semantic search.
 - **Two storage backends** — LocalStorage (offline, no setup) or Go REST API + PostgreSQL. The storage abstraction layer lets consumers use either without code changes.
@@ -194,6 +194,15 @@ export interface SearchProvider {
 
 The search index is rebuilt (debounced) on every store mutation via a `$effect` in `search/+page.svelte`. When swapping to an AI provider, set `isAsync: true` and show a spinner while the `Promise` resolves.
 
+### Filter abstraction (lane filters)
+
+Lane filtering is a pure function in [filterUtils.ts](../src/lib/storage/filterUtils.ts): `applyFilter(tasks, filterSet, ctx?)`. Rules target a `TaskFilterField`, which is any `keyof Task` **plus synthetic (computed) fields** that aren't stored on the Task.
+
+- **Specific source note:** `field: 'sourcePageId'` — a direct Task key. The `LaneConfig` UI renders a **note picker** (`<select>` of pages) instead of a free-text box for this field. Multi-value operators (`in`/`not_in`) render a `multiple` select.
+- **Source note tags:** `field: 'sourcePageTags'` — a **synthetic** field resolved from the task's source page. Because tags live on the page, not the task, `applyFilter` takes an optional `FilterContext` with `getSourcePageTags(task)`. The board pages ([tasks/+page.svelte](../src/routes/tasks/+page.svelte) and the folder board) build this context from `pagesStore` and pass it through `tasksStore.getFiltered(filterSet, ctx)`. Referencing `pagesStore.nodes` inside the filtering `$effect`/`$derived` makes lanes re-filter when a note's tags change.
+
+**Backend parity:** In API mode, filtering is delegated to Go (`POST /api/v1/tasks/filter`), so the `FilterContext` is unused client-side (ApiTaskRepository ignores it). The server resolves `sourcePageId` as a normal column and `sourcePageTags` via a correlated `EXISTS` subquery on `pages` (see `buildSourcePageTagsClause` in [filter_sql.go](../api/internal/store/filter_sql.go), mirrored in `memstore`). When adding a new synthetic filter field, update **four** places to keep parity: `filterUtils.ts`, `filter_sql.go`, `memstore.go`, and the `LaneConfig` UI.
+
 ### TODO-bullet → Task pipeline
 
 1. User types a bullet under any heading whose `.textContent` matches `/^todo$/i`.
@@ -253,7 +262,8 @@ All interfaces are in `src/lib/models/types.ts`. Key types:
 | `Task` | A task with status, priority, dueDate, tags, description, and `sourceNodeId` / `sourcePageId` |
 | `Lane` | A kanban column with a `FilterSet`, `SortConfig`, and optional `taskOrder` |
 | `FilterSet` | `{ conjunction: 'and' \| 'or', rules: FilterRule[] }` |
-| `FilterRule` | `{ field: keyof Task, operator: FilterOperator, value: unknown }` |
+| `FilterRule` | `{ field: TaskFilterField, operator: FilterOperator, value: FilterValue }` |
+| `TaskFilterField` | `keyof Task \| 'sourcePageTags'` — filter fields include Task keys (e.g. `sourcePageId` = specific source note) plus the synthetic `sourcePageTags` (tags of the task's source note) |
 | `SortConfig` | `{ mode: 'auto' \| 'field' \| 'manual', field?, direction?, taskOrder? }` |
 | `NoteTemplate` | A reusable note template with title, content, tags, and optional default folder |
 | `Organization` | An org with id, name, ownerId |

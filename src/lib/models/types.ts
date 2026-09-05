@@ -124,9 +124,16 @@ export type FilterConjunction = 'and' | 'or';
 /** The set of value types a filter rule can hold. */
 export type FilterValue = string | string[] | number | boolean | null;
 
+/**
+ * Fields a filter rule can target. This is any direct field of a Task, plus
+ * synthetic/computed fields that are resolved from related resources:
+ * - `sourcePageTags`: the tags of the note (source page) a task was created from.
+ */
+export type TaskFilterField = keyof Task | 'sourcePageTags';
+
 export interface FilterRule {
   id: string;
-  field: keyof Task;
+  field: TaskFilterField;
   operator: FilterOperator;
   value: FilterValue;
 }
