@@ -725,6 +725,41 @@ test.describe('Tasks', () => {
 		await expect(allTasksLane.locator('.task-card:has-text("Beta task")')).toHaveCount(0);
 	});
 
+	test('task cards show the source note name', async ({ page }) => {
+		// Create a named note with a task.
+		await createNewPage(page);
+		const noteTitle = page.locator('input.title-edit');
+		await noteTitle.fill('Meeting Notes');
+		await noteTitle.press('Enter');
+
+		const editor = page.locator('main .tiptap-editor');
+		await editor.click();
+		await editor.pressSequentially('# TODO', { delay: 30 });
+		await editor.press('Enter');
+		await editor.pressSequentially('- Follow up task', { delay: 30 });
+
+		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
+		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await popover.locator('button.btn-primary').click();
+		await expect(popover).not.toBeVisible();
+
+		await navigateToTaskBoard(page);
+		const allTasksLane = page.locator('.lane').filter({
+			has: page.locator('.lane-title:has-text("All Tasks")')
+		});
+
+		// The task card should carry a source-note label linking back to the note.
+		const card = allTasksLane.locator('.task-card:has-text("Follow up task")');
+		await expect(card).toBeVisible({ timeout: 5_000 });
+		const sourceLabel = card.locator('.source-note');
+		await expect(sourceLabel).toHaveText(/Meeting Notes/);
+		await expect(sourceLabel).toHaveAttribute('href', /\/notes\//);
+
+		// Clicking the label opens the source note, not the task detail.
+		await sourceLabel.click();
+		await expect(page).toHaveURL(/\/notes\//, { timeout: 5_000 });
+	});
+
 	// ── Status-based auto-sort tests ───────────────────────────────────
 
 	test('auto sort sinks done tasks below active tasks', async ({ page }) => {
