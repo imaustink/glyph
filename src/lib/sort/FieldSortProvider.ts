@@ -1,17 +1,18 @@
 import type { SortProvider } from '$lib/sort/types';
-import type { SortConfig, Task } from '$lib/models/types';
+import type { SortConfig, SortContext, Task } from '$lib/models/types';
 
 const TERMINAL_STATUSES = new Set<string>(['done', 'cancelled']);
 
 /**
  * FieldSortProvider: sorts by any field on Task in a given direction.
  * Falls back to 'createdAt' asc when no field is specified. Synchronous.
+ * The `context` param is accepted for interface parity but unused.
  */
 export class FieldSortProvider implements SortProvider<Task> {
   readonly id = 'field';
   readonly name = 'Sort by Field';
 
-  async sort(items: Task[], config: SortConfig): Promise<Task[]> {
+  async sort(items: Task[], config: SortConfig, _context?: SortContext): Promise<Task[]> {
     const field = (config.field ?? 'createdAt') as keyof Task;
     const dir = config.direction ?? 'asc';
     const mul = dir === 'asc' ? 1 : -1;

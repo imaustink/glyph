@@ -77,6 +77,7 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
       parentId,
       order: nextOrder(),
       tags: [],
+      priority: 'none',
       ...(todoTrigger ? { todoTrigger } : {}),
       isPrivate: true,
       orgId: null,
@@ -104,6 +105,7 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
       parentId,
       order: nextOrder(),
       tags: [],
+      priority: 'none',
       isPrivate: true,
       orgId: null,
       ...makeTimestamps()

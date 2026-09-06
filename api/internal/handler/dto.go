@@ -16,6 +16,7 @@ type UpdatePageRequest struct {
 	ParentID    *uuid.UUID               `json:"parentId"`
 	Order       *int                     `json:"order" binding:"omitempty,gte=0"`
 	Tags        *[]string                `json:"tags"`
+	Priority    *model.Priority          `json:"priority" binding:"omitempty,priority"`
 	TodoTrigger *model.TodoTriggerConfig `json:"todoTrigger"`
 	OrgID       *uuid.UUID               `json:"orgId"`
 	IsPrivate   *bool                    `json:"isPrivate"`
@@ -37,6 +38,9 @@ func (r *UpdatePageRequest) ApplyTo(p *model.Page) {
 	}
 	if r.Tags != nil {
 		p.Tags = *r.Tags
+	}
+	if r.Priority != nil {
+		p.Priority = *r.Priority
 	}
 	if r.TodoTrigger != nil {
 		p.TodoTrigger = r.TodoTrigger

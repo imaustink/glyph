@@ -24,7 +24,7 @@ func scanPage(row interface {
 	var triggerJSON []byte
 	if err := row.Scan(
 		&p.ID, &p.UserID, &p.Type, &p.Title, &p.ParentID,
-		&p.Order, &p.Tags, &triggerJSON, &p.OrgID, &p.IsPrivate, &p.CreatedAt, &p.UpdatedAt,
+		&p.Order, &p.Tags, &p.Priority, &triggerJSON, &p.OrgID, &p.IsPrivate, &p.CreatedAt, &p.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -40,7 +40,7 @@ func scanPage(row interface {
 	return p, nil
 }
 
-const pageColumns = `id, user_id, type, title, parent_id, "order", tags, todo_trigger, org_id, is_private, created_at, updated_at`
+const pageColumns = `id, user_id, type, title, parent_id, "order", tags, priority, todo_trigger, org_id, is_private, created_at, updated_at`
 
 // pageAccessFilter enforces the three-tier access policy for pages.
 // See store.ResourceAccessFilter for the policy definition.
@@ -117,14 +117,18 @@ func (s *pgPageStore) Upsert(ctx context.Context, p *model.Page) (*model.Page, e
 	if p.ID == uuid.Nil {
 		p.ID = uuid.New()
 	}
-	q := `INSERT INTO pages (id, user_id, parent_id, type, title, "order", tags, todo_trigger, org_id, is_private)
-		  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+	if p.Priority == "" {
+		p.Priority = model.PriorityNone
+	}
+	q := `INSERT INTO pages (id, user_id, parent_id, type, title, "order", tags, priority, todo_trigger, org_id, is_private)
+		  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		  ON CONFLICT (id) DO UPDATE SET
 		    parent_id = EXCLUDED.parent_id,
 		    type = EXCLUDED.type,
 		    title = EXCLUDED.title,
 		    "order" = EXCLUDED."order",
 		    tags = EXCLUDED.tags,
+		    priority = EXCLUDED.priority,
 		    todo_trigger = EXCLUDED.todo_trigger,
 		    org_id = EXCLUDED.org_id,
 		    is_private = EXCLUDED.is_private,
@@ -132,7 +136,7 @@ func (s *pgPageStore) Upsert(ctx context.Context, p *model.Page) (*model.Page, e
 		  WHERE pages.user_id = $2
 		  RETURNING ` + pageColumns
 	result, err := scanPage(s.pool.QueryRow(ctx, q,
-		p.ID, p.UserID, p.ParentID, p.Type, p.Title, p.Order, p.Tags, triggerJSON, p.OrgID, p.IsPrivate,
+		p.ID, p.UserID, p.ParentID, p.Type, p.Title, p.Order, p.Tags, p.Priority, triggerJSON, p.OrgID, p.IsPrivate,
 	))
 	if err != nil {
 		return nil, err
@@ -147,11 +151,14 @@ func (s *pgPageStore) Create(ctx context.Context, p *model.Page) (*model.Page, e
 	if p.ID == uuid.Nil {
 		p.ID = uuid.New()
 	}
-	q := `INSERT INTO pages (id, user_id, type, title, parent_id, "order", tags, todo_trigger, org_id, is_private)
-		  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+	if p.Priority == "" {
+		p.Priority = model.PriorityNone
+	}
+	q := `INSERT INTO pages (id, user_id, type, title, parent_id, "order", tags, priority, todo_trigger, org_id, is_private)
+		  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		  RETURNING ` + pageColumns
 	return scanPage(s.pool.QueryRow(ctx, q,
-		p.ID, p.UserID, p.Type, p.Title, p.ParentID, p.Order, p.Tags, triggerJSON, p.OrgID, p.IsPrivate,
+		p.ID, p.UserID, p.Type, p.Title, p.ParentID, p.Order, p.Tags, p.Priority, triggerJSON, p.OrgID, p.IsPrivate,
 	))
 }
 
@@ -160,13 +167,16 @@ func (s *pgPageStore) Update(ctx context.Context, p *model.Page) (*model.Page, e
 	if err != nil {
 		return nil, err
 	}
+	if p.Priority == "" {
+		p.Priority = model.PriorityNone
+	}
 	q := `UPDATE pages
-		  SET type=$1, title=$2, parent_id=$3, "order"=$4, tags=$5, todo_trigger=$6,
-		      org_id=$7, is_private=$8, updated_at=NOW()
-		  WHERE id=$9 AND user_id=$10
+		  SET type=$1, title=$2, parent_id=$3, "order"=$4, tags=$5, priority=$6, todo_trigger=$7,
+		      org_id=$8, is_private=$9, updated_at=NOW()
+		  WHERE id=$10 AND user_id=$11
 		  RETURNING ` + pageColumns
 	return scanPage(s.pool.QueryRow(ctx, q,
-		p.Type, p.Title, p.ParentID, p.Order, p.Tags, triggerJSON,
+		p.Type, p.Title, p.ParentID, p.Order, p.Tags, p.Priority, triggerJSON,
 		p.OrgID, p.IsPrivate, p.ID, p.UserID,
 	))
 }

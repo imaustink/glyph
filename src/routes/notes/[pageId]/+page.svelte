@@ -7,6 +7,8 @@
   import SaveIndicator from '$lib/components/shared/SaveIndicator.svelte';
   import ShareDialog from '$lib/components/shared/ShareDialog.svelte';
   import VisibilityPicker from '$lib/components/shared/VisibilityPicker.svelte';
+  import { PRIORITY_OPTIONS } from '$lib/models/constants';
+  import type { Priority } from '$lib/models/types';
   import { storageMode } from '$lib/storage/config';
   import { authStore } from '$lib/stores/auth.svelte';
   import { onMount } from 'svelte';
@@ -48,6 +50,12 @@
     editingTags = false;
     if (node) {
       await pagesStore.updateNode(node.id, { tags: nodeTags });
+    }
+  }
+
+  async function commitPriority(priority: Priority) {
+    if (node) {
+      await pagesStore.updateNode(node.id, { priority });
     }
   }
 
@@ -103,24 +111,39 @@
         {/if}
       </div>
 
-      <div class="tags-row">
-        {#if editingTags}
-          <div class="tags-edit-wrapper">
-            <TagInput bind:tags={nodeTags} suggestions={allTags} />
-            <button class="btn-ghost" onclick={commitTags}>Done</button>
-          </div>
-        {:else}
-          <div class="tags-display" onclick={() => { editingTags = true; }} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && (editingTags = true)}>
-            {#if node.tags.length === 0}
-              <span class="add-tags-hint">+ Add tags</span>
-            {:else}
-              {#each node.tags as tag}
-                <span class="tag-pill">{tag}</span>
-              {/each}
-              <span class="add-tags-hint">+ Edit</span>
-            {/if}
-          </div>
-        {/if}
+      <div class="meta-row">
+        <div class="tags-col">
+          {#if editingTags}
+            <div class="tags-edit-wrapper">
+              <TagInput bind:tags={nodeTags} suggestions={allTags} />
+              <button class="btn-ghost" onclick={commitTags}>Done</button>
+            </div>
+          {:else}
+            <div class="tags-display" onclick={() => { editingTags = true; }} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && (editingTags = true)}>
+              {#if node.tags.length === 0}
+                <span class="add-tags-hint">+ Add tags</span>
+              {:else}
+                {#each node.tags as tag}
+                  <span class="tag-pill">{tag}</span>
+                {/each}
+                <span class="add-tags-hint">+ Edit</span>
+              {/if}
+            </div>
+          {/if}
+        </div>
+
+        <label class="priority-picker" title="Note priority — drives task-board ordering">
+          <span class="priority-label">Priority</span>
+          <select
+            class="priority-select"
+            value={node.priority ?? 'none'}
+            onchange={(e) => commitPriority((e.target as HTMLSelectElement).value as Priority)}
+          >
+            {#each PRIORITY_OPTIONS as opt}
+              <option value={opt.value}>{opt.label}</option>
+            {/each}
+          </select>
+        </label>
       </div>
     </div>
 
@@ -192,7 +215,43 @@
     outline: none;
   }
 
-  .tags-row { margin-bottom: 4px; min-height: 28px; }
+  .meta-row {
+    margin-bottom: 4px;
+    min-height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .tags-col {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .priority-picker {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .priority-label {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+  }
+
+  .priority-select {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: var(--font-size-xs);
+    padding: 3px 6px;
+    cursor: pointer;
+  }
+  .priority-select:hover { border-color: var(--border-strong); }
+  .priority-select:focus { outline: none; border-color: var(--accent); }
 
   .tags-display {
     display: flex;

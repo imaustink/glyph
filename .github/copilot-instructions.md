@@ -101,7 +101,7 @@ src/
         TaskLinkExtension.ts       # Extends ListItem with nodeId + taskId attrs; setTaskIdForNode command
         TodoDetectionExtension.ts  # ProseMirror plugin — detects unlinked bullets under TODO headings
     sort/
-      AutoSortProvider.ts          # priority weight → dueDate asc (sync, isAsync: false)
+      AutoSortProvider.ts          # note priority → task priority → dueDate asc (sync, isAsync: false)
       FieldSortProvider.ts         # generic field + direction (sync, isAsync: false)
     search/
       FuseSearchProvider.ts        # Fuse.js wrapper (sync, isAsync: false)
@@ -177,10 +177,14 @@ export interface SortProvider<T> {
 
 `Lane.svelte` checks `provider.isAsync` before calling `sort()`. When `true`, it sets `loading = true` and renders skeleton cards. This is the seam for a future AI sort provider — just set `isAsync: true` and return a `Promise` that resolves after the model responds.
 
+`sort()` also takes an optional `SortContext` (third arg) so providers can resolve values from related resources without coupling to stores. Today it carries `getNotePriority(task)`, which `Lane.svelte` wires up from `pagesStore` so tasks can be ordered by their **source note's priority** before the task's own priority. Because note priority is folded into the lane's re-sort fingerprint (and `pagesStore.nodes` is read in the effect), changing a note's priority re-sorts the board reactively.
+
 Currently available providers:
-- `AutoSortProvider` — priority weight then dueDate ASC (sync)
+- `AutoSortProvider` — source-note priority → task priority weight → dueDate ASC → createdAt ASC (sync). Terminal statuses (done/cancelled) always sink to the bottom.
 - `FieldSortProvider` — any `keyof Task`, asc or desc (sync)
 - Manual mode — stored as `lane.sortConfig.taskOrder: string[]`, sorted client-side without a provider
+
+**Note priority:** `TreeNode.priority?: Priority` (defaults to `'none'`) is set from a picker in the note header (`notes/[pageId]`). It is persisted like any other page field (localStorage JSON, and the `pages.priority` column in Postgres, added in migration `000015`). Shared priority helpers live in `constants.ts`: `PRIORITY_OPTIONS` (for selects) and `PRIORITY_WEIGHT` (lower = higher urgency, used by sort providers).
 
 ### Search abstraction
 
@@ -257,7 +261,7 @@ All interfaces are in `src/lib/models/types.ts`. Key types:
 
 | Type | Purpose |
 |---|---|
-| `TreeNode` | A page or folder in the hierarchy (`type: 'page' \| 'folder'`) |
+| `TreeNode` | A page or folder in the hierarchy (`type: 'page' \| 'folder'`), with an optional note `priority` |
 | `PageContent` | Stores the serialized ProseMirror JSON for a page (separate from `TreeNode`) |
 | `Task` | A task with status, priority, dueDate, tags, description, and `sourceNodeId` / `sourcePageId` |
 | `Lane` | A kanban column with a `FilterSet`, `SortConfig`, and optional `taskOrder` |

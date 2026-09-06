@@ -25,6 +25,30 @@ export const PRIORITY_LABELS: Record<Priority, string> = {
 };
 
 /**
+ * Priority options for select inputs, ordered from lowest to highest urgency.
+ * Unlike PRIORITY_LABELS, 'none' has a visible label here.
+ */
+export const PRIORITY_OPTIONS: { value: Priority; label: string }[] = [
+	{ value: 'none', label: 'None' },
+	{ value: 'low', label: 'Low' },
+	{ value: 'medium', label: 'Medium' },
+	{ value: 'high', label: 'High' },
+	{ value: 'urgent', label: 'Urgent' }
+];
+
+/**
+ * Sort weight for priorities — lower weight sorts first (higher urgency).
+ * Shared by sort providers so task and note priority order consistently.
+ */
+export const PRIORITY_WEIGHT: Record<Priority, number> = {
+	urgent: 0,
+	high: 1,
+	medium: 2,
+	low: 3,
+	none: 4
+};
+
+/**
  * Status cycle for quick task progression.
  * Clicking the status badge cycles through: todo → in-progress → done → todo
  * Cancelled tasks reset to todo.

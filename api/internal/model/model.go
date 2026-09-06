@@ -126,6 +126,7 @@ type Page struct {
 	ParentID    *uuid.UUID         `json:"parentId"`
 	Order       int                `json:"order" binding:"gte=0"`
 	Tags        []string           `json:"tags"`
+	Priority    Priority           `json:"priority" binding:"omitempty,priority"`
 	TodoTrigger *TodoTriggerConfig `json:"todoTrigger,omitempty"`
 	OrgID       *uuid.UUID         `json:"orgId,omitempty"`
 	IsPrivate   bool               `json:"isPrivate"`

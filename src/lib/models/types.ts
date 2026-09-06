@@ -59,6 +59,8 @@ export interface TreeNode {
   parentId: string | null;
   order: number;
   tags: string[];
+  /** Priority of this note. Drives task-board ordering (note priority first, then task priority). Defaults to 'none'. */
+  priority?: Priority;
   /** Owner of this node. */
   userId?: string;
   /** Configures which heading/block pattern activates TODO bullet → task creation on this page. */
@@ -152,6 +154,20 @@ export interface SortConfig {
   direction?: SortDirection;
   // for manual mode: explicit task IDs in order
   taskOrder?: string[];
+}
+
+/**
+ * Optional context passed to a SortProvider so it can resolve values from
+ * related resources that aren't stored on the Task itself.
+ */
+export interface SortContext {
+  /**
+   * Resolve the priority of a task's source note (page). Providers use this to
+   * order tasks by their originating note's priority before the task's own
+   * priority. Returns 'none' when the task has no linked note or the note has
+   * no priority set.
+   */
+  getNotePriority?: (task: Task) => Priority;
 }
 
 export interface Lane {
