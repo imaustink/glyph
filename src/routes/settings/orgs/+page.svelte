@@ -502,8 +502,13 @@
 
   .icon-btn { line-height: 0; }
 
+  /* Clear the fixed hamburger button (top:10 + height:36 = 46px), shown at <=768px */
+  @media (max-width: 768px) {
+    .orgs-page { padding: 56px 40px 32px; }
+  }
+
   @media (max-width: 640px) {
-    .orgs-page { padding: 16px; }
+    .orgs-page { padding: 56px 16px 16px; }
     .layout { grid-template-columns: 1fr; }
   }
 </style>

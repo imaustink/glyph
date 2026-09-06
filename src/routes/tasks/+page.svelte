@@ -160,7 +160,8 @@
   /* ─── Mobile responsive ─────────────────────────────────────────────────── */
   @media (max-width: 768px) {
     .board-header {
-      padding: 48px 16px 12px;
+      /* Clear the fixed hamburger button (top:10 + height:36 = 46px) */
+      padding: 56px 16px 12px;
     }
 
     .lanes-scroll {

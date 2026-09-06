@@ -230,4 +230,17 @@
     color: var(--text-primary);
     border-color: var(--border-strong);
   }
+
+  /* ─── Mobile responsive ─────────────────────────────────────────────────── */
+  @media (max-width: 768px) {
+    .board-header {
+      /* Clear the fixed hamburger button (top:10 + height:36 = 46px) */
+      padding: 56px 16px 12px;
+    }
+
+    .lanes-scroll {
+      padding: 12px 16px;
+      gap: 12px;
+    }
+  }
 </style>
