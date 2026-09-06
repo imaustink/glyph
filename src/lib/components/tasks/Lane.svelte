@@ -1,8 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import type { Lane, Task, FilterSet, TaskStatus } from '$lib/models/types';
+  import type { Lane, Task, FilterSet, TaskStatus, SortContext, Priority } from '$lib/models/types';
   import { tasksStore } from '$lib/stores/tasks.svelte';
   import { lanesStore } from '$lib/stores/lanes.svelte';
+  import { pagesStore } from '$lib/stores/pages.svelte';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
   import { autoSortProvider } from '$lib/sort/AutoSortProvider';
   import { fieldSortProvider } from '$lib/sort/FieldSortProvider';
@@ -40,6 +41,15 @@
   /** Generation counter to discard stale sort results. */
   let sortGeneration = 0;
 
+  /** Resolve the priority of a task's source note; 'none' when unlinked/unset. */
+  function notePriorityFor(task: Task): Priority {
+    return task.sourcePageId
+      ? (pagesStore.getById(task.sourcePageId)?.priority ?? 'none')
+      : 'none';
+  }
+
+  const sortContext: SortContext = { getNotePriority: notePriorityFor };
+
   async function resortTasks() {
     const gen = ++sortGeneration;
     const provider = lane.sortConfig.mode === 'auto' ? autoSort : fieldSort;
@@ -57,7 +67,7 @@
         // Race the sort against a 150ms timer to decide if we show loading state.
         // Sync providers resolve immediately and never hit the timer.
         const loadingTimer = setTimeout(() => { loading = true; }, 150);
-        const result = await provider.sort(filteredTasks, lane.sortConfig);
+        const result = await provider.sort(filteredTasks, lane.sortConfig, sortContext);
         clearTimeout(loadingTimer);
         // Discard if a newer sort was triggered while we were awaiting
         if (gen !== sortGeneration) return;
@@ -71,8 +81,13 @@
 
   // Re-sort when filtered tasks or lane sort config changes.
   $effect(() => {
-    // Track dependencies — filteredTasks is a new array ref on every parent recompute
-    const taskIds = filteredTasks.map(t => `${t.id}:${t.status}:${t.priority}`).join(',');
+    // Track dependencies — filteredTasks is a new array ref on every parent recompute.
+    // Note priority is folded into the fingerprint so a note's priority change re-sorts
+    // the lane; reading pagesStore.nodes registers it as a reactive dependency.
+    pagesStore.nodes;
+    const taskIds = filteredTasks
+      .map(t => `${t.id}:${t.status}:${t.priority}:${notePriorityFor(t)}`)
+      .join(',');
     lane.sortConfig;
 
     // Always resort when transitioning out of a drag (dndItems may have been

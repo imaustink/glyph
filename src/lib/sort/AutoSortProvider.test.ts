@@ -120,4 +120,44 @@ describe('AutoSortProvider', () => {
     expect(sorted[0].id).toBe('older');
     expect(sorted[1].id).toBe('newer');
   });
+
+  it('sorts by note priority before task priority', async () => {
+    const tasks = [
+      // Higher task priority but its note has no priority
+      makeTask({ id: 'urgent-task-no-note', priority: 'urgent', sourcePageId: 'p-none' }),
+      // Lower task priority but its note is urgent → should come first
+      makeTask({ id: 'low-task-urgent-note', priority: 'low', sourcePageId: 'p-urgent' })
+    ];
+    const notePriority: Record<string, 'urgent' | 'none'> = {
+      'p-urgent': 'urgent',
+      'p-none': 'none'
+    };
+    const context = {
+      getNotePriority: (t: Task) => notePriority[t.sourcePageId ?? ''] ?? 'none'
+    };
+    const sorted = await provider.sort(tasks, config, context);
+    expect(sorted.map((t) => t.id)).toEqual(['low-task-urgent-note', 'urgent-task-no-note']);
+  });
+
+  it('breaks note-priority ties by task priority', async () => {
+    const tasks = [
+      makeTask({ id: 'same-note-low', priority: 'low', sourcePageId: 'p-high' }),
+      makeTask({ id: 'same-note-urgent', priority: 'urgent', sourcePageId: 'p-high' })
+    ];
+    const context = { getNotePriority: () => 'high' as const };
+    const sorted = await provider.sort(tasks, config, context);
+    expect(sorted.map((t) => t.id)).toEqual(['same-note-urgent', 'same-note-low']);
+  });
+
+  it('treats missing note priority as none', async () => {
+    const tasks = [
+      makeTask({ id: 'with-note', priority: 'medium', sourcePageId: 'p-1' }),
+      makeTask({ id: 'no-note', priority: 'medium', sourcePageId: null })
+    ];
+    // getNotePriority returns undefined for p-1 → falls back to 'none'
+    const context = { getNotePriority: () => undefined as unknown as 'none' };
+    const sorted = await provider.sort(tasks, config, context);
+    // Both effectively 'none' note priority + same task priority → stable by createdAt
+    expect(sorted.map((t) => t.id).sort()).toEqual(['no-note', 'with-note']);
+  });
 });

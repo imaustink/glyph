@@ -7,7 +7,7 @@
  * making the same code path work identically for instant and slow providers.
  */
 
-import type { Task, SortConfig } from '$lib/models/types';
+import type { Task, SortConfig, SortContext } from '$lib/models/types';
 
 export interface SortProvider<T> {
   /** Unique identifier for this provider (used for config persistence). */
@@ -18,8 +18,11 @@ export interface SortProvider<T> {
    * Sort items according to the given config.
    * May resolve instantly (local providers) or after seconds (AI providers).
    * Callers should race against a delay timer to show loading state only when needed.
+   *
+   * The optional `context` lets providers resolve values from related resources
+   * (e.g. a task's source note priority) without coupling to app stores.
    */
-  sort(items: T[], config: SortConfig): Promise<T[]>;
+  sort(items: T[], config: SortConfig, context?: SortContext): Promise<T[]>;
 }
 
 export type TaskSortProvider = SortProvider<Task>;

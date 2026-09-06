@@ -22,11 +22,12 @@ func pageRowFn(id, userID uuid.UUID) func(dest ...any) error {
 		*dest[4].(**uuid.UUID) = nil // parent_id
 		*dest[5].(*int) = 0
 		*dest[6].(*[]string) = []string{}
-		*dest[7].(*[]byte) = nil // todo_trigger
-		*dest[8].(**uuid.UUID) = nil // org_id
-		*dest[9].(*bool) = false
-		*dest[10].(*time.Time) = time.Time{}
+		*dest[7].(*model.Priority) = model.PriorityNone
+		*dest[8].(*[]byte) = nil // todo_trigger
+		*dest[9].(**uuid.UUID) = nil // org_id
+		*dest[10].(*bool) = false
 		*dest[11].(*time.Time) = time.Time{}
+		*dest[12].(*time.Time) = time.Time{}
 		return nil
 	}
 }
@@ -58,11 +59,12 @@ func TestScanPage_BadTriggerJSON(t *testing.T) {
 		*dest[4].(**uuid.UUID) = nil
 		*dest[5].(*int) = 0
 		*dest[6].(*[]string) = []string{}
-		*dest[7].(*[]byte) = []byte("{bad json")
-		*dest[8].(**uuid.UUID) = nil
-		*dest[9].(*bool) = false
-		*dest[10].(*time.Time) = time.Time{}
+		*dest[7].(*model.Priority) = model.PriorityNone
+		*dest[8].(*[]byte) = []byte("{bad json")
+		*dest[9].(**uuid.UUID) = nil
+		*dest[10].(*bool) = false
 		*dest[11].(*time.Time) = time.Time{}
+		*dest[12].(*time.Time) = time.Time{}
 		return nil
 	}}
 	_, err := scanPage(row)
