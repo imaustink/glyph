@@ -262,7 +262,7 @@
     padding: 7px 14px;
     border-radius: var(--radius-md);
     background: var(--accent);
-    color: white;
+    color: var(--accent-contrast);
     font-size: var(--font-size-sm);
     font-weight: 500;
     border: none;

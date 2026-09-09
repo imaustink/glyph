@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 212 64" width="212" height="64" role="img" aria-label="Glyph">
+  <title>Glyph</title>
+  <defs>
+    <linearGradient id="glyphInkMark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#49d1b9"/>
+      <stop offset="0.55" stop-color="#2fb8a0"/>
+      <stop offset="1" stop-color="#258f7d"/>
+    </linearGradient>
+    <style>
+      /* Set explicitly (not via currentColor) so the lettering still adapts
+         when this file is used as an &lt;img src&gt; or a CSS background. */
+      .glyph-wordmark { stroke: #20232e; }
+      @media (prefers-color-scheme: dark) {
+        .glyph-wordmark { stroke: #e8e8e8; }
+      }
+    </style>
+  </defs>
+
+  <path
+    d="M9.39 13.76 L35.08 13.76 M9.39 26.09 L27.89 26.09"
+    fill="none" stroke="url(#glyphInkMark)" stroke-width="5.75" stroke-linecap="round"
+  />
+  <path
+    d="M9.39 38.42 L20.7 38.42 L30.97 49.73 L54.61 14.79"
+    fill="none" stroke="url(#glyphInkMark)" stroke-width="6.78" stroke-linecap="round" stroke-linejoin="round"
+  />
+
+  <!-- Monoline "glyph": same round caps and optical weight as the mark. -->
+  <g class="glyph-wordmark" transform="translate(82 -3)" fill="none" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="11" cy="31" r="11"/>
+    <path d="M22 20 L22 48 C22 55.5 16 57.5 9 55"/>
+    <path d="M30 14 L30 42"/>
+    <path d="M38 20 L49.61 42"/>
+    <path d="M60 20 L43 56"/>
+    <path d="M70 20 L70 56"/>
+    <circle cx="81" cy="31" r="11"/>
+    <path d="M102 14 L102 42"/>
+    <path d="M102 31 A11 11 0 0 1 124 31 L124 42"/>
+  </g>
+</svg>

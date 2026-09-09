@@ -139,7 +139,26 @@
 
 <aside class="sidebar">
   <div class="sidebar-header">
-    <span class="app-name">Glyph</span>
+    <span class="app-brand">
+      <svg class="app-logo" viewBox="0 0 64 64" width="18" height="18" aria-hidden="true">
+        <path
+          d="M9.39 13.76 L35.08 13.76 M9.39 26.09 L27.89 26.09"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="5.75"
+          stroke-linecap="round"
+        />
+        <path
+          d="M9.39 38.42 L20.7 38.42 L30.97 49.73 L54.61 14.79"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="6.78"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </svg>
+      <span class="app-name">Glyph</span>
+    </span>
     <button class="btn-ghost icon-btn" onclick={uiStore.toggleSidebar} title="Toggle sidebar">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="3" y="3" width="18" height="18" rx="2"/>
@@ -271,6 +290,18 @@
     justify-content: space-between;
     padding: 14px 12px 10px;
     border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .app-brand {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+
+  .app-logo {
+    color: var(--accent);
+    flex: none;
   }
 
   .app-name {

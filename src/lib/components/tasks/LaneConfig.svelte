@@ -367,7 +367,7 @@
     border-radius: 0;
     color: var(--text-muted);
   }
-  .conjunction-toggle button.active { background: var(--accent); color: #fff; }
+  .conjunction-toggle button.active { background: var(--accent); color: var(--accent-contrast); }
 
   .rules-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 

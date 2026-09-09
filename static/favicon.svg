@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Glyph">
+  <title>Glyph</title>
+  <defs>
+    <linearGradient id="glyphTile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#41cfb6"/>
+      <stop offset="1" stop-color="#238776"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="64" height="64" rx="14" fill="url(#glyphTile)"/>
+
+  <g transform="translate(32 32) scale(0.74) translate(-32 -32)">
+    <path
+      d="M9.39 13.76 L35.08 13.76 M9.39 26.09 L27.89 26.09"
+      fill="none"
+      stroke="#ffffff"
+      stroke-width="5.75"
+      stroke-linecap="round"
+    />
+    <path
+      d="M9.39 38.42 L20.7 38.42 L30.97 49.73 L54.61 14.79"
+      fill="none"
+      stroke="#ffffff"
+      stroke-width="6.78"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  </g>
+</svg>
