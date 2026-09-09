@@ -77,6 +77,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 			internalError(c, err)
 			return
 		}
+		tasks = FilterByTokenScope(c, model.ShareResourceTask, tasks, func(t *model.Task) *uuid.UUID { return t.OrgID })
 		c.Header("X-Total-Count", strconv.Itoa(total))
 		c.JSON(http.StatusOK, tasks)
 		return
@@ -87,6 +88,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
+	tasks = FilterByTokenScope(c, model.ShareResourceTask, tasks, func(t *model.Task) *uuid.UUID { return t.OrgID })
 	c.JSON(http.StatusOK, tasks)
 }
 
@@ -95,6 +97,9 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 	user := auth.CurrentUser(c)
 	var body model.Task
 	if !bindJSON(c, &body) {
+		return
+	}
+	if !checkTokenScope(c, body.OrgID, model.ShareResourceTask, true) {
 		return
 	}
 	body.UserID = user.ID
@@ -125,6 +130,9 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 	task, err := h.Tasks.GetByID(c.Request.Context(), id, user.ID)
 	if err != nil {
 		notFoundOrError(c, err)
+		return
+	}
+	if !h.Perms.CanReadResource(c, task.OrgID, model.ShareResourceTask) {
 		return
 	}
 	c.JSON(http.StatusOK, task)
@@ -172,6 +180,9 @@ func (h *TaskHandler) DeleteTask(c *gin.Context) {
 		notFoundOrError(c, err)
 		return
 	}
+	if !checkTokenScope(c, task.OrgID, model.ShareResourceTask, true) {
+		return
+	}
 	if task.UserID != user.ID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only the owner can delete"})
 		return
@@ -192,6 +203,9 @@ func (h *TaskHandler) UpsertTask(c *gin.Context) {
 	}
 	var body model.Task
 	if !bindJSON(c, &body) {
+		return
+	}
+	if !checkTokenScope(c, body.OrgID, model.ShareResourceTask, true) {
 		return
 	}
 	body.ID = id

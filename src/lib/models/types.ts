@@ -294,6 +294,52 @@ export interface Share {
   createdAt: string;
 }
 
+// ─── OAuth Clients ────────────────────────────────────────────────────────────
+
+export type OAuthScope =
+  | 'page:read'
+  | 'page:write'
+  | 'task:read'
+  | 'task:write'
+  | 'template:read'
+  | 'template:write'
+  | 'org:read';
+
+export interface OAuthClient {
+  id: string;
+  name: string;
+  clientId: string;
+  orgIds: string[];
+  scopes: OAuthScope[];
+  redirectUris: string[];
+  isConfidential: boolean;
+  revokedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OAuthClientWithSecret extends OAuthClient {
+  clientSecret: string;
+}
+
+export interface OAuthToken {
+  id: string;
+  clientId: string;
+  actingUserId: string;
+  actingUserEmail?: string | null;
+  scopes: OAuthScope[];
+  issuedAt: string;
+  expiresAt?: string | null;
+  revokedAt?: string | null;
+}
+
+export interface OAuthConsentInfo {
+  client: { name: string; description?: string | null };
+  scopes: OAuthScope[];
+  orgName: string;
+  consentToken: string;
+}
+
 export interface UserSearchResult {
   id: string;
   email: string | null;

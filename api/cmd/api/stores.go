@@ -7,24 +7,30 @@ import (
 
 // stores holds all instantiated data stores.
 type stores struct {
-	users     store.UserStore
-	pages     store.PageStore
-	tasks     store.TaskStore
-	lanes     store.LaneStore
-	templates store.TemplateStore
-	orgs      store.OrgStore
-	shares    store.ShareStore
+	users        store.UserStore
+	pages        store.PageStore
+	tasks        store.TaskStore
+	lanes        store.LaneStore
+	templates    store.TemplateStore
+	orgs         store.OrgStore
+	shares       store.ShareStore
+	oauthClients store.OAuthClientStore
+	oauthCodes   store.OAuthCodeStore
+	oauthTokens  store.OAuthTokenStore
 }
 
 // newStores creates all store instances from the database pool.
 func newStores(pool *pgxpool.Pool) *stores {
 	return &stores{
-		users:     store.NewUserStore(pool),
-		pages:     store.NewPageStore(pool),
-		tasks:     store.NewTaskStore(pool),
-		lanes:     store.NewLaneStore(pool),
-		templates: store.NewTemplateStore(pool),
-		orgs:      store.NewOrgStore(pool),
-		shares:    store.NewShareStore(pool),
+		users:        store.NewUserStore(pool),
+		pages:        store.NewPageStore(pool),
+		tasks:        store.NewTaskStore(pool),
+		lanes:        store.NewLaneStore(pool),
+		templates:    store.NewTemplateStore(pool),
+		orgs:         store.NewOrgStore(pool),
+		shares:       store.NewShareStore(pool),
+		oauthClients: store.NewOAuthClientStore(pool),
+		oauthCodes:   store.NewOAuthCodeStore(pool),
+		oauthTokens:  store.NewOAuthTokenStore(pool),
 	}
 }

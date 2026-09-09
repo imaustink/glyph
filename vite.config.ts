@@ -15,6 +15,14 @@ export default defineConfig(({ mode }) => {
 				? {
 						'/api': env.API_PROXY_TARGET,
 						'/auth': env.API_PROXY_TARGET,
+						// NOTE: /oauth/authorize is NOT proxied — it's the SvelteKit
+						// consent page's own route (src/routes/oauth/authorize). Only
+						// the machine-facing token/revoke endpoints live on the Go API
+						// under /oauth; the consent page's own API calls go through
+						// /api/v1/oauth/consent instead, which the '/api' entry above
+						// already covers.
+						'/oauth/token': env.API_PROXY_TARGET,
+						'/oauth/revoke': env.API_PROXY_TARGET,
 						'/test': env.API_PROXY_TARGET,
 						'/health': env.API_PROXY_TARGET
 					}

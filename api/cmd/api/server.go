@@ -30,7 +30,7 @@ func newServer(ctx context.Context, pool *pgxpool.Pool, s *stores, sessionSecret
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	apiGroup := setupAuth(ctx, r, pool, s.users, sessionSecret)
+	apiGroup := setupAuth(ctx, r, pool, s, sessionSecret)
 
 	h := newHandlers(s)
 	registerRoutes(apiGroup, h)

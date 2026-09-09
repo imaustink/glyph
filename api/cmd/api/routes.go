@@ -9,13 +9,14 @@ import (
 
 // handlers holds all instantiated HTTP handlers for route registration.
 type handlers struct {
-	pages   *handler.PageHandler
-	tasks   *handler.TaskHandler
-	lanes   *handler.LaneHandler
-	folders *handler.FolderHandler
-	templates *handler.TemplateHandler
-	orgs      *handler.OrgHandler
-	shares    *handler.ShareHandler
+	pages        *handler.PageHandler
+	tasks        *handler.TaskHandler
+	lanes        *handler.LaneHandler
+	folders      *handler.FolderHandler
+	templates    *handler.TemplateHandler
+	orgs         *handler.OrgHandler
+	shares       *handler.ShareHandler
+	oauthClients *handler.OAuthClientHandler
 }
 
 // newHandlers creates all handler instances from their stores.
@@ -23,9 +24,9 @@ func newHandlers(stores *stores) *handlers {
 	perms := &handler.PermissionChecker{Orgs: stores.orgs, Shares: stores.shares}
 
 	return &handlers{
-		pages:     &handler.PageHandler{Pages: stores.pages, Perms: perms},
-		tasks:     &handler.TaskHandler{Tasks: stores.tasks, Perms: perms},
-		lanes:     &handler.LaneHandler{Lanes: stores.lanes},
+		pages: &handler.PageHandler{Pages: stores.pages, Perms: perms},
+		tasks: &handler.TaskHandler{Tasks: stores.tasks, Perms: perms},
+		lanes: &handler.LaneHandler{Lanes: stores.lanes},
 		folders: &handler.FolderHandler{
 			Pages: stores.pages,
 			Lanes: stores.lanes,
@@ -41,6 +42,11 @@ func newHandlers(stores *stores) *handlers {
 			Pages:     stores.pages,
 			Tasks:     stores.tasks,
 			Templates: stores.templates,
+		},
+		oauthClients: &handler.OAuthClientHandler{
+			Clients: stores.oauthClients,
+			Tokens:  stores.oauthTokens,
+			Orgs:    stores.orgs,
 		},
 	}
 }
@@ -116,4 +122,17 @@ func registerRoutes(apiGroup *gin.RouterGroup, h *handlers) {
 	apiGroup.PUT("/folders/:id/lanes/:laneId", h.folders.UpdateFolderLane)
 	apiGroup.DELETE("/folders/:id/lanes/:laneId", h.folders.DeleteFolderLane)
 	apiGroup.GET("/folders/:id/tasks", h.folders.ListFolderTasks)
+
+	// OAuth clients (org-owner-scoped admin API; session-auth only)
+	apiGroup.POST("/orgs/:orgId/oauth-clients", h.oauthClients.CreateClient)
+	apiGroup.GET("/orgs/:orgId/oauth-clients", h.oauthClients.ListClients)
+	apiGroup.GET("/orgs/:orgId/oauth-clients/:clientId", h.oauthClients.GetClient)
+	apiGroup.PATCH("/orgs/:orgId/oauth-clients/:clientId", h.oauthClients.UpdateClient)
+	apiGroup.POST("/orgs/:orgId/oauth-clients/:clientId/orgs", h.oauthClients.AddClientOrg)
+	apiGroup.DELETE("/orgs/:orgId/oauth-clients/:clientId/orgs/:otherOrgId", h.oauthClients.RemoveClientOrg)
+	apiGroup.POST("/orgs/:orgId/oauth-clients/:clientId/rotate-secret", h.oauthClients.RotateSecret)
+	apiGroup.POST("/orgs/:orgId/oauth-clients/:clientId/revoke", h.oauthClients.RevokeClient)
+	apiGroup.GET("/orgs/:orgId/oauth-clients/:clientId/tokens", h.oauthClients.ListClientTokens)
+	apiGroup.DELETE("/orgs/:orgId/oauth-clients/:clientId/tokens/:tokenId", h.oauthClients.RevokeToken)
+	apiGroup.POST("/orgs/:orgId/oauth-clients/:clientId/tokens/revoke-all", h.oauthClients.RevokeAllTokens)
 }

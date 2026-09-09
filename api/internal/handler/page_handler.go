@@ -8,6 +8,7 @@ import (
 	"github.com/glyph/api/internal/auth"
 	"github.com/glyph/api/internal/model"
 	"github.com/glyph/api/internal/store"
+	"github.com/google/uuid"
 )
 
 // PageHandler handles page CRUD and content operations.
@@ -49,6 +50,7 @@ func (h *PageHandler) ListPages(c *gin.Context) {
 			internalError(c, err)
 			return
 		}
+		pages = FilterByTokenScope(c, model.ShareResourcePage, pages, func(p *model.Page) *uuid.UUID { return p.OrgID })
 		c.Header("X-Total-Count", strconv.Itoa(total))
 		c.JSON(http.StatusOK, pages)
 		return
@@ -59,6 +61,7 @@ func (h *PageHandler) ListPages(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
+	pages = FilterByTokenScope(c, model.ShareResourcePage, pages, func(p *model.Page) *uuid.UUID { return p.OrgID })
 	c.JSON(http.StatusOK, pages)
 }
 
@@ -67,6 +70,9 @@ func (h *PageHandler) CreatePage(c *gin.Context) {
 	user := auth.CurrentUser(c)
 	var body model.Page
 	if !bindJSON(c, &body) {
+		return
+	}
+	if !checkTokenScope(c, body.OrgID, model.ShareResourcePage, true) {
 		return
 	}
 	body.UserID = user.ID
@@ -94,6 +100,9 @@ func (h *PageHandler) GetPage(c *gin.Context) {
 	page, err := h.Pages.GetByID(c.Request.Context(), id, user.ID)
 	if err != nil {
 		notFoundOrError(c, err)
+		return
+	}
+	if !h.Perms.CanReadResource(c, page.OrgID, model.ShareResourcePage) {
 		return
 	}
 	c.JSON(http.StatusOK, page)
@@ -168,6 +177,9 @@ func (h *PageHandler) DeletePage(c *gin.Context) {
 		notFoundOrError(c, err)
 		return
 	}
+	if !checkTokenScope(c, page.OrgID, model.ShareResourcePage, true) {
+		return
+	}
 	// Only the owner can delete.
 	if page.UserID != user.ID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only the owner can delete"})
@@ -189,6 +201,9 @@ func (h *PageHandler) UpsertPage(c *gin.Context) {
 	}
 	var body model.Page
 	if !bindJSON(c, &body) {
+		return
+	}
+	if !checkTokenScope(c, body.OrgID, model.ShareResourcePage, true) {
 		return
 	}
 	body.ID = id

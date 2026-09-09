@@ -49,6 +49,88 @@ func (pc *PermissionChecker) CanWriteFolder(c *gin.Context, folder *model.Page, 
 	return pc.CanWriteResource(c, folder.UserID, folder.OrgID, model.ShareResourceFolder, folder.ID, requesterID)
 }
 
+// currentTokenScope returns the *model.TokenScope for the request, or nil if
+// the request authenticated via session cookie (unrestricted).
+func currentTokenScope(c *gin.Context) *model.TokenScope {
+	v, ok := c.Get(model.TokenScopeContextKey)
+	if !ok {
+		return nil
+	}
+	ts, _ := v.(*model.TokenScope)
+	return ts
+}
+
+// scopeAllows is the pure, non-response-writing predicate behind
+// checkTokenScope: the resource's org must be within the token's granted
+// orgs (M2M/delegated tokens cannot reach a user's personal, non-org
+// resources at all), and the token must carry the scope for this resource
+// type + permission level. A nil scope (cookie-session request) always
+// passes — it is unrestricted, governed only by the user's own permissions.
+func scopeAllows(scope *model.TokenScope, orgID *uuid.UUID, resourceType model.ShareResourceType, write bool) bool {
+	if scope == nil {
+		return true
+	}
+	if orgID == nil || !scope.HasOrg(*orgID) {
+		return false
+	}
+	for _, s := range scope.Scopes {
+		rt, ok := s.ResourceType()
+		if !ok || rt != resourceType {
+			continue
+		}
+		if write && s.IsWrite() {
+			return true
+		}
+		if !write {
+			return true // read scope for this resource type present (read or write)
+		}
+	}
+	return false
+}
+
+// checkTokenScope enforces scopeAllows for a single request, writing a 403
+// JSON response and returning false when the token's grant doesn't cover
+// the resource being accessed.
+func checkTokenScope(c *gin.Context, orgID *uuid.UUID, resourceType model.ShareResourceType, write bool) bool {
+	scope := currentTokenScope(c)
+	if scopeAllows(scope, orgID, resourceType, write) {
+		return true
+	}
+	if orgID == nil || !scope.HasOrg(*orgID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "resource outside token's org scope"})
+		return false
+	}
+	c.JSON(http.StatusForbidden, gin.H{"error": "token scope does not permit this action"})
+	return false
+}
+
+// FilterByTokenScope drops any item whose org falls outside the requesting
+// bearer token's granted scope (cookie-session requests are unrestricted
+// and pass every item through unchanged). Used by List* handlers, since
+// threading scope through every SQL query in the store layer would be far
+// more invasive for the same result at Glyph's current scale.
+func FilterByTokenScope[T any](c *gin.Context, resourceType model.ShareResourceType, items []T, orgIDOf func(T) *uuid.UUID) []T {
+	scope := currentTokenScope(c)
+	if scope == nil {
+		return items
+	}
+	out := items[:0]
+	for _, it := range items {
+		if scopeAllows(scope, orgIDOf(it), resourceType, false) {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// CanReadResource is the read-side twin of CanWriteResource's scope check —
+// called after a store's own GetByID access filter already confirmed the
+// requester can read the resource, to additionally enforce that a bearer
+// token's scope covers it. Cookie-session requests (no TokenScope) always pass.
+func (pc *PermissionChecker) CanReadResource(c *gin.Context, orgID *uuid.UUID, resourceType model.ShareResourceType) bool {
+	return checkTokenScope(c, orgID, resourceType, false)
+}
+
 // CanWriteResource is the general write-permission check used by all resource types.
 func (pc *PermissionChecker) CanWriteResource(
 	c *gin.Context,
@@ -58,6 +140,9 @@ func (pc *PermissionChecker) CanWriteResource(
 	resourceID uuid.UUID,
 	requesterID uuid.UUID,
 ) bool {
+	if !checkTokenScope(c, orgID, resourceType, true) {
+		return false
+	}
 	if requesterID == ownerID {
 		return true
 	}

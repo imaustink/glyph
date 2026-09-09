@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"log"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/glyph/api/internal/auth"
 	"github.com/glyph/api/internal/handler"
+	glyphoauth "github.com/glyph/api/internal/oauth"
 	"github.com/glyph/api/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,7 +25,7 @@ import (
 //
 // In production (OIDC ready): registers OIDC auth routes and session middleware.
 // In dev/test mode: provisions a dev user and registers test-only endpoints.
-func setupAuth(ctx context.Context, r *gin.Engine, pool *pgxpool.Pool, users store.UserStore, sessionSecret []byte) *gin.RouterGroup {
+func setupAuth(ctx context.Context, r *gin.Engine, pool *pgxpool.Pool, s *stores, sessionSecret []byte) *gin.RouterGroup {
 	oidcIssuer := os.Getenv("OIDC_ISSUER_URL")
 	oidcClientID := os.Getenv("OIDC_CLIENT_ID")
 	oidcClientSecret := os.Getenv("OIDC_CLIENT_SECRET")
@@ -46,12 +48,30 @@ func setupAuth(ctx context.Context, r *gin.Engine, pool *pgxpool.Pool, users sto
 	warnPartialOIDC(oidcReady, oidcIssuer, oidcClientID, oidcClientSecret)
 
 	if oidcReady {
-		return setupOIDCAuth(r, users, oidcIssuer, oidcClientID, oidcClientSecret, sessionSecret, cookieDomain, cookieSecure, frontendURL)
+		return setupOIDCAuth(r, s, oidcIssuer, oidcClientID, oidcClientSecret, sessionSecret, cookieDomain, cookieSecure, frontendURL)
 	}
-	return setupDevAuth(ctx, r, pool, users, sessionSecret)
+	return setupDevAuth(ctx, r, pool, s, sessionSecret)
 }
 
-func setupOIDCAuth(r *gin.Engine, users store.UserStore, issuer, clientID, clientSecret string, sessionSecret []byte, cookieDomain string, cookieSecure bool, frontendURL string) *gin.RouterGroup {
+// getOrGenerateConsentSecret reads OAUTH_CONSENT_SECRET from the environment
+// or generates a random key for local dev. Used to sign short-lived OAuth
+// consent tokens (distinct from the session secret to limit blast radius).
+func getOrGenerateConsentSecret() []byte {
+	if s := os.Getenv("OAUTH_CONSENT_SECRET"); s != "" {
+		return []byte(s)
+	}
+	if gin.Mode() == gin.ReleaseMode {
+		slog.Warn("OAUTH_CONSENT_SECRET not set in production — generating a random key; consent tokens will not survive restarts")
+	}
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		log.Fatalf("failed to generate OAuth consent secret: %v", err)
+	}
+	return b
+}
+
+func setupOIDCAuth(r *gin.Engine, s *stores, issuer, clientID, clientSecret string, sessionSecret []byte, cookieDomain string, cookieSecure bool, frontendURL string) *gin.RouterGroup {
+	users := s.users
 	callbackURL := os.Getenv("OIDC_REDIRECT_URL")
 	if callbackURL == "" {
 		port := os.Getenv("PORT")
@@ -79,10 +99,25 @@ func setupOIDCAuth(r *gin.Engine, users store.UserStore, issuer, clientID, clien
 	auth.RegisterAuthRoutes(r, sessionCfg, users)
 	slog.Info("OIDC auth enabled", "issuer", issuer, "client_id", clientID)
 
-	return r.Group("/api/v1", auth.SessionMiddleware(sessionCfg, users), handler.CSRFMiddleware())
+	sessionMw := auth.SessionMiddleware(sessionCfg, users)
+	oauthCfg := glyphoauth.Config{
+		Clients:       s.oauthClients,
+		Codes:         s.oauthCodes,
+		Tokens:        s.oauthTokens,
+		Users:         s.users,
+		Orgs:          s.orgs,
+		ConsentSecret: getOrGenerateConsentSecret(),
+	}
+	glyphoauth.RegisterOAuthRoutes(r, oauthCfg)
+	bearerMw := glyphoauth.BearerTokenMiddleware(s.oauthTokens, s.users)
+
+	apiGroup := r.Group("/api/v1", glyphoauth.DualAuthMiddleware(sessionMw, bearerMw), handler.CSRFMiddleware())
+	glyphoauth.RegisterConsentRoutes(apiGroup, oauthCfg)
+	return apiGroup
 }
 
-func setupDevAuth(ctx context.Context, r *gin.Engine, pool *pgxpool.Pool, users store.UserStore, _ []byte) *gin.RouterGroup {
+func setupDevAuth(ctx context.Context, r *gin.Engine, pool *pgxpool.Pool, s *stores, _ []byte) *gin.RouterGroup {
+	users := s.users
 	devEmail := "dev@glyph.test"
 	devName := "Dev User"
 	if _, err := users.Upsert(ctx, "dev-user", "dev-issuer", &devEmail, &devName); err != nil {
@@ -95,20 +130,33 @@ func setupDevAuth(ctx context.Context, r *gin.Engine, pool *pgxpool.Pool, users 
 
 	registerDevAuthMe(r, users, devEmail, devName)
 
+	oauthCfg := glyphoauth.Config{
+		Clients:       s.oauthClients,
+		Codes:         s.oauthCodes,
+		Tokens:        s.oauthTokens,
+		Users:         s.users,
+		Orgs:          s.orgs,
+		ConsentSecret: getOrGenerateConsentSecret(),
+	}
+	glyphoauth.RegisterOAuthRoutes(r, oauthCfg)
+	bearerMw := glyphoauth.BearerTokenMiddleware(s.oauthTokens, s.users)
+
 	slog.Warn("OIDC not configured — running in DEV MODE",
 		"auth", "disabled",
 		"test_reset", "available",
 		"WARNING", "⚠️  /test/* endpoints are enabled — do NOT expose this to the public internet")
 	slog.Info("dev user configured", "name", devName, "email", devEmail)
 
-	return r.Group("/api/v1", devAuthMiddleware, handler.CSRFMiddleware())
+	apiGroup := r.Group("/api/v1", glyphoauth.DualAuthMiddleware(devAuthMiddleware, bearerMw), handler.CSRFMiddleware())
+	glyphoauth.RegisterConsentRoutes(apiGroup, oauthCfg)
+	return apiGroup
 }
 
 func registerTestEndpoints(r *gin.Engine, pool *pgxpool.Pool, users store.UserStore) {
 	// /test/reset — truncates all tables for E2E test isolation.
 	r.POST("/test/reset", func(c *gin.Context) {
 		_, dbErr := pool.Exec(c.Request.Context(),
-			"TRUNCATE shares, org_members, organizations, page_contents, tasks, lanes, templates, pages, users CASCADE")
+			"TRUNCATE oauth_tokens, oauth_authorization_codes, oauth_client_orgs, oauth_clients, shares, org_members, organizations, page_contents, tasks, lanes, templates, pages, users CASCADE")
 		if dbErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": dbErr.Error()})
 			return
