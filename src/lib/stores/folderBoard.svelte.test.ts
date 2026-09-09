@@ -252,6 +252,39 @@ describe('folderBoardStore', () => {
     });
   });
 
+  // ─── reorderLanes ────────────────────────────────────────────────────────
+
+  describe('reorderLanes', () => {
+    it('applies the new order optimistically and persists each lane via updateLane', async () => {
+      vi.mocked(repo.getLanes).mockResolvedValueOnce([
+        makeLane({ id: 'l1', order: 0 }),
+        makeLane({ id: 'l2', order: 1 }),
+        makeLane({ id: 'l3', order: 2 })
+      ]);
+      await store.load('folder-1');
+
+      await store.reorderLanes(['l3', 'l1', 'l2']);
+
+      expect(store.lanes.map((l) => l.id)).toEqual(['l3', 'l1', 'l2']);
+      expect(store.lanes.map((l) => l.order)).toEqual([0, 1, 2]);
+      expect(repo.updateLane).toHaveBeenCalledWith('folder-1', 'l3', expect.objectContaining({ order: 0 }));
+      expect(repo.updateLane).toHaveBeenCalledWith('folder-1', 'l1', expect.objectContaining({ order: 1 }));
+      expect(repo.updateLane).toHaveBeenCalledWith('folder-1', 'l2', expect.objectContaining({ order: 2 }));
+    });
+
+    it('rolls back to the previous order if any write fails', async () => {
+      vi.mocked(repo.getLanes).mockResolvedValueOnce([
+        makeLane({ id: 'l1', order: 0 }),
+        makeLane({ id: 'l2', order: 1 })
+      ]);
+      await store.load('folder-1');
+      vi.mocked(repo.updateLane).mockRejectedValueOnce(new Error('fail'));
+
+      await expect(store.reorderLanes(['l2', 'l1'])).rejects.toThrow('fail');
+      expect(store.lanes.map((l) => l.id)).toEqual(['l1', 'l2']);
+    });
+  });
+
   // ─── deleteLane ──────────────────────────────────────────────────────────
 
   describe('deleteLane', () => {

@@ -44,7 +44,7 @@ test.describe('Note priority', () => {
 		await expect(reloaded).toHaveValue('high', { timeout: 10_000 });
 	});
 
-	test('task board sorts by note priority before task priority', async ({ page }) => {
+	test('task board sorts by task priority before note priority', async ({ page }) => {
 		// Note A (created first) → task "Alpha task"; note priority left as none,
 		// but its task will be set to urgent priority.
 		await createNewPage(page);
@@ -67,8 +67,9 @@ test.describe('Note priority', () => {
 		await priorityMeta.selectOption('urgent');
 		await expect(priorityMeta).toHaveValue('urgent');
 
-		// Back on the board, the "All Tasks" lane orders by note priority first:
-		// Bravo (urgent note) must appear before Alpha (none note, urgent task).
+		// Back on the board, the "All Tasks" lane orders by task priority first:
+		// note priority is only a tie breaker, so Alpha (urgent task, none note)
+		// must appear before Bravo (none task, urgent note).
 		await navigateToTaskBoard(page);
 		const allTasksLane = page.locator('.lane:has(.lane-title:has-text("All Tasks"))');
 		await expect(allTasksLane.locator('.task-card:has-text("Alpha task")')).toBeVisible({
@@ -81,6 +82,35 @@ test.describe('Note priority', () => {
 		const alphaIndex = titles.findIndex((t) => t.includes('Alpha task'));
 		expect(bravoIndex).toBeGreaterThanOrEqual(0);
 		expect(alphaIndex).toBeGreaterThanOrEqual(0);
-		expect(bravoIndex).toBeLessThan(alphaIndex);
+		expect(alphaIndex).toBeLessThan(bravoIndex);
+	});
+
+	test('task board uses note priority as a tie breaker when task priorities match', async ({ page }) => {
+		// Note A → task "Charlie task"; note priority left as none, task priority
+		// left at its default so both tasks tie on task priority (and due date).
+		await createNewPage(page);
+		await createTaskInEditor(page, 'Charlie task');
+
+		// Note B → task "Delta task"; note priority set to urgent, task priority
+		// also left at its default — same task priority as Charlie's, so the
+		// urgent note should break the tie and sort Delta first.
+		await createNewPage(page);
+		await createTaskInEditor(page, 'Delta task');
+		await page.locator('.priority-select').selectOption('urgent');
+		await expect(page.locator('.priority-select')).toHaveValue('urgent');
+
+		await navigateToTaskBoard(page);
+		const allTasksLane = page.locator('.lane:has(.lane-title:has-text("All Tasks"))');
+		await expect(allTasksLane.locator('.task-card:has-text("Charlie task")')).toBeVisible({
+			timeout: 5_000
+		});
+		await expect(allTasksLane.locator('.task-card:has-text("Delta task")')).toBeVisible();
+
+		const titles = await allTasksLane.locator('.card-title').allInnerTexts();
+		const deltaIndex = titles.findIndex((t) => t.includes('Delta task'));
+		const charlieIndex = titles.findIndex((t) => t.includes('Charlie task'));
+		expect(deltaIndex).toBeGreaterThanOrEqual(0);
+		expect(charlieIndex).toBeGreaterThanOrEqual(0);
+		expect(deltaIndex).toBeLessThan(charlieIndex);
 	});
 });

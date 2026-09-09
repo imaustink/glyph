@@ -90,6 +90,26 @@ export function createFolderBoardStore(injectedRepo?: FolderBoardRepo) {
     }
   }
 
+  async function reorderLanes(orderedIds: string[]): Promise<void> {
+    if (!folderId) return;
+    const prev = lanes;
+    const timestamp = now();
+    const next = orderedIds.map((id, i) => {
+      const lane = prev.find((l) => l.id === id)!;
+      return { ...lane, order: i, updatedAt: timestamp };
+    });
+    // Optimistic reorder — rolled back below if any write fails.
+    lanes = next;
+    try {
+      await Promise.all(
+        next.map((lane) => repo.updateLane(folderId!, lane.id, { order: lane.order, updatedAt: timestamp }))
+      );
+    } catch (e) {
+      lanes = prev;
+      throw e;
+    }
+  }
+
   async function deleteLane(laneId: string): Promise<void> {
     if (!folderId) return;
     lanes = lanes.filter((l) => l.id !== laneId);
@@ -128,6 +148,7 @@ export function createFolderBoardStore(injectedRepo?: FolderBoardRepo) {
     createLane,
     updateLane,
     deleteLane,
+    reorderLanes,
     reset
   };
 }

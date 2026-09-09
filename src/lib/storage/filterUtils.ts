@@ -104,3 +104,17 @@ export function applyFilter(tasks: Task[], filterSet: FilterSet, ctx?: FilterCon
       : results.some(Boolean);
   });
 }
+
+/**
+ * Case-insensitive substring match across a task's title, description, and
+ * tags. Backs the Task Board's free-text search box, which narrows down what
+ * a lane's own filter rules already produced rather than being a filter rule
+ * itself — so it's a plain predicate, not part of a FilterSet.
+ */
+export function matchesSearchText(task: Task, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  if (task.title.toLowerCase().includes(q)) return true;
+  if (task.description.toLowerCase().includes(q)) return true;
+  return task.tags.some((tag) => tag.toLowerCase().includes(q));
+}
