@@ -64,6 +64,13 @@ func jwkToPublicKey(k jwk) (interface{}, error) {
 	}
 }
 
+// minRSAModulusBits is the floor accepted for an RSA JWKS key. The issuer's
+// discovery URL comes from a deployer-configured OIDC_ISSUER_URL, so this
+// isn't attacker-reachable input in the normal case — but a compromised or
+// misconfigured issuer that started serving a weak key shouldn't be able to
+// silently downgrade every token verification in the process.
+const minRSAModulusBits = 2048
+
 func parseRSAKey(k jwk) (*rsa.PublicKey, error) {
 	nBytes, err := base64.RawURLEncoding.DecodeString(k.N)
 	if err != nil {
@@ -75,6 +82,9 @@ func parseRSAKey(k jwk) (*rsa.PublicKey, error) {
 	}
 
 	n := new(big.Int).SetBytes(nBytes)
+	if n.BitLen() < minRSAModulusBits {
+		return nil, fmt.Errorf("RSA modulus too small: %d bits (minimum %d)", n.BitLen(), minRSAModulusBits)
+	}
 	e := int(new(big.Int).SetBytes(eBytes).Int64())
 
 	return &rsa.PublicKey{N: n, E: e}, nil
@@ -95,11 +105,21 @@ func parseECKey(k jwk) (*ecdsa.PublicKey, error) {
 		return nil, err
 	}
 
-	return &ecdsa.PublicKey{
-		Curve: curve,
-		X:     new(big.Int).SetBytes(xBytes),
-		Y:     new(big.Int).SetBytes(yBytes),
-	}, nil
+	// Build a SEC1 uncompressed point (0x04 || X || Y, each fixed-width to
+	// the curve's field size) and hand it to ParseUncompressedPublicKey
+	// rather than constructing ecdsa.PublicKey from raw X/Y big.Ints
+	// directly — the latter is deprecated as of Go 1.26 (arbitrary
+	// coordinates aren't validated as being on the curve).
+	byteLen := (curve.Params().BitSize + 7) / 8
+	if len(xBytes) > byteLen || len(yBytes) > byteLen {
+		return nil, fmt.Errorf("invalid EC point encoding for curve %s", k.Crv)
+	}
+	point := make([]byte, 1+2*byteLen)
+	point[0] = 0x04
+	copy(point[1+byteLen-len(xBytes):1+byteLen], xBytes)
+	copy(point[1+2*byteLen-len(yBytes):], yBytes)
+
+	return ecdsa.ParseUncompressedPublicKey(curve, point)
 }
 
 func ecCurve(crv string) (elliptic.Curve, error) {

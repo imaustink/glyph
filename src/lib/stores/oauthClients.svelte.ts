@@ -66,9 +66,13 @@ function createOAuthClientsStore() {
 		);
 	}
 
-	async function rotateSecret(orgId: string, clientId: string): Promise<OAuthClientWithSecret> {
+	async function rotateSecret(
+		orgId: string,
+		clientId: string,
+		options?: { revokeExisting?: boolean }
+	): Promise<OAuthClientWithSecret> {
 		if (!repo) throw new Error('OAuth clients not available in local mode');
-		const rotated = await repo.rotateSecret(orgId, clientId);
+		const rotated = await repo.rotateSecret(orgId, clientId, options);
 		const { clientSecret: _clientSecret, ...withoutSecret } = rotated;
 		clients = clients.map((c) => (c.id === clientId ? withoutSecret : c));
 		return rotated;

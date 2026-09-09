@@ -30,6 +30,7 @@ type mockOrgStore struct {
 	updateOrgFn        func(org *model.Organization) (*model.Organization, error)
 	updateMemberRoleFn func(orgID, userID uuid.UUID, role model.OrgRole) (*model.OrgMember, error)
 	removeMemberFn     func(orgID, userID uuid.UUID) error
+	getUserOrgIDsFn    func(userID uuid.UUID) ([]uuid.UUID, error)
 }
 
 func (m *mockOrgStore) GetMember(ctx context.Context, orgID, userID uuid.UUID) (*model.OrgMember, error) {
@@ -94,6 +95,9 @@ func (m *mockOrgStore) RemoveMember(_ context.Context, orgID, userID uuid.UUID) 
 	return nil
 }
 func (m *mockOrgStore) GetUserOrgIDs(_ context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	if m.getUserOrgIDsFn != nil {
+		return m.getUserOrgIDsFn(userID)
+	}
 	return nil, nil
 }
 

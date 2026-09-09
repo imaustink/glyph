@@ -19,6 +19,9 @@ type LaneHandler struct {
 // GET /lanes
 func (h *LaneHandler) ListLanes(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	lanes, err := h.Lanes.ListByUser(c.Request.Context(), user.ID)
 	if err != nil {
 		internalError(c, err)
@@ -30,6 +33,9 @@ func (h *LaneHandler) ListLanes(c *gin.Context) {
 // POST /lanes
 func (h *LaneHandler) CreateLane(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	var body model.Lane
 	if !bindJSON(c, &body) {
 		return
@@ -55,6 +61,9 @@ func (h *LaneHandler) CreateLane(c *gin.Context) {
 // POST /lanes/batch
 func (h *LaneHandler) BatchCreateLanes(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	var bodies []model.Lane
 	if !bindJSON(c, &bodies) {
 		return
@@ -92,6 +101,9 @@ func (h *LaneHandler) BatchCreateLanes(c *gin.Context) {
 // GET /lanes/:id
 func (h *LaneHandler) GetLane(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	id, ok := parseUUID(c, "id")
 	if !ok {
 		return
@@ -107,6 +119,9 @@ func (h *LaneHandler) GetLane(c *gin.Context) {
 // PATCH /lanes/:id
 func (h *LaneHandler) UpdateLane(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	id, ok := parseUUID(c, "id")
 	if !ok {
 		return
@@ -132,6 +147,9 @@ func (h *LaneHandler) UpdateLane(c *gin.Context) {
 // DELETE /lanes/:id
 func (h *LaneHandler) DeleteLane(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	id, ok := parseUUID(c, "id")
 	if !ok {
 		return
@@ -146,6 +164,9 @@ func (h *LaneHandler) DeleteLane(c *gin.Context) {
 // PUT /lanes/:id
 func (h *LaneHandler) UpsertLane(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	id, ok := parseUUID(c, "id")
 	if !ok {
 		return
@@ -176,6 +197,9 @@ func (h *LaneHandler) UpsertLane(c *gin.Context) {
 // PUT /lanes/reorder
 func (h *LaneHandler) ReorderLanes(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	var items []store.LaneReorderItem
 	if !bindJSON(c, &items) {
 		return

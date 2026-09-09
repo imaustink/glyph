@@ -251,5 +251,30 @@ func TestOrgAddMemberByEmail(t *testing.T) {
 			w := h.Do(t, "POST", "/api/v1/orgs/"+orgID+"/members", map[string]string{"email": "nobody@example.com", "role": "viewer"}, h.UserA.ID)
 			assert.Equal(t, http.StatusNotFound, w.Code)
 		},
+
+		// Regression: an unrecognized role used to be accepted, silently
+		// conferring no privileges (every role check is `== OrgRoleOwner` /
+		// `== OrgRoleEditor`) rather than being rejected outright.
+		"AddMember_InvalidRole_Returns400": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			org := Decode[map[string]interface{}](t, h.Do(t, "POST", "/api/v1/orgs", map[string]string{"name": "Bad Role Org"}, h.UserA.ID))
+			orgID := org["id"].(string)
+			w := h.Do(t, "POST", "/api/v1/orgs/"+orgID+"/members",
+				map[string]string{"email": "bob@test.com", "role": "superadmin"}, h.UserA.ID)
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+		},
+
+		"UpdateMemberRole_Invalid_Returns400": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			org := Decode[map[string]interface{}](t, h.Do(t, "POST", "/api/v1/orgs", map[string]string{"name": "Bad Update Role Org"}, h.UserA.ID))
+			orgID := org["id"].(string)
+			w := h.Do(t, "POST", "/api/v1/orgs/"+orgID+"/members",
+				map[string]string{"userId": h.UserB.ID.String(), "role": "viewer"}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code)
+
+			w = h.Do(t, "PATCH", "/api/v1/orgs/"+orgID+"/members/"+h.UserB.ID.String(),
+				map[string]string{"role": "superadmin"}, h.UserA.ID)
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+		},
 	})
 }

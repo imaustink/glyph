@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/glyph/api/internal/model"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -230,6 +230,96 @@ func TestTemplates(t *testing.T) {
 			body := map[string]interface{}{"name": "Hijack", "content": "{}"}
 			w := h.Do(t, "PUT", fmt.Sprintf("/api/v1/templates/%s", created.ID), body, h.UserB.ID)
 			assert.Equal(t, http.StatusNotFound, w.Code)
+		},
+
+		// ── Write permission regression tests ────────────────────────────
+		// GetByID applies the READ-access filter (owner, org member, or any
+		// share). Update used to hand the row's own owner ID back to the
+		// store's ownership guard regardless of who the caller was, so
+		// anyone with mere read access could edit someone else's template.
+
+		"OrgViewerCannotPatchOthersTemplate": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			w := h.Do(t, "POST", "/api/v1/orgs", map[string]interface{}{"name": "Acme"}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code)
+			org := Decode[model.OrgWithRole](t, w)
+
+			w = h.Do(t, "POST", "/api/v1/orgs/"+org.ID.String()+"/members",
+				map[string]interface{}{"userId": h.UserB.ID.String(), "role": "viewer"}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code, "add member: %s", w.Body.String())
+
+			w = h.Do(t, "POST", "/api/v1/templates", map[string]interface{}{
+				"name": "Alice Template", "content": "original",
+				"orgId": org.ID.String(), "isPrivate": false,
+			}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code, "create tmpl: %s", w.Body.String())
+			tmpl := Decode[model.Template](t, w)
+
+			w = h.Do(t, "PATCH", "/api/v1/templates/"+tmpl.ID.String(),
+				map[string]interface{}{"name": "PWNED BY BOB", "content": "tampered"}, h.UserB.ID)
+			assert.Equal(t, http.StatusForbidden, w.Code, "org viewer must not be able to modify another user's template: %s", w.Body.String())
+
+			w2 := h.Do(t, "GET", "/api/v1/templates/"+tmpl.ID.String(), nil, h.UserA.ID)
+			after := Decode[model.Template](t, w2)
+			assert.Equal(t, "Alice Template", after.Name, "template must be unchanged")
+		},
+
+		"ShareViewerCannotPatchOthersTemplate": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			tmpl := createTestTemplate(t, h, h.UserA.ID, "Alice Personal")
+
+			w := h.Do(t, "POST", "/api/v1/shares", map[string]interface{}{
+				"resourceType": "template", "resourceId": tmpl.ID.String(),
+				"sharedWithId": h.UserB.ID.String(), "permission": "viewer",
+			}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code, "create share: %s", w.Body.String())
+
+			w = h.Do(t, "PATCH", "/api/v1/templates/"+tmpl.ID.String(),
+				map[string]interface{}{"name": "PWNED VIA SHARE"}, h.UserB.ID)
+			assert.Equal(t, http.StatusForbidden, w.Code, "viewer-only share must not grant write access: %s", w.Body.String())
+
+			w2 := h.Do(t, "GET", "/api/v1/templates/"+tmpl.ID.String(), nil, h.UserA.ID)
+			after := Decode[model.Template](t, w2)
+			assert.Equal(t, "Alice Personal", after.Name, "template must be unchanged")
+		},
+
+		"OrgEditorCanPatchOthersTemplate": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			w := h.Do(t, "POST", "/api/v1/orgs", map[string]interface{}{"name": "Acme"}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code)
+			org := Decode[model.OrgWithRole](t, w)
+
+			w = h.Do(t, "POST", "/api/v1/orgs/"+org.ID.String()+"/members",
+				map[string]interface{}{"userId": h.UserB.ID.String(), "role": "editor"}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code, "add member: %s", w.Body.String())
+
+			w = h.Do(t, "POST", "/api/v1/templates", map[string]interface{}{
+				"name": "Alice Template", "content": "original",
+				"orgId": org.ID.String(), "isPrivate": false,
+			}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code)
+			tmpl := Decode[model.Template](t, w)
+
+			// An org EDITOR legitimately has write access — this must keep working.
+			w = h.Do(t, "PATCH", "/api/v1/templates/"+tmpl.ID.String(),
+				map[string]interface{}{"name": "Edited By Bob"}, h.UserB.ID)
+			assert.Equal(t, http.StatusOK, w.Code, "org editor should be able to modify the org's template: %s", w.Body.String())
+		},
+
+		"ShareEditorCanPatchOthersTemplate": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			tmpl := createTestTemplate(t, h, h.UserA.ID, "Alice Personal")
+
+			w := h.Do(t, "POST", "/api/v1/shares", map[string]interface{}{
+				"resourceType": "template", "resourceId": tmpl.ID.String(),
+				"sharedWithId": h.UserB.ID.String(), "permission": "editor",
+			}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code)
+
+			// An editor share legitimately grants write access — must keep working.
+			w = h.Do(t, "PATCH", "/api/v1/templates/"+tmpl.ID.String(),
+				map[string]interface{}{"name": "Edited Via Share"}, h.UserB.ID)
+			assert.Equal(t, http.StatusOK, w.Code, "editor share should grant write access: %s", w.Body.String())
 		},
 	})
 }

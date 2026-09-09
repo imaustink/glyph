@@ -23,8 +23,12 @@ export default defineConfig(({ mode }) => {
 						// already covers.
 						'/oauth/token': env.API_PROXY_TARGET,
 						'/oauth/revoke': env.API_PROXY_TARGET,
-						'/test': env.API_PROXY_TARGET,
-						'/health': env.API_PROXY_TARGET
+						'/health': env.API_PROXY_TARGET,
+						// /test (which includes /test/reset — a full table TRUNCATE) is
+						// gated on E2E_RESET_ENABLED separately, mirroring the Go API's
+						// own flag (and hooks.server.ts's production build path) — so
+						// setting API_PROXY_TARGET alone doesn't also expose it.
+						...(env.E2E_RESET_ENABLED === 'true' ? { '/test': env.API_PROXY_TARGET } : {})
 					}
 				: undefined
 		},

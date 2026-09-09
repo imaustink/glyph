@@ -310,10 +310,13 @@ func TestPageHandler_GetPageContent_NotFound_Returns404(t *testing.T) {
 
 func TestPageHandler_GetPageContent_Returns200(t *testing.T) {
 	h := &PageHandler{Pages: &mockPageStore{
+		getByIDFn: func(id, userID uuid.UUID) (*model.Page, error) {
+			return &model.Page{ID: id, UserID: userID}, nil
+		},
 		getContentFn: func(pageID, _ uuid.UUID) (*model.PageContent, error) {
 			return &model.PageContent{PageID: pageID}, nil
 		},
-	}}
+	}, Perms: &PermissionChecker{}}
 	r := gin.New()
 	r.Use(injectTestUser())
 	r.GET("/pages/:id/content", h.GetPageContent)
@@ -1783,7 +1786,11 @@ t.Errorf("CreateTemplate error: want 500, got %d", w.Code)
 
 func TestShareHandler_SearchUsers_SearchError_Returns500(t *testing.T) {
 h := &ShareHandler{
-Orgs:  &mockOrgStore{},
+Orgs: &mockOrgStore{
+getUserOrgIDsFn: func(userID uuid.UUID) ([]uuid.UUID, error) {
+return []uuid.UUID{uuid.New()}, nil
+},
+},
 Users: &mockUserStore{
 searchFn: func(query string, excludeID uuid.UUID, orgIDs []uuid.UUID, limit int) ([]*model.UserSearchResult, error) {
 return nil, errors.New("search error")
@@ -1844,7 +1851,7 @@ return &model.Share{ID: id, Permission: perm}, nil
 },
 Pages: &mockPageStore{
 getByIDFn: func(id, _ uuid.UUID) (*model.Page, error) {
-return &model.Page{ID: pageID, UserID: callerID, Tags: []string{}}, nil
+return &model.Page{ID: pageID, UserID: callerID, Type: model.NodeTypePage, Tags: []string{}}, nil
 },
 },
 }
@@ -2420,7 +2427,7 @@ ResourceID:   pageID,
 },
 Pages: &mockPageStore{
 getByIDFn: func(id, _ uuid.UUID) (*model.Page, error) {
-return &model.Page{ID: pageID, UserID: ownerID, Tags: []string{}}, nil
+return &model.Page{ID: pageID, UserID: ownerID, Type: model.NodeTypePage, Tags: []string{}}, nil
 },
 },
 }

@@ -18,10 +18,9 @@ import (
 // newServer creates a configured *http.Server with the Gin router,
 // health check, auth middleware, and all API routes registered.
 func newServer(ctx context.Context, pool *pgxpool.Pool, s *stores, sessionSecret []byte) *http.Server {
-	if os.Getenv("GIN_MODE") == "" {
-		gin.SetMode(gin.ReleaseMode)
-	}
-
+	// gin's mode is set in main(), before this function runs, so that
+	// mode-dependent guards elsewhere in startup (SESSION_SECRET requirement,
+	// dev-auth opt-in) see the correct value.
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery(), handler.RequestIDMiddleware(), handler.SecurityHeadersMiddleware())
 

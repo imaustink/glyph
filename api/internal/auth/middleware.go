@@ -88,6 +88,20 @@ func CurrentUser(c *gin.Context) *model.User {
 	return u
 }
 
+// CurrentUserOrNil retrieves the authenticated user from the Gin context, or
+// nil if none is set — unlike CurrentUser, it never panics. Use this on a
+// route that may or may not run behind session/bearer auth middleware (e.g.
+// /oauth/revoke, which authenticates via client credentials OR an optional
+// user session on the same endpoint).
+func CurrentUserOrNil(c *gin.Context) *model.User {
+	v, ok := c.Get(ContextKey)
+	if !ok {
+		return nil
+	}
+	u, _ := v.(*model.User)
+	return u
+}
+
 // ─── Token validation ─────────────────────────────────────────────────────────
 
 func extractBearer(header string) (string, error) {

@@ -52,8 +52,20 @@ api:
   cookieDomain: "glyph.example.com"
   cookieSecure: "true"
 
-  # Session secret — leave empty to auto-generate a random one
+  # Session secret. Required — the API fatals on boot if this and
+  # existingSecret are both empty. (It is never auto-generated in this
+  # chart: GIN_MODE=release is always set below, and the API refuses to
+  # generate a random per-process secret in release mode, since that would
+  # invalidate every session on each restart/replica.)
   sessionSecret: ""
+
+  # Dev-auth mode disables authentication entirely (every request is treated
+  # as an authenticated "Dev User") and exposes /test/reset + /test/become.
+  # The API refuses to start in this mode under GIN_MODE=release (which this
+  # chart always sets) unless this is explicitly true — set it only for a
+  # deliberately auth-less deployment (e.g. an internal demo), never as a
+  # substitute for configuring oidc below.
+  devAuth: false
 
   # Use an existing secret for both session and OIDC credentials.
   # The secret must contain keys matching existingSecretKeys below.

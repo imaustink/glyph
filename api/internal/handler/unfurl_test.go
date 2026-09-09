@@ -30,6 +30,18 @@ func TestIsPrivateIP(t *testing.T) {
 		// Unspecified
 		{"0.0.0.0", true},
 		{"::", true},
+		// Carrier-grade NAT (RFC 6598) — not covered by net.IP.IsPrivate,
+		// but routed internally by several managed Kubernetes networking
+		// layouts and CGNAT'd networks.
+		{"100.64.0.1", true},
+		{"100.127.255.255", true},
+		{"100.63.255.255", false}, // just outside the /10
+		{"100.128.0.0", false},    // just outside the /10
+		// IETF protocol assignments (RFC 6890) — not covered by
+		// net.IP.IsPrivate either.
+		{"192.0.0.1", true},
+		{"192.0.0.255", true},
+		{"192.0.1.0", false}, // just outside the /24
 		// Public
 		{"8.8.8.8", false},
 		{"1.1.1.1", false},

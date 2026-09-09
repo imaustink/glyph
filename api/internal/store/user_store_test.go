@@ -92,7 +92,7 @@ func TestUserStore_Search_QueryError(t *testing.T) {
 		},
 	}
 	s := NewUserStore(pool)
-	_, err := s.Search(context.Background(), "query", uuid.New(), nil, 10)
+	_, err := s.Search(context.Background(), "query", uuid.New(), []uuid.UUID{uuid.New()}, 10)
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -120,7 +120,7 @@ func TestUserStore_Search_ScanError(t *testing.T) {
 		},
 	}
 	s := NewUserStore(pool)
-	_, err := s.Search(context.Background(), "query", uuid.New(), nil, 10)
+	_, err := s.Search(context.Background(), "query", uuid.New(), []uuid.UUID{uuid.New()}, 10)
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -133,7 +133,7 @@ func TestUserStore_Search_RowsErr(t *testing.T) {
 		},
 	}
 	s := NewUserStore(pool)
-	_, err := s.Search(context.Background(), "query", uuid.New(), nil, 10)
+	_, err := s.Search(context.Background(), "query", uuid.New(), []uuid.UUID{uuid.New()}, 10)
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -211,7 +211,7 @@ return nil
 },
 }
 s := NewUserStore(pool)
-got, err := s.Search(context.Background(), "alice", uuid.New(), nil, 10)
+got, err := s.Search(context.Background(), "alice", uuid.New(), []uuid.UUID{uuid.New()}, 10)
 if err != nil || len(got) != 1 || got[0].ID != id {
 t.Fatalf("Search_Success: err=%v", err)
 }

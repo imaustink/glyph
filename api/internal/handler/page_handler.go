@@ -75,6 +75,9 @@ func (h *PageHandler) CreatePage(c *gin.Context) {
 	if !checkTokenScope(c, body.OrgID, model.ShareResourcePage, true) {
 		return
 	}
+	if !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
+		return
+	}
 	body.UserID = user.ID
 	if body.Tags == nil {
 		body.Tags = []string{}
@@ -129,6 +132,9 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 	var req UpdatePageRequest
 	keys, ok := bindJSONWithKeys(c, &req)
 	if !ok {
+		return
+	}
+	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
 		return
 	}
 	req.ApplyTo(existing)
@@ -206,6 +212,13 @@ func (h *PageHandler) UpsertPage(c *gin.Context) {
 	if !checkTokenScope(c, body.OrgID, model.ShareResourcePage, true) {
 		return
 	}
+	// A caller-supplied orgId must belong to an org the requester is
+	// actually a member of — otherwise this (Upsert can both create and
+	// update) would let any user plant a brand-new page inside an org they
+	// don't belong to, visible to that org once shared non-privately.
+	if !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
+		return
+	}
 	body.ID = id
 	body.UserID = user.ID
 	if body.Tags == nil {
@@ -227,6 +240,18 @@ func (h *PageHandler) GetPageContent(c *gin.Context) {
 	user := auth.CurrentUser(c)
 	id, ok := parseUUID(c, "id")
 	if !ok {
+		return
+	}
+	// Fetch the page first so we can check bearer-token scope against its
+	// org — GetContent alone enforces the read-access filter (owner/org/
+	// share) but has no notion of OAuth scope, so a token restricted to a
+	// different org could otherwise read this page's full body.
+	page, err := h.Pages.GetByID(c.Request.Context(), id, user.ID)
+	if err != nil {
+		notFoundOrError(c, err)
+		return
+	}
+	if !h.Perms.CanReadResource(c, page.OrgID, model.ShareResourcePage) {
 		return
 	}
 	content, err := h.Pages.GetContent(c.Request.Context(), id, user.ID)
@@ -271,8 +296,14 @@ func (h *PageHandler) UpsertPageContent(c *gin.Context) {
 		body.Content = sanitized
 	}
 
-	// Pass the owner's ID so the store ownership check passes.
-	content, err := h.Pages.UpsertContent(c.Request.Context(), &body, page.UserID)
+	// Pass the actual requester's ID — write permission for a non-owner was
+	// already checked above via CanWritePage; passing page.UserID here
+	// instead used to make the store's own access-filter check tautological
+	// (user_id = page.UserID is always true), providing no real defense in
+	// depth. A legitimate non-owner editor still has read access to the
+	// page, so this doesn't change who succeeds — it just makes the check
+	// mean something.
+	content, err := h.Pages.UpsertContent(c.Request.Context(), &body, user.ID)
 	if err != nil {
 		internalError(c, err)
 		return

@@ -237,6 +237,20 @@ const (
 	OrgRoleViewer OrgRole = "viewer"
 )
 
+// IsValid returns true if r is a known org role value. An unrecognized role
+// silently confers no privileges anywhere it's checked (every role
+// comparison in this codebase is `== OrgRoleOwner` / `== OrgRoleEditor`, an
+// unknown value never matches either), but callers should still validate
+// with this before persisting one — the DB CHECK constraint only turns the
+// same problem into a 500 instead of a 400.
+func (r OrgRole) IsValid() bool {
+	switch r {
+	case OrgRoleOwner, OrgRoleEditor, OrgRoleViewer:
+		return true
+	}
+	return false
+}
+
 type Organization struct {
 	ID          uuid.UUID `json:"id"`
 	Name        string    `json:"name"`

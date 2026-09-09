@@ -60,6 +60,41 @@ func currentTokenScope(c *gin.Context) *model.TokenScope {
 	return ts
 }
 
+// requireSessionAuth rejects a request authenticated via an OAuth bearer
+// token, writing 403 and returning false; a cookie-session request always
+// passes. Use this to close routes that have no corresponding OAuth scope at
+// all (personal lanes, org administration, sharing, user directory search,
+// folder boards) — rather than silently granting a bearer token the acting
+// user's full permissions on them, which defeats the point of scoped
+// delegation. Prefer checkTokenScope/CanReadResource/CanWriteResource instead
+// whenever the resource has a real ShareResourceType scope to check against.
+func requireSessionAuth(c *gin.Context) bool {
+	if currentTokenScope(c) != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "this endpoint is not available to OAuth bearer tokens"})
+		return false
+	}
+	return true
+}
+
+// requireOrgReadScope allows a cookie-session request through unconditionally
+// and a bearer-token request only if it explicitly carries model.ScopeOrgRead.
+// Organizations aren't scoped to another org, so the org-membership check
+// scopeAllows performs doesn't apply here — this checks the scope list
+// directly instead. Use for read-only org endpoints; org administration
+// (create/update/delete/members) has no corresponding write scope at all and
+// should use requireSessionAuth instead.
+func requireOrgReadScope(c *gin.Context) bool {
+	scope := currentTokenScope(c)
+	if scope == nil {
+		return true
+	}
+	if scope.HasScope(model.ScopeOrgRead) {
+		return true
+	}
+	c.JSON(http.StatusForbidden, gin.H{"error": "token scope does not permit this action"})
+	return false
+}
+
 // scopeAllows is the pure, non-response-writing predicate behind
 // checkTokenScope: the resource's org must be within the token's granted
 // orgs (M2M/delegated tokens cannot reach a user's personal, non-org
@@ -114,13 +149,44 @@ func FilterByTokenScope[T any](c *gin.Context, resourceType model.ShareResourceT
 	if scope == nil {
 		return items
 	}
-	out := items[:0]
+	// A fresh backing array — items[:0] would instead overwrite the
+	// caller's own backing array in place as we append, corrupting it for
+	// any other reference the caller (or its caller) still holds.
+	out := make([]T, 0, len(items))
 	for _, it := range items {
 		if scopeAllows(scope, orgIDOf(it), resourceType, false) {
 			out = append(out, it)
 		}
 	}
 	return out
+}
+
+// CanUseOrg verifies requesterID is a member of orgID before it is persisted
+// onto a page/task/template — a nil orgID (personal resource) always
+// passes. Without this, a create/upsert/update handler that merely copies a
+// client-supplied orgId onto the row (relying on checkTokenScope, which only
+// governs bearer tokens, not session requests) would let any user plant
+// content inside an org they don't belong to; once shared non-privately,
+// every member of that org can see — and, depending on their role, write
+// to — a row owned by an outsider.
+func (pc *PermissionChecker) CanUseOrg(c *gin.Context, orgID *uuid.UUID, requesterID uuid.UUID) bool {
+	if orgID == nil || pc == nil || pc.Orgs == nil {
+		return true
+	}
+	if _, err := pc.Orgs.GetMember(c.Request.Context(), *orgID, requesterID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you are not a member of this organization"})
+			return false
+		}
+		slog.Error("permission check failed (org membership)",
+			"org_id", orgID,
+			"requester_id", requesterID,
+			"err", err,
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return false
+	}
+	return true
 }
 
 // CanReadResource is the read-side twin of CanWriteResource's scope check —

@@ -255,21 +255,26 @@ func (s *userStore) GetByEmail(_ context.Context, email string) (*model.User, er
 }
 
 func (s *userStore) Search(_ context.Context, query string, excludeID uuid.UUID, orgIDs []uuid.UUID, limit int) ([]*model.UserSearchResult, error) {
+	if len(orgIDs) == 0 {
+		// Callers are expected to scope search to users who share an org
+		// with the requester. With no orgs there is nobody to match against —
+		// never fall back to an unscoped, directory-wide search.
+		return []*model.UserSearchResult{}, nil
+	}
+
 	s.r.mu.RLock()
 	defer s.r.mu.RUnlock()
 	q := strings.ToLower(query)
 
-	// Build set of allowed user IDs when orgIDs filter is provided.
+	// Build set of allowed user IDs from the orgIDs filter.
 	allowedIDs := map[uuid.UUID]bool{}
-	if len(orgIDs) > 0 {
-		orgIDSet := map[uuid.UUID]bool{}
-		for _, id := range orgIDs {
-			orgIDSet[id] = true
-		}
-		for k, m := range s.r.members {
-			if orgIDSet[k.orgID] {
-				allowedIDs[m.UserID] = true
-			}
+	orgIDSet := map[uuid.UUID]bool{}
+	for _, id := range orgIDs {
+		orgIDSet[id] = true
+	}
+	for k, m := range s.r.members {
+		if orgIDSet[k.orgID] {
+			allowedIDs[m.UserID] = true
 		}
 	}
 
@@ -278,7 +283,7 @@ func (s *userStore) Search(_ context.Context, query string, excludeID uuid.UUID,
 		if u.ID == excludeID {
 			continue
 		}
-		if len(orgIDs) > 0 && !allowedIDs[u.ID] {
+		if !allowedIDs[u.ID] {
 			continue
 		}
 		emailMatch := u.Email != nil && strings.Contains(strings.ToLower(*u.Email), q)

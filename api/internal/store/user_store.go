@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/glyph/api/internal/model"
 	"github.com/google/uuid"
@@ -66,30 +67,29 @@ func (s *pgUserStore) GetByEmail(ctx context.Context, email string) (*model.User
 	return u, nil
 }
 
+// likeEscaper escapes the LIKE/ILIKE metacharacters %, _, and the escape
+// character itself, so a search query is matched literally rather than as a
+// wildcard pattern (a bare "%" would otherwise match every row).
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
 func (s *pgUserStore) Search(ctx context.Context, query string, excludeID uuid.UUID, orgIDs []uuid.UUID, limit int) ([]*model.UserSearchResult, error) {
-	pattern := "%" + query + "%"
-	var rows pgx.Rows
-	var err error
-	if len(orgIDs) > 0 {
-		const q = `
-			SELECT DISTINCT u.id, u.email, u.name
-			FROM users u
-			JOIN org_members om ON om.user_id = u.id
-			WHERE u.id != $1
-			  AND om.org_id = ANY($2)
-			  AND (u.email ILIKE $3 OR u.name ILIKE $3)
-			ORDER BY u.name ASC, u.email ASC
-			LIMIT $4`
-		rows, err = s.pool.Query(ctx, q, excludeID, orgIDs, pattern, limit)
-	} else {
-		const q = `
-			SELECT id, email, name FROM users
-			WHERE id != $1
-			  AND (email ILIKE $2 OR name ILIKE $2)
-			ORDER BY name ASC, email ASC
-			LIMIT $3`
-		rows, err = s.pool.Query(ctx, q, excludeID, pattern, limit)
+	if len(orgIDs) == 0 {
+		// Callers are expected to scope search to users who share an org
+		// with the requester. With no orgs there is nobody to match against —
+		// never fall back to an unscoped, directory-wide query.
+		return []*model.UserSearchResult{}, nil
 	}
+	pattern := "%" + likeEscaper.Replace(query) + "%"
+	const q = `
+		SELECT DISTINCT u.id, u.email, u.name
+		FROM users u
+		JOIN org_members om ON om.user_id = u.id
+		WHERE u.id != $1
+		  AND om.org_id = ANY($2)
+		  AND (u.email ILIKE $3 ESCAPE '\' OR u.name ILIKE $3 ESCAPE '\')
+		ORDER BY u.name ASC, u.email ASC
+		LIMIT $4`
+	rows, err := s.pool.Query(ctx, q, excludeID, orgIDs, pattern, limit)
 	if err != nil {
 		return nil, fmt.Errorf("user search: %w", err)
 	}

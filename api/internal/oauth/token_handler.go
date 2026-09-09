@@ -65,6 +65,33 @@ func authenticateClient(c *gin.Context, cfg Config, requireSecret bool) (*model.
 	return client, true
 }
 
+// tryAuthenticateClient resolves client credentials from the request exactly
+// like authenticateClient, but never writes a response — it only reports
+// success or failure. Use this on a route (like /oauth/revoke) whose
+// contract requires a uniform response regardless of what went wrong, where
+// authenticateClient's error responses on a merely-absent or invalid
+// credential would leak information or break that contract.
+func tryAuthenticateClient(c *gin.Context, cfg Config, requireSecret bool) (*model.OAuthClient, bool) {
+	clientID, clientSecret, hasBasic := c.Request.BasicAuth()
+	if !hasBasic {
+		clientID = c.PostForm("client_id")
+		clientSecret = c.PostForm("client_secret")
+	}
+	if clientID == "" {
+		return nil, false
+	}
+	client, secretHash, err := cfg.Clients.GetByClientID(c.Request.Context(), clientID)
+	if err != nil || client.RevokedAt != nil {
+		return nil, false
+	}
+	if client.IsConfidential || requireSecret {
+		if clientSecret == "" || !secureCompareHash(clientSecret, secretHash) {
+			return nil, false
+		}
+	}
+	return client, true
+}
+
 func hasGrantType(client *model.OAuthClient, g model.OAuthGrantType) bool {
 	for _, gt := range client.GrantTypes {
 		if gt == g {
@@ -75,7 +102,14 @@ func hasGrantType(client *model.OAuthClient, g model.OAuthGrantType) bool {
 }
 
 // intersectScopes returns the subset of requested that is also in allowed.
-// If requested is empty, allowed is returned unchanged (default: full grant).
+// If requested is empty, allowed is returned unchanged (default: full grant
+// of everything the client itself is configured with — the same default
+// RFC 6749 §3.3 leaves to server policy when a client omits `scope`
+// entirely). This is a deliberate, documented policy choice, not an
+// oversight: every existing caller (this codebase's own tests included)
+// that omits `scope` today expects the full grant, so silently narrowing
+// the default here would be a breaking API change, not a pure bug fix.
+// Anything requesting less than full access should pass `scope` explicitly.
 func intersectScopes(requested []model.OAuthScope, allowed []model.OAuthScope) []model.OAuthScope {
 	if len(requested) == 0 {
 		return allowed
@@ -132,6 +166,17 @@ func TokenHandler(cfg Config) gin.HandlerFunc {
 
 // ─── client_credentials (+ subject) ────────────────────────────────────────────
 
+// handleClientCredentials implements the client_credentials+subject
+// (token exchange) grant: given only a valid client secret, a client can
+// mint a token acting as ANY member of ANY org it is scoped to — the
+// subject is never notified and never separately consents. This is by
+// design (it is what lets an already-trusted agent act on behalf of a whole
+// org's membership without an interactive OAuth dance per user), but it
+// means the client secret is equivalent in value to that org's data: treat
+// creating a client_credentials-capable client with the same care as
+// granting the whole org's access to whoever holds the secret, and prefer
+// OAuthClientHandler.RotateSecret's ?revokeExisting=true (not just a plain
+// rotation) if the secret may have leaked.
 func handleClientCredentials(c *gin.Context, cfg Config) {
 	client, ok := authenticateClient(c, cfg, true)
 	if !ok {
@@ -321,20 +366,16 @@ func handleRefreshToken(c *gin.Context, cfg Config) {
 		tokenError(c, http.StatusBadRequest, "invalid_request", "refresh_token is required")
 		return
 	}
-	clientID := c.PostForm("client_id")
-	if clientID != "" {
-		client, secretHash, err := cfg.Clients.GetByClientID(c.Request.Context(), clientID)
-		if err != nil {
-			tokenError(c, http.StatusUnauthorized, "invalid_client", "unknown client")
-			return
-		}
-		if client.IsConfidential {
-			clientSecret := c.PostForm("client_secret")
-			if clientSecret == "" || !secureCompareHash(clientSecret, secretHash) {
-				tokenError(c, http.StatusUnauthorized, "invalid_client", "invalid client credentials")
-				return
-			}
-		}
+
+	// The client must always be identified (client_id required) and, if
+	// confidential, authenticated with its secret — the same rule
+	// handleAuthorizationCode applies, so a public (PKCE) client's refresh
+	// flow keeps working without a secret it was never issued. RotateRefresh
+	// below then binds rotation to this client's ID, so a refresh token
+	// cannot be redeemed by any client other than the one it was issued to.
+	client, ok := authenticateClient(c, cfg, false)
+	if !ok {
+		return
 	}
 
 	newAccessToken, newAccessHash, err := GenerateAccessToken()
@@ -350,14 +391,14 @@ func handleRefreshToken(c *gin.Context, cfg Config) {
 
 	now := time.Now()
 	refreshExp := now.Add(refreshTokenTTL)
-	tok, err := cfg.Tokens.RotateRefresh(c.Request.Context(), hashToken(refreshToken), newAccessHash, newRefreshHash, now.Add(accessTokenTTL), refreshExp)
+	tok, err := cfg.Tokens.RotateRefresh(c.Request.Context(), client.ID, hashToken(refreshToken), newAccessHash, newRefreshHash, now.Add(accessTokenTTL), refreshExp)
 	if err != nil {
-		// Reuse of an already-rotated (or revoked/nonexistent) refresh token.
-		// We cannot identify which token row to revoke without an old-hash
-		// lookup keyed differently, so nothing further to revoke here beyond
-		// the fact that RotateRefresh's WHERE clause already prevented reuse
-		// from succeeding.
-		tokenError(c, http.StatusBadRequest, "invalid_grant", "refresh token is invalid, expired, or already used")
+		// Reuse of an already-rotated/expired/revoked refresh token, or an
+		// attempt to redeem a token issued to a different client. We cannot
+		// identify which token row to revoke without an old-hash lookup keyed
+		// differently, so nothing further to revoke here beyond the fact that
+		// RotateRefresh's WHERE clause already prevented it from succeeding.
+		tokenError(c, http.StatusBadRequest, "invalid_grant", "refresh token is invalid, expired, already used, or was not issued to this client")
 		return
 	}
 

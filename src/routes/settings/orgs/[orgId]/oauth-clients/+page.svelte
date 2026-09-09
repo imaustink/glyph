@@ -159,9 +159,30 @@
 
   async function rotateSecret() {
     if (!selectedClientId) return;
-    if (!confirm('Rotate this client\'s secret? The old secret will stop working for new token requests.'))
+    if (
+      !confirm(
+        "Rotate this client's secret? The old secret will stop working for new token requests, " +
+          'but tokens already issued keep working until they expire.'
+      )
+    )
       return;
     const rotated = await oauthClientsStore.rotateSecret(orgId, selectedClientId);
+    revealedSecret = { clientId: rotated.id, secret: rotated.clientSecret };
+  }
+
+  async function rotateSecretAndRevoke() {
+    if (!selectedClientId) return;
+    if (
+      !confirm(
+        'Rotate this secret AND revoke every token already issued to this client? ' +
+          "Use this if the secret may have leaked — every agent using this client's old " +
+          'credentials will need to re-authenticate.'
+      )
+    )
+      return;
+    const rotated = await oauthClientsStore.rotateSecret(orgId, selectedClientId, {
+      revokeExisting: true
+    });
     revealedSecret = { clientId: rotated.id, secret: rotated.clientSecret };
   }
 
@@ -217,7 +238,10 @@
     <h1>OAuth Clients{org ? ` · ${org.name}` : ''}</h1>
     <p class="subtitle">
       Manage machine credentials that let agents and third-party apps act on behalf of your
-      organization's members.
+      organization's members. A client's secret is as sensitive as the org's data: with it, an
+      agent can request a token acting as <em>any</em> member, without that member's separate
+      consent. Treat it like a shared admin password — if a secret may have leaked, rotate it
+      and revoke its existing tokens rather than rotating alone.
     </p>
   </div>
 
@@ -408,8 +432,11 @@
             <button class="btn-primary" onclick={saveClient} disabled={saving || !editingName.trim()}>
               {saving ? 'Saving…' : 'Save changes'}
             </button>
-            <button class="btn-ghost" onclick={rotateSecret}>Rotate secret</button>
             {#if !selectedClient.revokedAt}
+              <button class="btn-ghost" onclick={rotateSecret}>Rotate secret</button>
+              <button class="btn-ghost danger" onclick={rotateSecretAndRevoke}>
+                Rotate &amp; revoke all tokens
+              </button>
               <button class="btn-ghost danger" onclick={revokeClient}>Revoke client</button>
             {/if}
           </div>

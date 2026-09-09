@@ -180,10 +180,15 @@ type OAuthTokenStore interface {
 	Create(ctx context.Context, t *model.OAuthToken, accessHash string, refreshHash *string) error
 	GetByAccessHash(ctx context.Context, hash string) (*model.OAuthToken, error)
 	// RotateRefresh atomically replaces both hashes + expiries on the same row,
-	// guarded by WHERE refresh_token_hash = oldRefreshHash AND revoked_at IS NULL.
-	// Returns ErrConflict if oldRefreshHash does not match (already rotated/revoked) —
-	// callers should treat this as a possible replay and revoke the token outright.
-	RotateRefresh(ctx context.Context, oldRefreshHash, newAccessHash, newRefreshHash string, accessExp time.Time, refreshExp time.Time) (*model.OAuthToken, error)
+	// guarded by WHERE refresh_token_hash = oldRefreshHash AND client_id = clientID
+	// AND revoked_at IS NULL AND refresh_token_expires_at > NOW(). The clientID
+	// binds rotation to the client the token was originally issued to (callers
+	// must authenticate that client before calling this), and the expiry check
+	// ensures a token past its refresh_token_expires_at cannot be renewed
+	// indefinitely. Returns ErrConflict if the row doesn't match — expired,
+	// already rotated/revoked, or requested by the wrong client — callers
+	// should treat this as a possible replay/theft and may revoke the token.
+	RotateRefresh(ctx context.Context, clientID uuid.UUID, oldRefreshHash, newAccessHash, newRefreshHash string, accessExp time.Time, refreshExp time.Time) (*model.OAuthToken, error)
 	TouchLastUsed(ctx context.Context, id uuid.UUID) error
 	Revoke(ctx context.Context, id uuid.UUID) error
 	RevokeAllForClient(ctx context.Context, clientID uuid.UUID) error

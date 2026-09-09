@@ -30,6 +30,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 			internalError(c, err)
 			return
 		}
+		tasks = FilterByTokenScope(c, model.ShareResourceTask, tasks, func(t *model.Task) *uuid.UUID { return t.OrgID })
 		c.JSON(http.StatusOK, tasks)
 		return
 	}
@@ -46,6 +47,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 			internalError(c, err)
 			return
 		}
+		tasks = FilterByTokenScope(c, model.ShareResourceTask, tasks, func(t *model.Task) *uuid.UUID { return t.OrgID })
 		c.JSON(http.StatusOK, tasks)
 		return
 	}
@@ -100,6 +102,9 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 		return
 	}
 	if !checkTokenScope(c, body.OrgID, model.ShareResourceTask, true) {
+		return
+	}
+	if !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
 		return
 	}
 	body.UserID = user.ID
@@ -159,6 +164,9 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
+	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
+		return
+	}
 	req.ApplyTo(existing)
 	task, err := h.Tasks.Update(c.Request.Context(), existing)
 	if err != nil {
@@ -208,6 +216,9 @@ func (h *TaskHandler) UpsertTask(c *gin.Context) {
 	if !checkTokenScope(c, body.OrgID, model.ShareResourceTask, true) {
 		return
 	}
+	if !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
+		return
+	}
 	body.ID = id
 	body.UserID = user.ID
 	if body.Tags == nil {
@@ -232,8 +243,7 @@ func (h *TaskHandler) FilterTasks(c *gin.Context) {
 	user := auth.CurrentUser(c)
 
 	var fs model.FilterSet
-	if err := c.ShouldBindJSON(&fs); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid filter set: " + err.Error()})
+	if !bindJSON(c, &fs) {
 		return
 	}
 
@@ -242,6 +252,6 @@ func (h *TaskHandler) FilterTasks(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
+	tasks = FilterByTokenScope(c, model.ShareResourceTask, tasks, func(t *model.Task) *uuid.UUID { return t.OrgID })
 	c.JSON(http.StatusOK, tasks)
 }
-

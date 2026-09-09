@@ -356,7 +356,14 @@ func (h *OAuthClientHandler) RemoveClientOrg(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// POST /orgs/:orgId/oauth-clients/:clientId/rotate-secret
+// POST /orgs/:orgId/oauth-clients/:clientId/rotate-secret?revokeExisting=true
+//
+// Rotating the secret alone does not affect tokens already issued under the
+// old secret — they keep working until they naturally expire. That is
+// usually what you want (a live rotation shouldn't interrupt in-flight
+// delegated sessions), but it means a suspected-leaked secret isn't fully
+// contained by rotation alone. Pass ?revokeExisting=true to also revoke
+// every token issued to this client, for the "assume compromise" case.
 func (h *OAuthClientHandler) RotateSecret(c *gin.Context) {
 	if !rejectBearerAuth(c) {
 		return
@@ -382,6 +389,12 @@ func (h *OAuthClientHandler) RotateSecret(c *gin.Context) {
 	if err != nil {
 		internalError(c, err)
 		return
+	}
+	if c.Query("revokeExisting") == "true" {
+		if err := h.Tokens.RevokeAllForClient(c.Request.Context(), client.ID); err != nil {
+			internalError(c, err)
+			return
+		}
 	}
 	c.JSON(http.StatusOK, model.OAuthClientWithSecret{OAuthClient: *updated, ClientSecret: newSecret})
 }

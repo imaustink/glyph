@@ -776,7 +776,7 @@ func TestShareHandler_UpdateSharePermission_UpdateError_Returns500(t *testing.T)
 		},
 		Pages: &mockPageStore{
 			getByIDFn: func(id, userID uuid.UUID) (*model.Page, error) {
-				return &model.Page{ID: id, UserID: uid}, nil
+				return &model.Page{ID: id, UserID: uid, Type: model.NodeTypePage}, nil
 			},
 		},
 		Tasks:     &mockTaskStore{},

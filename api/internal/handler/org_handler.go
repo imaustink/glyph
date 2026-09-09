@@ -21,6 +21,9 @@ type OrgHandler struct {
 // GET /orgs
 func (h *OrgHandler) ListOrgs(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireOrgReadScope(c) {
+		return
+	}
 	orgs, err := h.Orgs.ListForUser(c.Request.Context(), user.ID)
 	if err != nil {
 		internalError(c, err)
@@ -32,6 +35,9 @@ func (h *OrgHandler) ListOrgs(c *gin.Context) {
 // POST /orgs
 func (h *OrgHandler) CreateOrg(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	var body struct {
 		Name string `json:"name"`
 	}
@@ -61,6 +67,9 @@ func (h *OrgHandler) CreateOrg(c *gin.Context) {
 // GET /orgs/:orgId
 func (h *OrgHandler) GetOrg(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireOrgReadScope(c) {
+		return
+	}
 	orgID, ok := parseUUID(c, "orgId")
 	if !ok {
 		return
@@ -86,6 +95,9 @@ func (h *OrgHandler) GetOrg(c *gin.Context) {
 // PATCH /orgs/:orgId
 func (h *OrgHandler) UpdateOrg(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	orgID, ok := parseUUID(c, "orgId")
 	if !ok {
 		return
@@ -120,6 +132,9 @@ func (h *OrgHandler) UpdateOrg(c *gin.Context) {
 // DELETE /orgs/:orgId
 func (h *OrgHandler) DeleteOrg(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	orgID, ok := parseUUID(c, "orgId")
 	if !ok {
 		return
@@ -139,6 +154,9 @@ func (h *OrgHandler) DeleteOrg(c *gin.Context) {
 // POST /orgs/:orgId/members
 func (h *OrgHandler) AddOrgMember(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	orgID, ok := parseUUID(c, "orgId")
 	if !ok {
 		return
@@ -160,6 +178,10 @@ func (h *OrgHandler) AddOrgMember(c *gin.Context) {
 	}
 	if body.Role == "" {
 		body.Role = model.OrgRoleViewer
+	}
+	if !body.Role.IsValid() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid role"})
+		return
 	}
 	var memberID uuid.UUID
 	if body.UserID != "" {
@@ -193,6 +215,9 @@ func (h *OrgHandler) AddOrgMember(c *gin.Context) {
 // PATCH /orgs/:orgId/members/:userId
 func (h *OrgHandler) UpdateOrgMemberRole(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	orgID, ok := parseUUID(c, "orgId")
 	if !ok {
 		return
@@ -208,6 +233,10 @@ func (h *OrgHandler) UpdateOrgMemberRole(c *gin.Context) {
 		Role model.OrgRole `json:"role"`
 	}
 	if !bindJSON(c, &body) {
+		return
+	}
+	if !body.Role.IsValid() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid role"})
 		return
 	}
 	// Prevent demoting the last owner.
@@ -239,6 +268,9 @@ func (h *OrgHandler) UpdateOrgMemberRole(c *gin.Context) {
 // DELETE /orgs/:orgId/members/:userId
 func (h *OrgHandler) RemoveOrgMember(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	orgID, ok := parseUUID(c, "orgId")
 	if !ok {
 		return

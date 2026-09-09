@@ -25,12 +25,33 @@ var netLookupIP = net.LookupIP
 // httpNewRequest is injectable for testing.
 var httpNewRequest = http.NewRequestWithContext
 
-// safeDialContext wraps the default dialer to reject connections to private/reserved IPs.
-// This prevents SSRF attacks via DNS rebinding or redirect-to-private.
+// allowedUnfurlPorts restricts outbound unfurl connections to the standard
+// web ports — an attacker who gets a hostname past the private-IP check has
+// no reason to reach anything else (an internal admin panel on a
+// non-standard port, say).
+var allowedUnfurlPorts = map[string]bool{"80": true, "443": true}
+
+// dialTCP performs the final connection and is injectable for testing —
+// specifically so a test can assert exactly what address safeDialContext
+// dials (an IP literal, never a hostname that could re-resolve differently
+// than the validated ips slice).
+var dialTCP = func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)
+}
+
+// safeDialContext wraps the default dialer to reject connections to
+// private/reserved IPs. This prevents SSRF attacks via redirect-to-private,
+// and — critically — DNS rebinding: the resolved IPs are validated and then
+// dialed directly by IP rather than by hostname, so a second, independent
+// resolution (which an attacker's low-TTL DNS record could answer
+// differently) never happens between the check and the connection.
 func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
+	}
+	if !allowedUnfurlPorts[port] {
+		return nil, &net.AddrError{Err: "connection to non-standard port denied", Addr: addr}
 	}
 
 	ips, err := netLookupIPAddr(ctx, host)
@@ -38,14 +59,25 @@ func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error
 		return nil, err
 	}
 
+	var lastErr error
 	for _, ip := range ips {
 		if isPrivateIP(ip.IP) {
-			return nil, &net.AddrError{Err: "connection to private address denied", Addr: addr}
+			lastErr = &net.AddrError{Err: "connection to private address denied", Addr: addr}
+			continue
 		}
+		// Dial the already-validated IP literal directly — never the
+		// hostname — so nothing re-resolves DNS between the check above and
+		// the connection below.
+		conn, dialErr := dialTCP(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+		if dialErr == nil {
+			return conn, nil
+		}
+		lastErr = dialErr
 	}
-
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
+	if lastErr == nil {
+		lastErr = &net.AddrError{Err: "no addresses found", Addr: addr}
+	}
+	return nil, lastErr
 }
 
 var unfurlCheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -291,11 +323,33 @@ func isPrivateHost(hostname string) bool {
 	return false
 }
 
+// cgnatBlock is 100.64.0.0/10, the shared address space for carrier-grade
+// NAT (RFC 6598) — not covered by net.IP.IsPrivate (which only recognizes
+// RFC 1918 + fc00::/7). Several managed Kubernetes networking layouts (and
+// some CGNAT'd home/mobile networks) route pod, service, or internal
+// addresses from this block, so it must be denied like any other internal
+// range.
+var cgnatBlock = mustParseCIDR("100.64.0.0/10")
+
+// ietfProtocolBlock is 192.0.0.0/24, reserved for IETF protocol assignments
+// (RFC 6890) and not covered by net.IP.IsPrivate either.
+var ietfProtocolBlock = mustParseCIDR("192.0.0.0/24")
+
+func mustParseCIDR(s string) *net.IPNet {
+	_, n, err := net.ParseCIDR(s)
+	if err != nil {
+		panic(err)
+	}
+	return n
+}
+
 // isPrivateIP returns true if the IP belongs to a private, loopback, or reserved range.
 func isPrivateIP(ip net.IP) bool {
 	return ip.IsLoopback() ||
 		ip.IsPrivate() ||
 		ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() ||
-		ip.IsUnspecified()
+		ip.IsUnspecified() ||
+		cgnatBlock.Contains(ip) ||
+		ietfProtocolBlock.Contains(ip)
 }
