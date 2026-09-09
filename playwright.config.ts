@@ -23,6 +23,14 @@ const wantApi =
 const wantLocal =
 	!process.env.PLAYWRIGHT_PROJECT || process.env.PLAYWRIGHT_PROJECT === 'local';
 
+// Ports default to the values below for a lone `pnpm test:e2e*` run, but every
+// one of them is overridable so scripts/test-e2e.sh can hand out ports that
+// are unique per invocation — letting multiple agents/worktrees run the E2E
+// suite on the same machine at the same time without port collisions.
+const localPort = process.env.TEST_LOCAL_PORT ?? '5175';
+const apiUiPort = process.env.TEST_API_UI_PORT ?? '5174';
+const apiPort = process.env.TEST_API_PORT ?? '8083';
+
 export default defineConfig({
 	testDir: './e2e',
 	fullyParallel: true,
@@ -45,14 +53,14 @@ export default defineConfig({
 			name: 'local',
 			use: {
 				storageMode: 'local' as const,
-				baseURL: 'http://localhost:5175'
+				baseURL: `http://localhost:${localPort}`
 			}
 		},
 		{
 			name: 'api',
 			use: {
 				storageMode: 'api' as const,
-				baseURL: 'http://localhost:5174'
+				baseURL: `http://localhost:${apiUiPort}`
 			}
 		}
 	],
@@ -65,9 +73,9 @@ export default defineConfig({
 			? [
 					{
 						command: process.env.CI
-							? 'PORT=5175 node build-local'
-							: 'VITE_STORAGE_MODE=local pnpm dev --port 5175',
-						port: 5175,
+							? `PORT=${localPort} node build-local`
+							: `VITE_STORAGE_MODE=local pnpm dev --port ${localPort}`,
+						port: Number(localPort),
 						reuseExistingServer: !process.env.CI as boolean,
 						timeout: 30_000
 					}
@@ -79,14 +87,14 @@ export default defineConfig({
 			? [
 					{
 						command: process.env.API_SERVER_CMD ?? 'cd api && go run ./cmd/api',
-						port: 8083,
+						port: Number(apiPort),
 						reuseExistingServer: !!process.env.REUSE_API_SERVER,
 					timeout: process.env.CI ? 60_000 : 30_000,
 						env: {
 							DATABASE_URL:
 								process.env.DATABASE_URL ??
 								'postgres://glyph:glyph@localhost:5432/glyph?sslmode=disable',
-							PORT: '8083',
+							PORT: apiPort,
 							OIDC_ISSUER_URL: '',
 							OIDC_CLIENT_ID: '',
 							OIDC_CLIENT_SECRET: '',
@@ -97,9 +105,9 @@ export default defineConfig({
 					// ── API-mode SvelteKit dev server (proxies to Go API) ──────
 					{
 						command: process.env.CI
-							? 'PORT=5174 API_PROXY_TARGET=http://localhost:8083 node build-api'
-							: 'VITE_STORAGE_MODE=api VITE_API_URL= API_PROXY_TARGET=http://localhost:8083 pnpm dev --port 5174',
-						port: 5174,
+							? `PORT=${apiUiPort} API_PROXY_TARGET=http://localhost:${apiPort} node build-api`
+							: `VITE_STORAGE_MODE=api VITE_API_URL= API_PROXY_TARGET=http://localhost:${apiPort} pnpm dev --port ${apiUiPort}`,
+						port: Number(apiUiPort),
 						reuseExistingServer: !process.env.CI as boolean,
 						timeout: 30_000
 					}
