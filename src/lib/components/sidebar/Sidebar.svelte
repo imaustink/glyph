@@ -168,15 +168,23 @@
   </div>
 
   <nav class="sidebar-nav">
-    <a href="/tasks" class="nav-item" class:active={isTasksActive}>
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <rect x="3" y="4" width="18" height="18" rx="2"/>
-        <line x1="16" y1="2" x2="16" y2="6"/>
-        <line x1="8" y1="2" x2="8" y2="6"/>
-        <line x1="3" y1="10" x2="21" y2="10"/>
-      </svg>
-      Task Board
-    </a>
+    <div class="nav-item-row">
+      <a href="/tasks" class="nav-item" class:active={isTasksActive}>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="4" width="18" height="18" rx="2"/>
+          <line x1="16" y1="2" x2="16" y2="6"/>
+          <line x1="8" y1="2" x2="8" y2="6"/>
+          <line x1="3" y1="10" x2="21" y2="10"/>
+        </svg>
+        Task Board
+      </a>
+      <button class="btn-ghost icon-btn" onclick={() => uiStore.openCreateTask()} title="New task">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="12" y1="5" x2="12" y2="19"/>
+          <line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+      </button>
+    </div>
     <a href="/search" class="nav-item" class:active={isSearchActive}>
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <circle cx="11" cy="11" r="8"/>
@@ -322,6 +330,17 @@
   .sidebar-nav {
     padding: 8px 6px;
     border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .nav-item-row {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .nav-item-row .nav-item {
+    flex: 1;
+    min-width: 0;
   }
 
   .nav-item {
