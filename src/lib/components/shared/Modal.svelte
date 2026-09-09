@@ -110,6 +110,7 @@
 	.modal-backdrop {
 		position: absolute;
 		inset: 0;
+		z-index: 0;
 		background: rgba(0, 0, 0, 0.5);
 		pointer-events: none;
 		animation: fade-in 0.15s ease-out;
