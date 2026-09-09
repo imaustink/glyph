@@ -105,11 +105,21 @@ func parseECKey(k jwk) (*ecdsa.PublicKey, error) {
 		return nil, err
 	}
 
-	return &ecdsa.PublicKey{
-		Curve: curve,
-		X:     new(big.Int).SetBytes(xBytes),
-		Y:     new(big.Int).SetBytes(yBytes),
-	}, nil
+	// Build a SEC1 uncompressed point (0x04 || X || Y, each fixed-width to
+	// the curve's field size) and hand it to ParseUncompressedPublicKey
+	// rather than constructing ecdsa.PublicKey from raw X/Y big.Ints
+	// directly — the latter is deprecated as of Go 1.26 (arbitrary
+	// coordinates aren't validated as being on the curve).
+	byteLen := (curve.Params().BitSize + 7) / 8
+	if len(xBytes) > byteLen || len(yBytes) > byteLen {
+		return nil, fmt.Errorf("invalid EC point encoding for curve %s", k.Crv)
+	}
+	point := make([]byte, 1+2*byteLen)
+	point[0] = 0x04
+	copy(point[1+byteLen-len(xBytes):1+byteLen], xBytes)
+	copy(point[1+2*byteLen-len(yBytes):], yBytes)
+
+	return ecdsa.ParseUncompressedPublicKey(curve, point)
 }
 
 func ecCurve(crv string) (elliptic.Curve, error) {
