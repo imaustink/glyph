@@ -2,6 +2,7 @@
   import { lanesStore } from '$lib/stores/lanes.svelte';
   import { tasksStore } from '$lib/stores/tasks.svelte';
   import { pagesStore } from '$lib/stores/pages.svelte';
+  import { uiStore } from '$lib/stores/ui.svelte';
   import Lane from '$lib/components/tasks/Lane.svelte';
   import LaneConfig from '$lib/components/tasks/LaneConfig.svelte';
   import type { Lane as LaneType, Task } from '$lib/models/types';
@@ -53,6 +54,13 @@
     <h1 class="board-title">Task Board</h1>
     <div class="board-actions">
       <span class="task-count">{tasksStore.tasks.length} tasks</span>
+      <button class="btn-primary new-task-btn" onclick={() => uiStore.openCreateTask()}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="12" y1="5" x2="12" y2="19"/>
+          <line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        New task
+      </button>
     </div>
   </div>
 
@@ -113,9 +121,21 @@
     margin: 0;
   }
 
+  .board-actions {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
   .task-count {
     font-size: var(--font-size-sm);
     color: var(--text-muted);
+  }
+
+  .new-task-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .board-container {

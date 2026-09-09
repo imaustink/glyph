@@ -17,6 +17,7 @@
   import { estimateStorageUsage, downloadExport } from '$lib/utils/export';
   import Sidebar from '$lib/components/sidebar/Sidebar.svelte';
   import SearchModal from '$lib/components/search/SearchModal.svelte';
+  import CreateTaskModal from '$lib/components/tasks/CreateTaskModal.svelte';
   import ToastContainer from '$lib/components/shared/ToastContainer.svelte';
 
   let { children } = $props();
@@ -212,6 +213,8 @@
   {#if uiStore.searchOpen}
     <SearchModal />
   {/if}
+
+  <CreateTaskModal bind:open={uiStore.createTaskOpen} />
 
   <ToastContainer />
 </div>

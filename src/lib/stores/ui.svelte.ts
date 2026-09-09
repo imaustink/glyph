@@ -6,6 +6,7 @@ export function createUiStore() {
   let currentPageId = $state<string | null>(null);
   let sidebarOpen = $state(true);
   let searchOpen = $state(false);
+  let createTaskOpen = $state(false);
   let pendingTaskCreation = $state<PendingTaskCreation | null>(null);
   let shouldFocusTitle = $state(false);
   let saveState = $state<SaveState>('idle');
@@ -36,6 +37,14 @@ export function createUiStore() {
 
   function closeSearch() {
     searchOpen = false;
+  }
+
+  function openCreateTask() {
+    createTaskOpen = true;
+  }
+
+  function closeCreateTask() {
+    createTaskOpen = false;
   }
 
   function setPendingTaskCreation(pending: PendingTaskCreation | null) {
@@ -127,6 +136,8 @@ export function createUiStore() {
     get currentPageId() { return currentPageId; },
     get sidebarOpen() { return sidebarOpen; },
     get searchOpen() { return searchOpen; },
+    get createTaskOpen() { return createTaskOpen; },
+    set createTaskOpen(v: boolean) { createTaskOpen = v; },
     get pendingTaskCreation() { return pendingTaskCreation; },
     get shouldFocusTitle() { return shouldFocusTitle; },
     get saveState() { return saveState; },
@@ -138,6 +149,8 @@ export function createUiStore() {
     closeSidebar,
     openSearch,
     closeSearch,
+    openCreateTask,
+    closeCreateTask,
     setPendingTaskCreation,
     setShouldFocusTitle,
     markSaving,
