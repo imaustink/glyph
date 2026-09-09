@@ -420,26 +420,30 @@ After a Postgres reset, the `migrate` service re-runs all migrations on next `up
 
 ## Playwright E2E — isolated test containers
 
-The API tests require Postgres + the Go API. To avoid conflicting with a running dev stack, use `docker-compose.test.yml`, which runs in a **separate Docker project** (`glyph-test`) on different ports:
+The API tests require Postgres + the Go API. To avoid conflicting with a running dev stack, use `docker-compose.test.yml`, which runs in a **separate Docker project** on different ports from dev:
 
-| Service | Dev port | Test port |
+| Service | Dev port | Test port (default) |
 |---|---|---|
 | Postgres | 5432 | 5433 |
 | Go API | container-internal | 8083 |
 
 The test Postgres is **ephemeral** (no named volume) — every `up` starts with a clean database.
 
-### Automated (preferred)
+### Automated (preferred) — safe for concurrent agents/worktrees
 
 ```bash
 pnpm test:e2e:api:docker   # start containers → run api tests → tear down
 pnpm test:e2e:docker       # same but for all projects
 ```
 
+Both run `scripts/test-e2e.sh`, which allocates a **fresh free port** for Postgres, the Go API, and both Vite dev servers, plus a **unique Docker Compose project name** (`glyph-test-<pid>-<timestamp>`), on every invocation — the ports/project name in the table above are only the fallback defaults for a lone manual run. This means multiple agents (each in their own git worktree) can run the full suite, E2Es included, on the same machine at the same time without colliding on ports or containers. Don't hardcode `5433`/`8083`/`5174`/`5175` when scripting against this — read `TEST_PG_PORT`/`TEST_API_PORT`/`TEST_LOCAL_PORT`/`TEST_API_UI_PORT` instead.
+
 ### Manual
 
 ```bash
-# Start the isolated stack and wait for healthy
+# Start the isolated stack (uses the default ports/project name — fine for a single
+# ad-hoc run, but two of these at once WILL collide; use scripts/test-e2e.sh instead
+# if you need to run alongside another agent/worktree)
 docker compose -f docker-compose.test.yml up -d --build --wait
 
 # Run tests (Playwright sees the API already on :8083 and reuses it)
@@ -451,7 +455,7 @@ docker compose -f docker-compose.test.yml down -v
 
 ### How it works with `playwright.config.ts`
 
-`reuseExistingServer: true` (the non-CI default) means Playwright will detect the API already listening on `:8083` and skip running `go run ./cmd/api` locally. The SvelteKit dev server still starts on `:5174`, proxying to the Docker API.
+`reuseExistingServer: true` (the non-CI default) means Playwright will detect the API already listening on the configured API port and skip running `go run ./cmd/api` locally. The SvelteKit dev server still starts (default `:5174`), proxying to the Docker API. All four ports are overridable via `TEST_LOCAL_PORT`, `TEST_API_UI_PORT`, and `TEST_API_PORT` (shared with the Docker Compose file), which is what lets `scripts/test-e2e.sh` hand out unique ports per run.
 
 ---
 
