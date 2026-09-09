@@ -3,6 +3,7 @@
   import { Editor } from '@tiptap/core';
   import StarterKit from '@tiptap/starter-kit';
   import Placeholder from '@tiptap/extension-placeholder';
+  import { goto } from '$app/navigation';
   import { TaskLinkExtension } from '$lib/editor/extensions/TaskLinkExtension';
   import { TodoDetectionExtension, type DetectedBullet } from '$lib/editor/extensions/TodoDetectionExtension';
   import { NodeIdMapExtension } from '$lib/editor/plugins/NodeIdMapPlugin';
@@ -13,9 +14,7 @@
   import { useTaskCreation, type PendingTaskDetails } from '$lib/editor/useTaskCreation';
   import { useTaskSync } from '$lib/editor/useTaskSync';
   import { useBulletRemoval } from '$lib/editor/useBulletRemoval';
-  import { DEBOUNCE } from '$lib/models/constants';
   import TaskCreationPopover from './TaskCreationPopover.svelte';
-  import TaskHoverPreview from './TaskHoverPreview.svelte';
   import { nanoid } from 'nanoid';
   import type { TaskStatus } from '$lib/models/types';
 
@@ -32,9 +31,6 @@
 
   // Reactive state for template rendering
   let pending = $state<PendingTaskDetails | null>(null);
-  let hoverPreview = $state<{ taskId: string; x: number; y: number } | null>(null);
-  let hoverTimer: ReturnType<typeof setTimeout> | null = null;
-  let hoverCloseTimer: ReturnType<typeof setTimeout> | null = null;
   let removedBulletTimer: ReturnType<typeof setTimeout> | null = null;
 
   // ─── Composables ────────────────────────────────────────────────────────────
@@ -137,57 +133,6 @@
     pending = { ...pending, bulletText: title };
   }
 
-  // ─── Hover preview ─────────────────────────────────────────────────────────
-
-  function setupHoverDetection() {
-    if (!editorEl) return;
-    editorEl.addEventListener('mouseover', handleEditorMouseover);
-    editorEl.addEventListener('mouseout', handleEditorMouseout);
-  }
-
-  function handleEditorMouseover(e: MouseEvent) {
-    const target = e.target as HTMLElement;
-    const li = target.closest('[data-task-id]') as HTMLElement | null;
-    if (!li) { scheduleHoverClose(); return; }
-
-    const taskId = li.getAttribute('data-task-id');
-    if (!taskId) return;
-
-    cancelHoverClose();
-    if (hoverTimer) clearTimeout(hoverTimer);
-    hoverTimer = setTimeout(() => {
-      const rect = li.getBoundingClientRect();
-      hoverPreview = { taskId, x: rect.left + rect.width / 2, y: rect.top - 8 };
-    }, DEBOUNCE.HOVER_PREVIEW);
-  }
-
-  function handleEditorMouseout(e: MouseEvent) {
-    const related = e.relatedTarget as HTMLElement | null;
-    if (related?.closest('[data-task-id]')) return;
-    // Delay the close so the pointer can travel from the bullet onto the
-    // floating preview (to click "Open") without it disappearing.
-    scheduleHoverClose();
-  }
-
-  /** Cancel a pending open and close the preview immediately. */
-  function clearHoverPreview() {
-    if (hoverTimer) clearTimeout(hoverTimer);
-    if (hoverCloseTimer) { clearTimeout(hoverCloseTimer); hoverCloseTimer = null; }
-    hoverPreview = null;
-  }
-
-  /** Schedule closing the preview shortly, allowing the pointer to reach it. */
-  function scheduleHoverClose() {
-    if (hoverTimer) clearTimeout(hoverTimer);
-    if (hoverCloseTimer) clearTimeout(hoverCloseTimer);
-    hoverCloseTimer = setTimeout(() => { hoverPreview = null; }, 180);
-  }
-
-  /** Keep the preview open (pointer entered it). */
-  function cancelHoverClose() {
-    if (hoverCloseTimer) { clearTimeout(hoverCloseTimer); hoverCloseTimer = null; }
-  }
-
   // ─── Lifecycle ──────────────────────────────────────────────────────────────
 
   onMount(async () => {
@@ -203,6 +148,9 @@
         TaskLinkExtension.configure({
           onStatusCycled: (nodeId: string, taskId: string, currentStatus: string) => {
             taskSync.handleStatusCycled(nodeId, taskId, currentStatus);
+          },
+          onTaskClicked: (taskId: string) => {
+            void goto(`/tasks/${taskId}`);
           }
         }),
         Placeholder.configure({
@@ -245,7 +193,6 @@
     await loadContent();
     scheduleAutoAssignNodeIds();
     bulletRemoval.snapshot(editor);
-    setupHoverDetection();
   });
 
   // Reload content when pageId changes (but not on initial mount — onMount handles that)
@@ -261,7 +208,6 @@
         prevPageId = pageId;
         // Clear transient UI state that is page-scoped
         pending = null;
-        clearHoverPreview();
         if (removedBulletTimer) { clearTimeout(removedBulletTimer); removedBulletTimer = null; }
         void contentSave.flushAll().then(() => {
           taskCreation.clearPrompted();
@@ -274,13 +220,9 @@
   onDestroy(() => {
     const flushPromise = contentSave.flushAll();
     uiStore.registerPendingFlush(flushPromise);
-    if (hoverTimer) clearTimeout(hoverTimer);
-    if (hoverCloseTimer) clearTimeout(hoverCloseTimer);
     if (removedBulletTimer) clearTimeout(removedBulletTimer);
     contentSave.destroy();
     bulletRemoval.destroy();
-    editorEl?.removeEventListener('mouseover', handleEditorMouseover);
-    editorEl?.removeEventListener('mouseout', handleEditorMouseout);
     editor?.destroy();
   });
 </script>
@@ -295,17 +237,6 @@
     bulletText={pending.bulletText}
     ontitlechange={handlePendingTitleChange}
     onclose={handleTaskDetailsClose}
-  />
-{/if}
-
-{#if hoverPreview}
-  <TaskHoverPreview
-    taskId={hoverPreview.taskId}
-    x={hoverPreview.x}
-    y={hoverPreview.y}
-    onclose={clearHoverPreview}
-    onenter={cancelHoverClose}
-    onleave={clearHoverPreview}
   />
 {/if}
 
@@ -425,6 +356,34 @@
   :global(.tiptap-editor .list-item-content) {
     flex: 1;
     min-width: 0;
+  }
+
+  :global(.tiptap-editor .task-open-link) {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    margin-top: 0.2em;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0.55;
+    transition: opacity 0.1s ease, color 0.1s ease, background-color 0.1s ease;
+  }
+
+  :global(.tiptap-editor li[data-task-id]:hover .task-open-link),
+  :global(.tiptap-editor .task-open-link:focus-visible) {
+    opacity: 1;
+  }
+
+  :global(.tiptap-editor .task-open-link:hover) {
+    color: var(--accent);
+    background: var(--bg-tertiary);
   }
 
   /* Checked / done task: strike-through + muted colour */

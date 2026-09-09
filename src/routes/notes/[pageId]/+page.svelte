@@ -242,15 +242,19 @@
   }
 
   .priority-select {
-    background: var(--bg-secondary);
+    appearance: none;
+    -webkit-appearance: none;
+    background: var(--bg-secondary) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10' fill='none'%3E%3Cpath d='M2 3l3 3 3-3' stroke='%23999999' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 8px center;
+    background-size: 10px;
     border: 1px solid var(--border-default);
-    border-radius: var(--radius-sm);
-    color: var(--text-primary);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
     font-size: var(--font-size-xs);
-    padding: 3px 6px;
+    padding: 4px 24px 4px 8px;
     cursor: pointer;
+    transition: background-color var(--transition-fast), color var(--transition-fast);
   }
-  .priority-select:hover { border-color: var(--border-strong); }
+  .priority-select:hover { background-color: var(--bg-hover); color: var(--text-primary); }
   .priority-select:focus { outline: none; border-color: var(--accent); }
 
   .tags-display {

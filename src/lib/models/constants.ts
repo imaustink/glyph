@@ -69,8 +69,6 @@ export const DEBOUNCE = {
 	TASK_TITLE: 500,
 	/** Description field debounce on task detail */
 	DESCRIPTION: 600,
-	/** Hover preview delay before showing */
-	HOVER_PREVIEW: 300,
 	/** Search input debounce */
 	SEARCH: 150,
 	/** Dropdown blur timeout for tag input */
