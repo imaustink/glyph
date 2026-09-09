@@ -93,6 +93,42 @@ func TestSharingDirect(t *testing.T) {
 			updated := Decode[map[string]interface{}](t, w)
 			assert.Equal(t, "editor", updated["permission"])
 		},
+		// Regression: an unrecognized permission used to be accepted and
+		// persisted as-is, rather than being rejected outright.
+		"UpdateSharePermission_Invalid_Returns400": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			page := Decode[model.Page](t, h.Do(t, "POST", "/api/v1/pages", map[string]interface{}{"title": "Bad Perm", "type": "page"}, h.UserA.ID))
+			share := Decode[map[string]interface{}](t, h.Do(t, "POST", "/api/v1/shares", map[string]interface{}{
+				"resourceType": "page", "resourceId": page.ID.String(),
+				"sharedWithId": h.UserB.ID.String(), "permission": "viewer",
+			}, h.UserA.ID))
+			shareID := share["id"].(string)
+			w := h.Do(t, "PATCH", "/api/v1/shares/"+shareID, map[string]string{"permission": "superadmin"}, h.UserA.ID)
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+		},
+
+		// Regression: a page could be shared as though it were a folder (or
+		// vice versa) — resourceType wasn't cross-checked against the row's
+		// actual `type` column, since both share the same pages table.
+		"CannotShareAPageAsAFolder": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			page := Decode[model.Page](t, h.Do(t, "POST", "/api/v1/pages", map[string]interface{}{"title": "Just A Page", "type": "page"}, h.UserA.ID))
+			w := h.Do(t, "POST", "/api/v1/shares", map[string]interface{}{
+				"resourceType": "folder", "resourceId": page.ID.String(),
+				"sharedWithId": h.UserB.ID.String(), "permission": "viewer",
+			}, h.UserA.ID)
+			assert.Equal(t, http.StatusNotFound, w.Code)
+		},
+
+		"CannotShareAFolderAsAPage": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			folder := Decode[model.Page](t, h.Do(t, "POST", "/api/v1/pages", map[string]interface{}{"title": "Just A Folder", "type": "folder"}, h.UserA.ID))
+			w := h.Do(t, "POST", "/api/v1/shares", map[string]interface{}{
+				"resourceType": "page", "resourceId": folder.ID.String(),
+				"sharedWithId": h.UserB.ID.String(), "permission": "viewer",
+			}, h.UserA.ID)
+			assert.Equal(t, http.StatusNotFound, w.Code)
+		},
 		"OwnerCanDeleteShare": func(t *testing.T, h *Harness) {
 			h.ResetDB(t)
 			page := Decode[model.Page](t, h.Do(t, "POST", "/api/v1/pages", map[string]interface{}{"title": "Revokeable", "type": "page"}, h.UserA.ID))

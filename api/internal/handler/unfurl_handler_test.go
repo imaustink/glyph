@@ -224,9 +224,10 @@ func TestSafeDialContext_PublicIP_AttemptsDial(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// 8.8.8.8:53 — Google DNS, public IP. safeDialContext should attempt the dial.
-	// Connection may succeed or fail (connection refused/timeout) — either way covers the code.
-	conn, err := safeDialContext(ctx, "tcp", "8.8.8.8:53")
+	// 8.8.8.8:443 — Google DNS, public IP, standard port. safeDialContext
+	// should attempt the dial. Connection may succeed or fail (connection
+	// refused/timeout) — either way covers the code.
+	conn, err := safeDialContext(ctx, "tcp", "8.8.8.8:443")
 	if conn != nil {
 		_ = conn.Close()
 	}
@@ -236,6 +237,43 @@ func TestSafeDialContext_PublicIP_AttemptsDial(t *testing.T) {
 		if errors.As(err, &addrErr) && strings.Contains(addrErr.Err, "private") {
 			t.Errorf("should not get private-address error for 8.8.8.8: %v", err)
 		}
+	}
+}
+
+func TestSafeDialContext_NonStandardPort_Denied(t *testing.T) {
+	_, err := safeDialContext(context.Background(), "tcp", "8.8.8.8:8080")
+	if err == nil {
+		t.Fatal("expected error for non-standard port")
+	}
+	if !strings.Contains(err.Error(), "port") {
+		t.Errorf("expected 'port' in error, got: %v", err)
+	}
+}
+
+// TestSafeDialContext_DialsResolvedIPNotHostname is a regression test for a
+// DNS-rebinding SSRF: safeDialContext must dial the IP literal it already
+// validated, never re-resolve the hostname at connect time (where an
+// attacker's low-TTL DNS record could then answer with a private address).
+func TestSafeDialContext_DialsResolvedIPNotHostname(t *testing.T) {
+	origLookup := netLookupIPAddr
+	netLookupIPAddr = func(_ context.Context, _ string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil // a public IP, unrelated to the hostname below
+	}
+	defer func() { netLookupIPAddr = origLookup }()
+
+	origDial := dialTCP
+	var dialedAddr string
+	dialTCP = func(_ context.Context, _, addr string) (net.Conn, error) {
+		dialedAddr = addr
+		return nil, errors.New("test dialer: refusing to actually connect")
+	}
+	defer func() { dialTCP = origDial }()
+
+	_, _ = safeDialContext(context.Background(), "tcp", "attacker-controlled-rebinding-host.example:443")
+
+	if dialedAddr != "93.184.216.34:443" {
+		t.Errorf("expected safeDialContext to dial the validated IP literal 93.184.216.34:443, got %q — "+
+			"dialing the hostname instead would let a second, independent DNS resolution answer with a private address", dialedAddr)
 	}
 }
 
@@ -264,7 +302,7 @@ func TestSafeDialContext_PublicIPFromDNS_ReachesDialer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	// Dial will fail (connection refused/timeout) — we just need to cover the dial path.
-	conn, _ := safeDialContext(ctx, "tcp", "example.com:1")
+	conn, _ := safeDialContext(ctx, "tcp", "example.com:443")
 	if conn != nil {
 		_ = conn.Close()
 	}

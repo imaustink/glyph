@@ -358,15 +358,16 @@ func (s *pgOAuthTokenStore) GetByAccessHash(ctx context.Context, hash string) (*
 	return out, nil
 }
 
-func (s *pgOAuthTokenStore) RotateRefresh(ctx context.Context, oldRefreshHash, newAccessHash, newRefreshHash string, accessExp time.Time, refreshExp time.Time) (*model.OAuthToken, error) {
+func (s *pgOAuthTokenStore) RotateRefresh(ctx context.Context, clientID uuid.UUID, oldRefreshHash, newAccessHash, newRefreshHash string, accessExp time.Time, refreshExp time.Time) (*model.OAuthToken, error) {
 	const q = `
 		UPDATE oauth_tokens
 		SET access_token_hash = $1, refresh_token_hash = $2,
 		    access_token_expires_at = $3, refresh_token_expires_at = $4,
 		    last_used_at = NOW()
-		WHERE refresh_token_hash = $5 AND revoked_at IS NULL
+		WHERE refresh_token_hash = $5 AND client_id = $6
+		  AND revoked_at IS NULL AND refresh_token_expires_at > NOW()
 		RETURNING ` + `id, client_id, acting_user_id, grant_type, scopes, org_ids, access_token_expires_at, refresh_token_expires_at, revoked_at, last_used_at, created_at`
-	out, err := s.scanToken(s.pool.QueryRow(ctx, q, newAccessHash, newRefreshHash, accessExp, refreshExp, oldRefreshHash))
+	out, err := s.scanToken(s.pool.QueryRow(ctx, q, newAccessHash, newRefreshHash, accessExp, refreshExp, oldRefreshHash, clientID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrConflict

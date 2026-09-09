@@ -23,6 +23,9 @@ type FolderHandler struct {
 
 func (h *FolderHandler) ListFolderLanes(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	folderID, ok := parseUUID(c, "id")
 	if !ok {
 		return
@@ -43,6 +46,9 @@ func (h *FolderHandler) ListFolderLanes(c *gin.Context) {
 
 func (h *FolderHandler) CreateFolderLane(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	folderID, ok := parseUUID(c, "id")
 	if !ok {
 		return
@@ -81,6 +87,9 @@ func (h *FolderHandler) CreateFolderLane(c *gin.Context) {
 
 func (h *FolderHandler) UpdateFolderLane(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	folderID, ok := parseUUID(c, "id")
 	if !ok {
 		return
@@ -124,6 +133,9 @@ func (h *FolderHandler) UpdateFolderLane(c *gin.Context) {
 
 func (h *FolderHandler) DeleteFolderLane(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	folderID, ok := parseUUID(c, "id")
 	if !ok {
 		return
@@ -150,6 +162,9 @@ func (h *FolderHandler) DeleteFolderLane(c *gin.Context) {
 
 func (h *FolderHandler) ListFolderTasks(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	folderID, ok := parseUUID(c, "id")
 	if !ok {
 		return
@@ -176,6 +191,9 @@ func (h *FolderHandler) ListFolderTasks(c *gin.Context) {
 // GetFolder returns the folder metadata plus a canEdit flag for the requesting user.
 func (h *FolderHandler) GetFolder(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	folderID, ok := parseUUID(c, "id")
 	if !ok {
 		return

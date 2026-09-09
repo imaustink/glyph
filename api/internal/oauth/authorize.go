@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -30,8 +31,50 @@ type consentClaims struct {
 	CodeChallengeMethod string   `json:"code_challenge_method"`
 }
 
+// consentTokenTracker enforces single-use consent tokens: once a token's jti
+// has been consumed by a decision (approve or deny), a replay with the same
+// token must be rejected — otherwise one approval could mint multiple
+// authorization codes within the 5-minute consent-token TTL. Entries are
+// evicted once their token would have expired anyway (parseConsentToken
+// already rejects an expired token on its own), so this map never grows
+// beyond roughly consentTokenTTL worth of traffic.
+type consentTokenTracker struct {
+	mu   sync.Mutex
+	used map[string]time.Time // jti -> expiry
+}
+
+func newConsentTokenTracker() *consentTokenTracker {
+	return &consentTokenTracker{used: make(map[string]time.Time)}
+}
+
+// consumeOnce records jti as used and returns true the first time it is
+// seen; it returns false — a replay — on any subsequent call with the same
+// jti.
+func (t *consentTokenTracker) consumeOnce(jti string, expiresAt time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := time.Now()
+	for j, exp := range t.used {
+		if exp.Before(now) {
+			delete(t.used, j)
+		}
+	}
+	if _, seen := t.used[jti]; seen {
+		return false
+	}
+	t.used[jti] = expiresAt
+	return true
+}
+
+var globalConsentTokenTracker = newConsentTokenTracker()
+
 func signConsentToken(cfg Config, cc consentClaims) (string, error) {
 	now := time.Now()
+	jti, err := randomToken(16)
+	if err != nil {
+		return "", err
+	}
+	cc.ID = jti
 	cc.IssuedAt = jwt.NewNumericDate(now)
 	cc.ExpiresAt = jwt.NewNumericDate(now.Add(consentTokenTTL))
 	cc.Issuer = "glyph-oauth-consent"
@@ -190,6 +233,12 @@ func AuthorizeDecisionHandler(cfg Config) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "error_description": "consent token is invalid or expired"})
 			return
 		}
+		// Single-use: without this, one approval could be replayed to mint
+		// multiple authorization codes within the token's 5-minute TTL.
+		if claims.ID == "" || !globalConsentTokenTracker.consumeOnce(claims.ID, claims.ExpiresAt.Time) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "error_description": "consent token has already been used"})
+			return
+		}
 
 		if !body.Approve {
 			c.JSON(http.StatusOK, gin.H{"redirectUrl": buildRedirect(claims.RedirectURI, map[string]string{
@@ -202,6 +251,13 @@ func AuthorizeDecisionHandler(cfg Config) gin.HandlerFunc {
 		client, _, err := cfg.Clients.GetByClientID(c.Request.Context(), claims.ClientID)
 		if err != nil || client.RevokedAt != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_client"})
+			return
+		}
+		// Re-validate redirect_uri against the client's current registered
+		// list, not just at the earlier GET — a client's redirect URIs can
+		// change in the window between the two requests.
+		if !redirectURIAllowed(client, claims.RedirectURI) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "error_description": "redirect_uri is no longer registered for this client"})
 			return
 		}
 		orgID, err := uuid.Parse(claims.OrgID)

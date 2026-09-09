@@ -122,25 +122,33 @@ func TestCanRead_NoAccessDenied(t *testing.T) {
 
 func strPtr(s string) *string { return &s }
 
-func setupSearchUsers(r *Registry) (alice, bob, carol, dave uuid.UUID) {
+// setupSearchUsers creates four users and places them all in a shared org,
+// so tests can exercise Search's normal (org-scoped) code path — Search
+// returns no results at all when passed an empty orgIDs slice, matching the
+// "no shared org, nobody to match against" fix.
+func setupSearchUsers(r *Registry) (alice, bob, carol, dave, orgID uuid.UUID) {
 	alice = uuid.New()
 	bob = uuid.New()
 	carol = uuid.New()
 	dave = uuid.New()
+	orgID = uuid.New()
 
 	r.usersByID[alice] = &model.User{ID: alice, Email: strPtr("alice@example.com"), Name: strPtr("Alice Smith")}
 	r.usersByID[bob] = &model.User{ID: bob, Email: strPtr("bob@example.com"), Name: strPtr("Bob Jones")}
 	r.usersByID[carol] = &model.User{ID: carol, Email: strPtr("carol@other.org"), Name: strPtr("Carol White")}
 	r.usersByID[dave] = &model.User{ID: dave, Email: strPtr("dave@example.com"), Name: strPtr("Dave Brown")}
+	for _, id := range []uuid.UUID{alice, bob, carol, dave} {
+		r.members[orgMemberKey{orgID, id}] = &model.OrgMember{OrgID: orgID, UserID: id}
+	}
 	return
 }
 
 func TestSearch_MatchesByEmail(t *testing.T) {
 	r := NewRegistry()
-	alice, _, _, _ := setupSearchUsers(r)
+	alice, _, _, _, orgID := setupSearchUsers(r)
 	s := &userStore{r: r}
 
-	results, err := s.Search(context.Background(), "alice@example", uuid.Nil, nil, 10)
+	results, err := s.Search(context.Background(), "alice@example", uuid.Nil, []uuid.UUID{orgID}, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,10 +159,10 @@ func TestSearch_MatchesByEmail(t *testing.T) {
 
 func TestSearch_MatchesByName(t *testing.T) {
 	r := NewRegistry()
-	_, bob, _, _ := setupSearchUsers(r)
+	_, bob, _, _, orgID := setupSearchUsers(r)
 	s := &userStore{r: r}
 
-	results, err := s.Search(context.Background(), "bob", uuid.Nil, nil, 10)
+	results, err := s.Search(context.Background(), "bob", uuid.Nil, []uuid.UUID{orgID}, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -165,10 +173,10 @@ func TestSearch_MatchesByName(t *testing.T) {
 
 func TestSearch_CaseInsensitive(t *testing.T) {
 	r := NewRegistry()
-	alice, _, _, _ := setupSearchUsers(r)
+	alice, _, _, _, orgID := setupSearchUsers(r)
 	s := &userStore{r: r}
 
-	results, err := s.Search(context.Background(), "ALICE", uuid.Nil, nil, 10)
+	results, err := s.Search(context.Background(), "ALICE", uuid.Nil, []uuid.UUID{orgID}, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -179,10 +187,10 @@ func TestSearch_CaseInsensitive(t *testing.T) {
 
 func TestSearch_ExcludesSpecifiedID(t *testing.T) {
 	r := NewRegistry()
-	alice, _, _, _ := setupSearchUsers(r)
+	alice, _, _, _, orgID := setupSearchUsers(r)
 	s := &userStore{r: r}
 
-	results, err := s.Search(context.Background(), "alice", alice, nil, 10)
+	results, err := s.Search(context.Background(), "alice", alice, []uuid.UUID{orgID}, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -195,10 +203,10 @@ func TestSearch_ExcludesSpecifiedID(t *testing.T) {
 
 func TestSearch_RespectsLimit(t *testing.T) {
 	r := NewRegistry()
-	setupSearchUsers(r)
+	_, _, _, _, orgID := setupSearchUsers(r)
 	s := &userStore{r: r}
 
-	results, err := s.Search(context.Background(), "example", uuid.Nil, nil, 2)
+	results, err := s.Search(context.Background(), "example", uuid.Nil, []uuid.UUID{orgID}, 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -207,9 +215,27 @@ func TestSearch_RespectsLimit(t *testing.T) {
 	}
 }
 
+// TestSearch_EmptyOrgIDsReturnsNothing guards against Search silently
+// widening to a directory-wide, unscoped query when the caller has no
+// orgs — that fallback was a directory-enumeration vulnerability, since
+// every newly created account starts out belonging to no organization.
+func TestSearch_EmptyOrgIDsReturnsNothing(t *testing.T) {
+	r := NewRegistry()
+	setupSearchUsers(r)
+	s := &userStore{r: r}
+
+	results, err := s.Search(context.Background(), "example", uuid.Nil, nil, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected no results for empty orgIDs, got %d: %v", len(results), results)
+	}
+}
+
 func TestSearch_RestrictsToOrgMembers(t *testing.T) {
 	r := NewRegistry()
-	alice, bob, _, _ := setupSearchUsers(r)
+	alice, bob, _, _, _ := setupSearchUsers(r)
 	orgID := uuid.New()
 
 	// Only alice is in the org
@@ -238,10 +264,10 @@ func TestSearch_RestrictsToOrgMembers(t *testing.T) {
 
 func TestSearch_SortedByName(t *testing.T) {
 	r := NewRegistry()
-	setupSearchUsers(r)
+	_, _, _, _, orgID := setupSearchUsers(r)
 	s := &userStore{r: r}
 
-	results, err := s.Search(context.Background(), "example", uuid.Nil, nil, 10)
+	results, err := s.Search(context.Background(), "example", uuid.Nil, []uuid.UUID{orgID}, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

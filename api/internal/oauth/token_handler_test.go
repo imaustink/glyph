@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glyph/api/internal/model"
@@ -339,6 +340,135 @@ func TestAuthorizationCode_ReusedCodeRejected(t *testing.T) {
 }
 
 // ─── refresh_token rotation ─────────────────────────────────────────────────────
+
+// TestRefreshToken_RequiresClientAuthentication guards against a refresh
+// token being redeemable with no client credentials at all (client_id
+// omitted entirely used to skip client authentication outright).
+func TestRefreshToken_RequiresClientAuthentication(t *testing.T) {
+	cfg, orgID, member := newTestConfig(t)
+	client, secret := createTestClient(t, cfg, orgID, []model.OAuthGrantType{model.GrantAuthorizationCode}, nil, []string{"https://agent.example.com/callback"}, true)
+
+	refreshToken, refreshHash, err := GenerateRefreshToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessToken, accessHash, err := GenerateAccessToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = accessToken
+	refreshExp := timeNowPlus(t, refreshTokenTTL)
+	tok := &model.OAuthToken{
+		ClientID: client.ID, ActingUserID: member.ID,
+		GrantType:             model.GrantAuthorizationCode,
+		AccessTokenExpiresAt:  timeNowPlus(t, accessTokenTTL),
+		RefreshTokenExpiresAt: &refreshExp,
+	}
+	if err := cfg.Tokens.Create(t.Context(), tok, accessHash, &refreshHash); err != nil {
+		t.Fatal(err)
+	}
+
+	// No client_id, no client_secret at all.
+	c, w := newFormRequest(url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+	})
+	TokenHandler(cfg)(c)
+	if w.Code == http.StatusOK {
+		t.Fatalf("refresh redeemed with zero client authentication, want rejection: %d %s", w.Code, w.Body.String())
+	}
+
+	// Right client, right secret should still work.
+	c2, w2 := newFormRequest(url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {client.ClientID},
+		"client_secret": {secret},
+	})
+	TokenHandler(cfg)(c2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("legitimate refresh with correct client credentials should succeed, got %d: %s", w2.Code, w2.Body.String())
+	}
+}
+
+// TestRefreshToken_BoundToIssuingClient guards against a refresh token
+// issued to one client being redeemable by a different, unrelated client
+// that merely authenticates with its own valid credentials.
+func TestRefreshToken_BoundToIssuingClient(t *testing.T) {
+	cfg, orgID, member := newTestConfig(t)
+	clientA, _ := createTestClient(t, cfg, orgID, []model.OAuthGrantType{model.GrantAuthorizationCode}, []model.OAuthScope{model.ScopePageWrite}, []string{"https://a.example/cb"}, true)
+	clientB, secretB := createTestClient(t, cfg, orgID, []model.OAuthGrantType{model.GrantAuthorizationCode}, []model.OAuthScope{model.ScopePageRead}, []string{"https://b.example/cb"}, true)
+
+	refreshToken, refreshHash, err := GenerateRefreshToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, accessHash, err := GenerateAccessToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshExp := timeNowPlus(t, refreshTokenTTL)
+	tok := &model.OAuthToken{
+		ClientID: clientA.ID, ActingUserID: member.ID,
+		GrantType:             model.GrantAuthorizationCode,
+		Scopes:                []model.OAuthScope{model.ScopePageWrite},
+		AccessTokenExpiresAt:  timeNowPlus(t, accessTokenTTL),
+		RefreshTokenExpiresAt: &refreshExp,
+	}
+	if err := cfg.Tokens.Create(t.Context(), tok, accessHash, &refreshHash); err != nil {
+		t.Fatal(err)
+	}
+
+	// Client B authenticates with its OWN valid credentials but presents
+	// client A's refresh token.
+	c, w := newFormRequest(url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {clientB.ClientID},
+		"client_secret": {secretB},
+	})
+	TokenHandler(cfg)(c)
+	if w.Code == http.StatusOK {
+		t.Fatalf("client B redeemed client A's refresh token, want rejection: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestRefreshToken_ExpiredRejected guards against RotateRefresh ignoring
+// refresh_token_expires_at and renewing a token indefinitely past its TTL.
+func TestRefreshToken_ExpiredRejected(t *testing.T) {
+	cfg, orgID, member := newTestConfig(t)
+	client, secret := createTestClient(t, cfg, orgID, []model.OAuthGrantType{model.GrantAuthorizationCode}, nil, []string{"https://agent.example.com/callback"}, true)
+
+	refreshToken, refreshHash, err := GenerateRefreshToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, accessHash, err := GenerateAccessToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredRefresh := timeNowMinus(t, refreshTokenTTL+time.Hour) // well past its TTL
+	tok := &model.OAuthToken{
+		ClientID: client.ID, ActingUserID: member.ID,
+		GrantType:             model.GrantAuthorizationCode,
+		AccessTokenExpiresAt:  timeNowPlus(t, accessTokenTTL),
+		RefreshTokenExpiresAt: &expiredRefresh,
+	}
+	if err := cfg.Tokens.Create(t.Context(), tok, accessHash, &refreshHash); err != nil {
+		t.Fatal(err)
+	}
+
+	c, w := newFormRequest(url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {client.ClientID},
+		"client_secret": {secret},
+	})
+	TokenHandler(cfg)(c)
+	if w.Code == http.StatusOK {
+		t.Fatalf("expired refresh token was renewed, want rejection: %d %s", w.Code, w.Body.String())
+	}
+}
 
 func TestRefreshToken_ReuseOfRotatedTokenRejected(t *testing.T) {
 	cfg, orgID, member := newTestConfig(t)

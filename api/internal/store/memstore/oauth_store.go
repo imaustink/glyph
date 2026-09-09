@@ -249,16 +249,19 @@ func (s *oauthTokenStore) GetByAccessHash(_ context.Context, hash string) (*mode
 	return nil, store.ErrNotFound
 }
 
-func (s *oauthTokenStore) RotateRefresh(_ context.Context, oldRefreshHash, newAccessHash, newRefreshHash string, accessExp time.Time, refreshExp time.Time) (*model.OAuthToken, error) {
+func (s *oauthTokenStore) RotateRefresh(_ context.Context, clientID uuid.UUID, oldRefreshHash, newAccessHash, newRefreshHash string, accessExp time.Time, refreshExp time.Time) (*model.OAuthToken, error) {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
+	now := time.Now()
 	for _, e := range s.r.tokens {
-		if e.refreshHash != nil && *e.refreshHash == oldRefreshHash && e.token.RevokedAt == nil {
+		if e.refreshHash != nil && *e.refreshHash == oldRefreshHash &&
+			e.token.ClientID == clientID &&
+			e.token.RevokedAt == nil &&
+			e.token.RefreshTokenExpiresAt != nil && e.token.RefreshTokenExpiresAt.After(now) {
 			e.accessHash = newAccessHash
 			e.refreshHash = &newRefreshHash
 			e.token.AccessTokenExpiresAt = accessExp
 			e.token.RefreshTokenExpiresAt = &refreshExp
-			now := time.Now()
 			e.token.LastUsedAt = &now
 			cp := *e.token
 			return &cp, nil

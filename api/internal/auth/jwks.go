@@ -64,6 +64,13 @@ func jwkToPublicKey(k jwk) (interface{}, error) {
 	}
 }
 
+// minRSAModulusBits is the floor accepted for an RSA JWKS key. The issuer's
+// discovery URL comes from a deployer-configured OIDC_ISSUER_URL, so this
+// isn't attacker-reachable input in the normal case — but a compromised or
+// misconfigured issuer that started serving a weak key shouldn't be able to
+// silently downgrade every token verification in the process.
+const minRSAModulusBits = 2048
+
 func parseRSAKey(k jwk) (*rsa.PublicKey, error) {
 	nBytes, err := base64.RawURLEncoding.DecodeString(k.N)
 	if err != nil {
@@ -75,6 +82,9 @@ func parseRSAKey(k jwk) (*rsa.PublicKey, error) {
 	}
 
 	n := new(big.Int).SetBytes(nBytes)
+	if n.BitLen() < minRSAModulusBits {
+		return nil, fmt.Errorf("RSA modulus too small: %d bits (minimum %d)", n.BitLen(), minRSAModulusBits)
+	}
 	e := int(new(big.Int).SetBytes(eBytes).Int64())
 
 	return &rsa.PublicKey{N: n, E: e}, nil

@@ -23,6 +23,9 @@ type ShareHandler struct {
 // GET /shares?resourceType=X&resourceId=Y
 func (h *ShareHandler) ListShares(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	rawType := c.Query("resourceType")
 	rawID := c.Query("resourceId")
 	if rawType == "" || rawID == "" {
@@ -54,6 +57,9 @@ func (h *ShareHandler) ListShares(c *gin.Context) {
 // POST /shares
 func (h *ShareHandler) CreateShare(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	var body struct {
 		ResourceType    string                `json:"resourceType"`
 		ResourceID      string                `json:"resourceId"`
@@ -138,6 +144,9 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 // PATCH /shares/:shareId
 func (h *ShareHandler) UpdateSharePermission(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	shareID, ok := parseUUID(c, "shareId")
 	if !ok {
 		return
@@ -157,6 +166,10 @@ func (h *ShareHandler) UpdateSharePermission(c *gin.Context) {
 	if !bindJSON(c, &body) {
 		return
 	}
+	if !body.Permission.IsValid() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid permission"})
+		return
+	}
 	updated, err := h.Shares.UpdatePermission(c.Request.Context(), shareID, body.Permission)
 	if err != nil {
 		internalError(c, err)
@@ -168,6 +181,9 @@ func (h *ShareHandler) UpdateSharePermission(c *gin.Context) {
 // DELETE /shares/:shareId
 func (h *ShareHandler) DeleteShare(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	shareID, ok := parseUUID(c, "shareId")
 	if !ok {
 		return
@@ -192,6 +208,9 @@ func (h *ShareHandler) DeleteShare(c *gin.Context) {
 // GET /users/search?q=...
 func (h *ShareHandler) SearchUsers(c *gin.Context) {
 	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
 	q := c.Query("q")
 	if q == "" {
 		c.JSON(http.StatusOK, []model.UserSearchResult{})
@@ -201,6 +220,16 @@ func (h *ShareHandler) SearchUsers(c *gin.Context) {
 	orgIDs, err := h.Orgs.GetUserOrgIDs(c.Request.Context(), user.ID)
 	if err != nil {
 		internalError(c, err)
+		return
+	}
+	if len(orgIDs) == 0 {
+		// Search.Search falls back to an unscoped, directory-wide query when
+		// orgIDs is empty — there is no legitimate caller for that, since
+		// this endpoint is documented as "scope results to users who share
+		// an org with the current user." A user in no org shares an org
+		// with nobody, so the correct result is empty, not the whole
+		// directory.
+		c.JSON(http.StatusOK, []model.UserSearchResult{})
 		return
 	}
 	results, err := h.Users.Search(c.Request.Context(), q, user.ID, orgIDs, 20)
@@ -225,10 +254,22 @@ func (h *ShareHandler) isResourceOwner(c *gin.Context, resourceType model.ShareR
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return false
 		}
+		// Pages and folders are both rows in the pages table distinguished
+		// only by their `type` column — without this check, a folder could
+		// be shared as though it were a page (or vice versa), which the
+		// resourceType the caller declared up front is supposed to prevent.
+		if p.Type != model.NodeTypePage {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return false
+		}
 		ownerID = p.UserID
 	case model.ShareResourceFolder:
 		p, e := h.Pages.GetByID(ctx, resourceID, userID)
 		if e != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return false
+		}
+		if p.Type != model.NodeTypeFolder {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return false
 		}

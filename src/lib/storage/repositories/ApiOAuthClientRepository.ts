@@ -35,9 +35,14 @@ export class ApiOAuthClientRepository {
 		await api.del(`/api/v1/orgs/${orgId}/oauth-clients/${clientId}/orgs/${otherOrgId}`);
 	}
 
-	async rotateSecret(orgId: string, clientId: string): Promise<OAuthClientWithSecret> {
+	async rotateSecret(
+		orgId: string,
+		clientId: string,
+		options?: { revokeExisting?: boolean }
+	): Promise<OAuthClientWithSecret> {
+		const query = options?.revokeExisting ? '?revokeExisting=true' : '';
 		return api.post<OAuthClientWithSecret>(
-			`/api/v1/orgs/${orgId}/oauth-clients/${clientId}/rotate-secret`,
+			`/api/v1/orgs/${orgId}/oauth-clients/${clientId}/rotate-secret${query}`,
 			{}
 		);
 	}

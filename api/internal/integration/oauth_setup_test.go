@@ -50,6 +50,7 @@ type oauthServer struct {
 	orgs    store.OrgStore
 	pages   store.PageStore
 	tasks   store.TaskStore
+	lanes   store.LaneStore
 	clients store.OAuthClientStore
 	codes   store.OAuthCodeStore
 	tokens  store.OAuthTokenStore
@@ -100,11 +101,13 @@ func setupOAuthServer(t *testing.T) *oauthServer {
 		orgs:    store.NewOrgStore(pool),
 		pages:   store.NewPageStore(pool),
 		tasks:   store.NewTaskStore(pool),
+		lanes:   store.NewLaneStore(pool),
 		clients: store.NewOAuthClientStore(pool),
 		codes:   store.NewOAuthCodeStore(pool),
 		tokens:  store.NewOAuthTokenStore(pool),
 	}
 	shares := store.NewShareStore(pool)
+	templates := store.NewTemplateStore(pool)
 
 	handler.RegisterValidators()
 	perms := &handler.PermissionChecker{Orgs: s.orgs, Shares: shares}
@@ -131,6 +134,31 @@ func setupOAuthServer(t *testing.T) *oauthServer {
 		c.Set(auth.ContextKey, u)
 		c.Next()
 	}
+	// optionalSessionMw is sessionMw's non-aborting counterpart, mirroring
+	// auth.OptionalSessionMiddleware — used only on /oauth/revoke, which
+	// authorizes via client credentials OR an optional user session on the
+	// same endpoint (see RegisterOAuthRoutes for why this can't just be
+	// sessionMw, which would 401 the client-credential path whenever no
+	// X-Test-User-ID header is sent).
+	optionalSessionMw := func(c *gin.Context) {
+		idStr := c.GetHeader("X-Test-User-ID")
+		if idStr == "" {
+			c.Next()
+			return
+		}
+		id, err := uuid.Parse(idStr)
+		if err != nil {
+			c.Next()
+			return
+		}
+		u, err := s.users.GetByID(c.Request.Context(), id)
+		if err != nil {
+			c.Next()
+			return
+		}
+		c.Set(auth.ContextKey, u)
+		c.Next()
+	}
 	bearerMw := glyphoauth.BearerTokenMiddleware(s.tokens, s.users)
 
 	router := gin.New()
@@ -145,7 +173,7 @@ func setupOAuthServer(t *testing.T) *oauthServer {
 		ConsentSecret: []byte(testConsentSecret),
 	}
 	// Real protocol endpoints: /oauth/token, /oauth/revoke.
-	glyphoauth.RegisterOAuthRoutes(router, oauthCfg)
+	glyphoauth.RegisterOAuthRoutes(router, oauthCfg, optionalSessionMw)
 
 	// Real /api/v1 chain: dual session/bearer auth + CSRF, exactly as wired
 	// in cmd/api/auth.go's setupOIDCAuth/setupDevAuth.
@@ -186,6 +214,25 @@ func setupOAuthServer(t *testing.T) *oauthServer {
 		apiGroup.GET("/tasks", taskH.ListTasks)
 		apiGroup.POST("/tasks", taskH.CreateTask)
 		apiGroup.PATCH("/tasks/:id", taskH.UpdateTask)
+		apiGroup.GET("/pages/:id/content", pageH.GetPageContent)
+
+		laneH := &handler.LaneHandler{Lanes: s.lanes}
+		apiGroup.GET("/lanes", laneH.ListLanes)
+		apiGroup.POST("/lanes", laneH.CreateLane)
+
+		tmplH := &handler.TemplateHandler{Templates: templates, Perms: perms}
+		apiGroup.GET("/templates", tmplH.ListTemplates)
+		apiGroup.PATCH("/templates/:id", tmplH.UpdateTemplate)
+
+		shareH := &handler.ShareHandler{
+			Shares: shares, Users: s.users, Orgs: s.orgs, Pages: s.pages, Tasks: s.tasks, Templates: templates,
+		}
+		apiGroup.POST("/shares", shareH.CreateShare)
+		apiGroup.GET("/users/search", shareH.SearchUsers)
+
+		folderH := &handler.FolderHandler{Pages: s.pages, Lanes: s.lanes, Tasks: s.tasks, Perms: perms}
+		apiGroup.GET("/folders/:id", folderH.GetFolder)
+		apiGroup.GET("/folders/:id/lanes", folderH.ListFolderLanes)
 	}
 
 	s.router = router
@@ -260,6 +307,19 @@ func (s *oauthServer) doForm(t *testing.T, method, path string, form url.Values,
 	if basicUser != "" {
 		req.SetBasicAuth(basicUser, basicPass)
 	}
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+	return w
+}
+
+// doFormAsUser is doForm plus X-Test-User-ID, for endpoints like
+// /oauth/revoke that accept an optional user session alongside (or instead
+// of) client credentials.
+func (s *oauthServer) doFormAsUser(t *testing.T, method, path string, form url.Values, userID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Test-User-ID", userID)
 	w := httptest.NewRecorder()
 	s.router.ServeHTTP(w, req)
 	return w

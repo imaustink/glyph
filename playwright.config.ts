@@ -103,10 +103,15 @@ export default defineConfig({
 						}
 					},
 					// ── API-mode SvelteKit dev server (proxies to Go API) ──────
+					// E2E_RESET_ENABLED=true mirrors the Go API's own flag (set
+					// above) — hooks.server.ts requires it before it will proxy
+					// /test/* (see hooks.server.ts), so /test/reset stays reachable
+					// for these e2e tests without exposing it whenever
+					// API_PROXY_TARGET alone is set elsewhere (e.g. local dev).
 					{
 						command: process.env.CI
-							? `PORT=${apiUiPort} API_PROXY_TARGET=http://localhost:${apiPort} node build-api`
-							: `VITE_STORAGE_MODE=api VITE_API_URL= API_PROXY_TARGET=http://localhost:${apiPort} pnpm dev --port ${apiUiPort}`,
+							? `PORT=${apiUiPort} API_PROXY_TARGET=http://localhost:${apiPort} E2E_RESET_ENABLED=true node build-api`
+							: `VITE_STORAGE_MODE=api VITE_API_URL= API_PROXY_TARGET=http://localhost:${apiPort} E2E_RESET_ENABLED=true pnpm dev --port ${apiUiPort}`,
 						port: Number(apiUiPort),
 						reuseExistingServer: !process.env.CI as boolean,
 						timeout: 30_000

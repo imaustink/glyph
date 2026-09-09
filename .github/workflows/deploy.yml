@@ -54,26 +54,37 @@ jobs:
           rm -rf helm/glyph/migrations
           cp -r api/migrations helm/glyph/migrations
 
+      # Images are tagged with both :latest (convenience) and the immutable
+      # commit SHA — the SHA tag is what Helm actually deploys below, so a
+      # given release always refers to a specific, attestable build rather
+      # than whatever ":latest" happens to point to at pull time (which can
+      # differ between nodes, and gives no way to tell what commit is live).
       - name: Build & push frontend
         run: |
           docker build \
             --build-arg VITE_STORAGE_MODE=api \
             --build-arg VITE_API_URL= \
             -t registry.kurpuis.com:5000/glyph-frontend:latest \
+            -t registry.kurpuis.com:5000/glyph-frontend:${{ github.sha }} \
             -f Dockerfile .
           docker push registry.kurpuis.com:5000/glyph-frontend:latest
+          docker push registry.kurpuis.com:5000/glyph-frontend:${{ github.sha }}
 
       - name: Build & push API
         run: |
           docker build \
             -t registry.kurpuis.com:5000/glyph-api:latest \
+            -t registry.kurpuis.com:5000/glyph-api:${{ github.sha }} \
             -f api/Dockerfile api/
           docker push registry.kurpuis.com:5000/glyph-api:latest
+          docker push registry.kurpuis.com:5000/glyph-api:${{ github.sha }}
 
       - name: Helm upgrade
         run: |
           helm upgrade glyph helm/glyph \
             -f homelab/kubernetes/helm/deployments/glyph/values-production.yaml \
+            --set frontend.image.tag=${{ github.sha }} \
+            --set api.image.tag=${{ github.sha }} \
             -n glyph --timeout 5m
 
       - name: Rollout restart

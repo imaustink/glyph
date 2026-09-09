@@ -79,6 +79,40 @@ func SessionMiddleware(cfg SessionConfig, users store.UserStore) gin.HandlerFunc
 	}
 }
 
+// OptionalSessionMiddleware behaves like SessionMiddleware when a valid
+// session cookie is present — populating the user in ctx — but never
+// aborts the request when the cookie is missing or invalid; it simply
+// continues unauthenticated. Use this on a route that accepts more than one
+// authentication method (e.g. /oauth/revoke, which authorizes via either
+// client credentials or the acting user's own session) where requiring a
+// session unconditionally would lock out the other method entirely.
+func OptionalSessionMiddleware(cfg SessionConfig, users store.UserStore) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cookie, err := c.Cookie(sessionCookieName)
+		if err != nil || cookie == "" {
+			c.Next()
+			return
+		}
+		claims, err := parseSessionToken(cookie, cfg.SessionSecret)
+		if err != nil {
+			c.Next()
+			return
+		}
+		userID, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			c.Next()
+			return
+		}
+		user, err := users.GetByID(c.Request.Context(), userID)
+		if err != nil {
+			c.Next()
+			return
+		}
+		c.Set(ContextKey, user)
+		c.Next()
+	}
+}
+
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
 func loginHandler(cfg SessionConfig) gin.HandlerFunc {

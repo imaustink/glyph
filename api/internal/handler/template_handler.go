@@ -13,6 +13,7 @@ import (
 // TemplateHandler handles template CRUD operations.
 type TemplateHandler struct {
 	Templates store.TemplateStore
+	Perms     *PermissionChecker
 }
 
 // ─── Templates ────────────────────────────────────────────────────────────────
@@ -37,6 +38,9 @@ func (h *TemplateHandler) CreateTemplate(c *gin.Context) {
 		return
 	}
 	if !checkTokenScope(c, body.OrgID, model.ShareResourceTemplate, true) {
+		return
+	}
+	if !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
 		return
 	}
 	body.UserID = user.ID
@@ -78,8 +82,23 @@ func (h *TemplateHandler) UpdateTemplate(c *gin.Context) {
 		notFoundOrError(c, err)
 		return
 	}
+	// GetByID applies the read-access filter (owner, org member, or any
+	// share), which is broader than write access — non-owners still need an
+	// explicit write permission (org editor/owner role, or an editor share)
+	// before they may modify someone else's template. This also enforces
+	// bearer-token scope via CanWriteResource.
+	if existing.UserID != user.ID {
+		if !h.Perms.CanWriteResource(c, existing.UserID, existing.OrgID, model.ShareResourceTemplate, id, user.ID) {
+			return
+		}
+	} else if !checkTokenScope(c, existing.OrgID, model.ShareResourceTemplate, true) {
+		return
+	}
 	var req UpdateTemplateRequest
 	if !bindJSON(c, &req) {
+		return
+	}
+	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
 		return
 	}
 	req.ApplyTo(existing)
@@ -127,6 +146,9 @@ func (h *TemplateHandler) UpsertTemplate(c *gin.Context) {
 		return
 	}
 	if !checkTokenScope(c, body.OrgID, model.ShareResourceTemplate, true) {
+		return
+	}
+	if !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
 		return
 	}
 	body.ID = id

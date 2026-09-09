@@ -18,6 +18,15 @@ func main() {
 	// Load .env if present (local development); ignore errors in production.
 	_ = godotenv.Load()
 
+	// Set gin's mode as early as possible, before anything that branches on
+	// gin.Mode() (getOrGenerateSessionSecret below, and setupAuth's dev-auth
+	// guard). newServer used to be the one setting this, which ran too late:
+	// both of those checks would see gin's default ("debug") mode rather than
+	// "release", silently bypassing production-only guards.
+	if os.Getenv("GIN_MODE") == "" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
 	ctx := context.Background()
 
 	pool, err := db.Connect(ctx)

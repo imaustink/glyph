@@ -39,6 +39,9 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+      - name: Audit dependencies
+        run: pnpm audit --prod
+
   api:
     runs-on: ubuntu-latest
     steps:
@@ -76,6 +79,10 @@ jobs:
       - name: Unit tests
         working-directory: api
         run: go test ./... -short -count=1
+
+      - name: Vulnerability scan
+        working-directory: api
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   e2e-local:
     runs-on: ubuntu-latest

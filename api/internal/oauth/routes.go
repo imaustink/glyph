@@ -15,13 +15,26 @@ import (
 // credentials) and are registered directly on the engine — not under
 // apiGroup — since /oauth/authorize (the browser-facing SvelteKit consent
 // page) already owns that path prefix for human navigation.
-func RegisterOAuthRoutes(r *gin.Engine, cfg Config) {
+//
+// optionalSessionMw, when non-nil, is applied only to /oauth/revoke — it
+// populates the acting user in context when a valid session cookie is
+// present (without requiring one), so RevokeHandler's "a user may revoke a
+// token issued against their own account" branch has a user to check
+// against. Pass nil where there is no session concept to attach (e.g. dev
+// auth mode) — RevokeHandler still works via client-credential revocation
+// either way.
+func RegisterOAuthRoutes(r *gin.Engine, cfg Config, optionalSessionMw gin.HandlerFunc) {
 	tokenLimiter := handler.NewRateLimiter(20, time.Minute)
 
 	oauthGroup := r.Group("/oauth")
 	{
 		oauthGroup.POST("/token", tokenEndpointRateLimit(tokenLimiter), TokenHandler(cfg))
-		oauthGroup.POST("/revoke", tokenEndpointRateLimit(tokenLimiter), RevokeHandler(cfg))
+		revokeMiddlewares := []gin.HandlerFunc{tokenEndpointRateLimit(tokenLimiter)}
+		if optionalSessionMw != nil {
+			revokeMiddlewares = append(revokeMiddlewares, optionalSessionMw)
+		}
+		revokeMiddlewares = append(revokeMiddlewares, RevokeHandler(cfg))
+		oauthGroup.POST("/revoke", revokeMiddlewares...)
 	}
 }
 
@@ -56,13 +69,23 @@ func RevokeHandler(cfg Config) gin.HandlerFunc {
 		}
 
 		// Authorize: either the owning client's credentials, or the acting
-		// user's own session.
+		// user's own session. This route runs with no unconditional session
+		// middleware (client-credential revocation must work without any
+		// session at all), so CurrentUserOrNil — not CurrentUser, which
+		// panics when no user was ever set in context — is required here.
 		authorized := false
-		if user := auth.CurrentUser(c); user != nil && user.ID == tok.ActingUserID {
+		if user := auth.CurrentUserOrNil(c); user != nil && user.ID == tok.ActingUserID {
 			authorized = true
 		}
 		if !authorized {
-			if client, ok := authenticateClient(c, cfg, true); ok && client.ID == tok.ClientID {
+			// tryAuthenticateClient, not authenticateClient: this route must
+			// always return 200 regardless of what (if anything) went wrong
+			// with the client credentials — authenticateClient would instead
+			// write its own 400/401 JSON error the moment credentials are
+			// simply absent (the common case when a user-session request
+			// reaches this fallback), which both breaks that contract and
+			// leaks whether client_id/token combinations are valid.
+			if client, ok := tryAuthenticateClient(c, cfg, true); ok && client.ID == tok.ClientID {
 				authorized = true
 			}
 		}

@@ -42,6 +42,27 @@ spec:
                 name: {{ include "glyph.fullname" $ }}-api
                 port:
                   name: http
+          # /oauth/token and /oauth/revoke — the machine-facing OAuth 2.0
+          # protocol endpoints (see internal/oauth/routes.go). Without this,
+          # the delegated-auth feature is registered on the API but
+          # unreachable in production. /oauth/authorize is deliberately NOT
+          # routed here — it's the frontend's own consent page route; its
+          # API calls go through /api/v1/oauth/consent, already covered by
+          # the /api/ rule above.
+          - path: /oauth/token
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "glyph.fullname" $ }}-api
+                port:
+                  name: http
+          - path: /oauth/revoke
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "glyph.fullname" $ }}-api
+                port:
+                  name: http
           - path: /
             pathType: Prefix
             backend:

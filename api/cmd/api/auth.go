@@ -50,6 +50,22 @@ func setupAuth(ctx context.Context, r *gin.Engine, pool *pgxpool.Pool, s *stores
 	if oidcReady {
 		return setupOIDCAuth(r, s, oidcIssuer, oidcClientID, oidcClientSecret, sessionSecret, cookieDomain, cookieSecure, frontendURL)
 	}
+
+	// Dev-auth mode disables authentication entirely: every request is
+	// authenticated as a fixed "Dev User" (or as an arbitrary user chosen via
+	// an unsigned dev_user_id cookie), and it exposes /test/reset (which
+	// truncates every table) and /test/become. That must never be something
+	// a deployment falls into by accident — a typo'd env var, an unmounted
+	// secret, a chart installed with defaults — so in a production-like
+	// environment (GIN_MODE=release) it requires an explicit, separate
+	// opt-in on top of "OIDC just isn't configured".
+	if gin.Mode() == gin.ReleaseMode && os.Getenv("GLYPH_DEV_AUTH") != "true" {
+		log.Fatal("refusing to start: OIDC is not configured (or E2E_RESET_ENABLED is set) " +
+			"while running with GIN_MODE=release. Dev-auth mode disables authentication and " +
+			"exposes /test/reset + /test/become, so it will not start silently in a " +
+			"production-like environment. Configure OIDC_ISSUER_URL, OIDC_CLIENT_ID, and " +
+			"OIDC_CLIENT_SECRET, or set GLYPH_DEV_AUTH=true if running without OIDC here is intentional.")
+	}
 	return setupDevAuth(ctx, r, pool, s, sessionSecret)
 }
 
@@ -108,7 +124,7 @@ func setupOIDCAuth(r *gin.Engine, s *stores, issuer, clientID, clientSecret stri
 		Orgs:          s.orgs,
 		ConsentSecret: getOrGenerateConsentSecret(),
 	}
-	glyphoauth.RegisterOAuthRoutes(r, oauthCfg)
+	glyphoauth.RegisterOAuthRoutes(r, oauthCfg, auth.OptionalSessionMiddleware(sessionCfg, users))
 	bearerMw := glyphoauth.BearerTokenMiddleware(s.oauthTokens, s.users)
 
 	apiGroup := r.Group("/api/v1", glyphoauth.DualAuthMiddleware(sessionMw, bearerMw), handler.CSRFMiddleware())
@@ -138,7 +154,11 @@ func setupDevAuth(ctx context.Context, r *gin.Engine, pool *pgxpool.Pool, s *sto
 		Orgs:          s.orgs,
 		ConsentSecret: getOrGenerateConsentSecret(),
 	}
-	glyphoauth.RegisterOAuthRoutes(r, oauthCfg)
+	// Dev mode has no real session concept to attach here (its "session" is
+	// the unsigned dev_user_id cookie in makeDevAuthMiddleware, not a signed
+	// JWT auth.SessionMiddleware could validate) — pass nil; /oauth/revoke
+	// still works via client-credential revocation.
+	glyphoauth.RegisterOAuthRoutes(r, oauthCfg, nil)
 	bearerMw := glyphoauth.BearerTokenMiddleware(s.oauthTokens, s.users)
 
 	slog.Warn("OIDC not configured — running in DEV MODE",

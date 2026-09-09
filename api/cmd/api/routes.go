@@ -33,7 +33,7 @@ func newHandlers(stores *stores) *handlers {
 			Tasks: stores.tasks,
 			Perms: perms,
 		},
-		templates: &handler.TemplateHandler{Templates: stores.templates},
+		templates: &handler.TemplateHandler{Templates: stores.templates, Perms: perms},
 		orgs:      &handler.OrgHandler{Orgs: stores.orgs, Users: stores.users},
 		shares: &handler.ShareHandler{
 			Shares:    stores.shares,
