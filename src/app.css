@@ -18,13 +18,17 @@
   --text-secondary: #999999;
   --text-muted: #666666;
   --text-heading: #e8e8e8;
-  --text-link: #7b91db;
+  --text-link: #2fb8a0;
 
   /* Accent */
-  --accent: #7b91db;
-  --accent-hover: #9aaff0;
-  --accent-muted: rgba(123, 145, 219, 0.15);
-  --accent-bg: rgba(123, 145, 219, 0.1);
+  --accent: #2fb8a0;
+  --accent-hover: #3bd0b6;
+  --accent-muted: rgba(47, 184, 160, 0.15);
+  --accent-bg: rgba(47, 184, 160, 0.1);
+  /* Foreground for text/icons sitting ON --accent. The accent is a
+     high-luminance teal, so white would only reach ~2.5:1; this deep
+     teal-black gives 6.9:1. Never hardcode #fff on an accent fill. */
+  --accent-contrast: #0f1f1b;
 
   /* Priority colors */
   --priority-urgent: #e06c75;
@@ -35,14 +39,14 @@
 
   /* Status colors */
   --status-todo: #555555;
-  --status-in-progress: #7b91db;
+  --status-in-progress: #2fb8a0;
   --status-done: #98c379;
   --status-cancelled: #444444;
 
   /* Tags */
-  --tag-bg: rgba(123, 145, 219, 0.12);
-  --tag-text: #a0b4e8;
-  --tag-border: rgba(123, 145, 219, 0.3);
+  --tag-bg: rgba(47, 184, 160, 0.12);
+  --tag-text: #45d5bc;
+  --tag-border: rgba(47, 184, 160, 0.3);
 
   /* Shadows */
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
@@ -138,7 +142,7 @@ button {
 
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 .btn-primary:hover { background: var(--accent-hover); }
 
@@ -183,7 +187,7 @@ button {
 .badge-none   { background: rgba(85,85,85,0.15);    color: var(--text-muted); }
 
 .badge-todo        { background: rgba(85,85,85,0.15);          color: var(--text-muted); }
-.badge-in-progress { background: rgba(123,145,219,0.15);       color: var(--accent); }
+.badge-in-progress { background: rgba(47,184,160,0.15);        color: var(--accent); }
 .badge-done        { background: rgba(152,195,121,0.15);       color: var(--priority-low); }
 .badge-cancelled   { background: rgba(68,68,68,0.15);          color: var(--text-muted); text-decoration: line-through; }
 

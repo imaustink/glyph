@@ -315,7 +315,7 @@
 
   .dp-day.selected {
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-contrast);
     font-weight: 600;
   }
 

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Glyph">
+  <title>Glyph</title>
+  <!--
+    Single-colour variant. Inherits the surrounding text colour via currentColor,
+    so it must be INLINED in the DOM. Referenced from <img src> it falls back to
+    black, because an <img>-embedded SVG is an isolated document.
+  -->
+  <path
+    d="M9.39 13.76 L35.08 13.76 M9.39 26.09 L27.89 26.09"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="5.75"
+    stroke-linecap="round"
+  />
+  <path
+    d="M9.39 38.42 L20.7 38.42 L30.97 49.73 L54.61 14.79"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="6.78"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>

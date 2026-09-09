@@ -131,6 +131,14 @@ src/
     tasks/[taskId]/+page.svelte    # Task detail — all fields editable inline
     search/+page.svelte            # Full search page
     settings/orgs/+page.svelte     # Organization management (API mode only)
+static/
+  logo.svg                         # Primary mark (note lines resolving into a check)
+  logo-mono.svg                    # currentColor mark — inline use only
+  logo-wordmark.svg                # Mark + "glyph" lettering (theme-adaptive)
+  logo-wordmark-mono.svg           # Mark + lettering, all currentColor — inline only
+  favicon.svg                      # Rounded-square app tile
+  apple-touch-icon.png             # 180px raster export (square corners for iOS)
+  icon-192.png / icon-512.png      # Raster tile exports
 ```
 
 ---
@@ -233,15 +241,50 @@ There is no CSS-in-JS. All styles live in:
 
 **Never hardcode colors** — always use a CSS variable from the palette. Add new tokens to `app.css` first.
 
+**Never put `#fff` on `--accent`.** The brand accent is a high-luminance teal (`#2fb8a0`), so white text on it lands around 2.5:1 — well under WCAG AA. Use `var(--accent-contrast)` (a deep teal-black) for any text or icon sitting on an accent fill; that pairing is 6.9:1. This applies to primary buttons, selected date cells, active toggles and toast bodies. [branding.spec.ts](../e2e/branding.spec.ts) asserts the accent/contrast pair stays ≥ 4.5:1, so regressions fail CI.
+
+The palette is **One Dark**-derived and semantically loaded: green (`#98c379`) is `--status-done`/`--priority-low`, amber and red are priority levels. That is why the brand accent is teal — it is one of the few hues left that carries no status meaning. **Do not repurpose a priority or status hue as the accent**, or the logo will read as a state.
+
 Key tokens:
 ```
 --bg-primary / --bg-secondary / --bg-tertiary / --bg-hover / --bg-modal
 --border-subtle / --border-default / --border-strong
 --text-primary / --text-secondary / --text-muted / --text-heading
---accent / --accent-hover / --accent-muted / --accent-bg
+--accent / --accent-hover / --accent-muted / --accent-bg / --accent-contrast
 --priority-urgent/high/medium/low/none
 --status-todo/in-progress/done/cancelled
 ```
+
+### Brand assets
+
+All logo art lives in [static/](../static) and is **hand-authored vector geometry** — there is no design-tool source file, the path data is the source of truth. Do not replace it with an exported bitmap.
+
+| File | Use |
+|---|---|
+| `logo.svg` | Primary mark — teal gradient note lines + checkmark. Works on light and dark. |
+| `logo-mono.svg` | Single-colour mark using `currentColor`. **Inline only.** |
+| `logo-wordmark.svg` | Mark + "glyph" lettering; lettering adapts via `prefers-color-scheme`. |
+| `logo-wordmark-mono.svg` | Same lockup, all `currentColor`. **Inline only.** |
+| `favicon.svg` | Rounded-square tile, white mark on an accent gradient. |
+| `apple-touch-icon.png` (180) / `icon-192.png` / `icon-512.png` | Raster exports of the tile. |
+
+**The mark** is three strokes of "writing": two short note lines, and a third that begins as a line and then resolves into a checkmark. It fuses the app's two halves — notes (written lines) and tasks (completion) — into a single written mark, which is what the name *glyph* refers to. Deliberately **not** a mascot and not a generic document-with-a-tick.
+
+Geometry lives in a `0 0 64 64` viewBox. The note lines are `stroke-width` 5.75 and the check is 6.78 — the slight hierarchy keeps the lines quiet so the check reads as the subject. The line lengths *decrease* (35.08 → 27.89 → the check's 20.7 elbow); that taper is what makes them read as a paragraph of text rather than a hamburger menu. **Do not equalise them.**
+
+The third stroke is one continuous path (`line → elbow → down → up`), not a line plus a separate check. That continuity is the whole idea: writing turning into completion. Splitting it into two paths breaks the concept.
+
+Because the art is *stroked, not filled*, its visual bounds are the path bounds expanded by half the stroke width. Coordinates carry two decimals because they are the output of a stroke-aware centring pass (union of each subpath's bbox + its own half-weight, scaled to a 6-unit margin and re-centred on 32,32). **If you change the weights or the line lengths, redo that centring** — do not nudge numbers by eye, or the mark will sit visibly off-centre in the favicon tile.
+
+**Gotcha — `currentColor` does not work in `<img>`.** An SVG referenced as `<img src="logo-mono.svg">` (or as a CSS `background-image`) is an *isolated document*: it never inherits the host page's `color`, so `currentColor` resolves to black. Use the `-mono` variants only when inlining the SVG markup in the DOM. For `<img>` contexts use `logo.svg` / `logo-wordmark.svg`, which carry explicit colours.
+
+**Gotcha — `prefers-color-scheme` is OS-level, not element-level.** `logo-wordmark.svg` adapts its lettering with an embedded `@media (prefers-color-scheme: dark)` block, which is right for READMEs and OS-driven surfaces. It *cannot* know it has been placed on a dark card while the OS is in light mode. Since Glyph's shell is always dark (`data-theme="dark"`), prefer inlining `logo-wordmark-mono.svg` pinned to a theme token for in-app use.
+
+The sidebar mark is inlined directly in [Sidebar.svelte](../src/lib/components/sidebar/Sidebar.svelte) (not `<img>`) precisely so it can inherit `var(--accent)`. Coverage lives in [branding.spec.ts](../e2e/branding.spec.ts).
+
+**Colour lives in two places and both must move together.** The standalone SVGs carry baked teal gradient stops (`#49d1b9 → #2fb8a0 → #258f7d`; the tile uses `#41cfb6 → #238776`), while the in-app mark inherits `--accent`. If you re-brand, update the gradient stops in `logo.svg` / `logo-wordmark.svg` / `favicon.svg`, the `--accent*` tokens in `app.css`, the `theme-color` meta in `app.html`, **and** re-export the three PNGs — otherwise the favicon silently keeps the old colour while the UI changes.
+
+To regenerate the PNG exports after changing the tile, render `favicon.svg` at the target sizes with any rasteriser (the repo's Playwright install can do it headlessly). `apple-touch-icon.png` is deliberately generated with **square** corners — iOS applies its own mask and would otherwise double-round it.
 
 ### Editor heading margin snap fix
 

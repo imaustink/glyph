@@ -627,7 +627,7 @@
     margin: 0 0 16px;
     padding: 8px 12px;
     background: var(--accent-bg);
-    border: 1px solid rgba(123, 145, 219, 0.25);
+    border: 1px solid rgba(47, 184, 160, 0.25);
     border-radius: var(--radius-md);
     font-size: var(--font-size-sm);
     color: var(--text-secondary);
