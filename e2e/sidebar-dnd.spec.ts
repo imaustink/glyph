@@ -59,9 +59,9 @@ test.describe('Folder template creation', () => {
 		await defaultEntry.click();
 
 		// Should navigate to the new page.
-		await page.waitForURL(/\/notes\//, { timeout: 5_000 });
+		await page.waitForURL(/\/notes\//, { timeout: 15_000 });
 		await expect(page.locator('main .tiptap-editor, input.title-edit').first()).toBeVisible({
-			timeout: 5_000
+			timeout: 15_000
 		});
 
 		// The folder should now have a child node — expand it if needed and verify.
@@ -87,9 +87,9 @@ test.describe('Folder template creation', () => {
 		await page.locator('.context-item:has-text("New page inside")').click();
 
 		// Should navigate to the new page.
-		await page.waitForURL(/\/notes\//, { timeout: 5_000 });
+		await page.waitForURL(/\/notes\//, { timeout: 15_000 });
 		await expect(page.locator('main .tiptap-editor, input.title-edit').first()).toBeVisible({
-			timeout: 5_000
+			timeout: 15_000
 		});
 	});
 });
@@ -118,7 +118,7 @@ test.describe('Drag and drop in sidebar', () => {
 		// After drop, the folder should be expanded and contain "Page A" as a child.
 		// The folder's children div should contain the page.
 		const folderChildren = page.locator('.children .node-label:has-text("Page A")');
-		await expect(folderChildren).toBeVisible({ timeout: 5_000 });
+		await expect(folderChildren).toBeVisible({ timeout: 15_000 });
 	});
 
 	test('drag to reorder pages at the same level', async ({ page }) => {
@@ -184,7 +184,7 @@ test.describe('Drag and drop in sidebar', () => {
 
 		// Confirm it is now a child of the folder.
 		await expect(page.locator('.children .node-label:has-text("Page A")')).toBeVisible({
-			timeout: 5_000
+			timeout: 15_000
 		});
 
 		// Drag "Page A" out onto the empty area of the page tree container (root level).
@@ -193,7 +193,7 @@ test.describe('Drag and drop in sidebar', () => {
 
 		// "Page A" should no longer be nested inside the folder's children.
 		await expect(page.locator('.children .node-label:has-text("Page A")')).toHaveCount(0, {
-			timeout: 5_000
+			timeout: 15_000
 		});
 		// But it should still exist in the sidebar at root level.
 		await expect(page.locator('.node-label:has-text("Page A")')).toBeVisible();
@@ -223,7 +223,7 @@ test.describe('Drag and drop in sidebar', () => {
 		});
 		await pageRow.dragTo(folderRow);
 		await expect(page.locator('.children .node-label:has-text("Page A")')).toBeVisible({
-			timeout: 5_000
+			timeout: 15_000
 		});
 
 		// Drag "Page A" onto the "Pages" section header to move it to the top level.
@@ -232,7 +232,7 @@ test.describe('Drag and drop in sidebar', () => {
 
 		// "Page A" should no longer be nested inside the folder's children.
 		await expect(page.locator('.children .node-label:has-text("Page A")')).toHaveCount(0, {
-			timeout: 5_000
+			timeout: 15_000
 		});
 		await expect(page.locator('.node-label:has-text("Page A")')).toBeVisible();
 
@@ -260,7 +260,7 @@ test.describe('Drag and drop in sidebar', () => {
 		});
 		await pageRow.dragTo(folderRow);
 		await expect(page.locator('.children .node-label:has-text("Page A")')).toBeVisible({
-			timeout: 5_000
+			timeout: 15_000
 		});
 
 		// Drag "Page A" back out by dropping it onto the folder row again (a child

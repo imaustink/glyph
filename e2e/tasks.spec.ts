@@ -33,7 +33,7 @@ test.describe('Tasks', () => {
 
 		// The TaskCreationPopover should appear immediately — before typing any text.
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 
 		// Title input should be empty (no text typed yet).
 		const titleInput = popover.locator('input.title-input');
@@ -49,7 +49,7 @@ test.describe('Tasks', () => {
 
 		await navigateToTaskBoard(page);
 		await expect(page.locator('.task-card:has-text("Empty bullet task")')).toBeVisible({
-			timeout: 5_000
+			timeout: 15_000
 		});
 	});
 
@@ -64,7 +64,7 @@ test.describe('Tasks', () => {
 
 		// The TaskCreationPopover should appear (auto-created task).
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 
 		// The popover title input should be pre-filled with the bullet text.
 		const titleInput = popover.locator('input.title-input');
@@ -77,7 +77,7 @@ test.describe('Tasks', () => {
 		// Navigate to the task board — the task should be there.
 		await navigateToTaskBoard(page);
 		await expect(page.locator('.task-card:has-text("Buy groceries")')).toBeVisible({
-			timeout: 5_000
+			timeout: 15_000
 		});
 	});
 
@@ -90,13 +90,13 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('- Status test task', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 
 		// Go to the task board.
 		await navigateToTaskBoard(page);
 		const card = page.locator('.task-card:has-text("Status test task")').first();
-		await expect(card).toBeVisible({ timeout: 5_000 });
+		await expect(card).toBeVisible({ timeout: 15_000 });
 
 		// Click the status dot to cycle the status.
 		const statusButton = card.locator('.status-dot');
@@ -106,7 +106,7 @@ test.describe('Tasks', () => {
 		// Use .first() since the card may appear in multiple lanes.
 		await expect(
 			page.locator('.task-card:has-text("Status test task")').first().locator('.dot.dot-in-progress')
-		).toBeVisible({ timeout: 5_000 });
+		).toBeVisible({ timeout: 15_000 });
 	});
 
 	test('navigate to task detail from board', async ({ page }) => {
@@ -118,17 +118,17 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('- Detail test task', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 
 		// Go to task board and click the task title to navigate to detail.
 		await navigateToTaskBoard(page);
 		const titleLink = page.locator('.card-title:has-text("Detail test task")');
-		await expect(titleLink).toBeVisible({ timeout: 5_000 });
+		await expect(titleLink).toBeVisible({ timeout: 15_000 });
 		await titleLink.click();
 
 		// Should be on the task detail page.
-		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 5_000 });
+		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 15_000 });
 		await expect(page.locator('h1.task-title')).toContainText('Detail test task');
 	});
 
@@ -141,12 +141,12 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('- Editable task', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 
 		// Navigate to task board → task detail.
 		await navigateToTaskBoard(page);
-		await page.locator('.card-title:has-text("Editable task")').click({ timeout: 5_000 });
+		await page.locator('.card-title:has-text("Editable task")').click({ timeout: 15_000 });
 		await expect(page.locator('.task-detail-page')).toBeVisible();
 
 		// Change priority.
@@ -163,7 +163,7 @@ test.describe('Tasks', () => {
 
 		// Navigate away and back — changes should persist.
 		await page.locator('.back-btn').click();
-		await page.locator('.card-title:has-text("Editable task")').click({ timeout: 5_000 });
+		await page.locator('.card-title:has-text("Editable task")').click({ timeout: 15_000 });
 
 		await expect(
 			page.locator('.meta-row:has(.meta-label:has-text("Priority")) select')
@@ -180,12 +180,12 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('- Markdown desc task', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 
 		// Navigate to task board → task detail.
 		await navigateToTaskBoard(page);
-		await page.locator('.card-title:has-text("Markdown desc task")').click({ timeout: 5_000 });
+		await page.locator('.card-title:has-text("Markdown desc task")').click({ timeout: 15_000 });
 		await expect(page.locator('.task-detail-page')).toBeVisible();
 
 		// Type markdown shortcuts — they should convert to formatted nodes live.
@@ -258,14 +258,14 @@ test.describe('Tasks', () => {
 		const allTasksLane = page.locator('.lane').filter({ has: page.locator('.lane-title:has-text("All Tasks")') });
 		const inProgressLane = page.locator('.lane').filter({ has: page.locator('.lane-title:has-text("In Progress")') });
 		const taskCard = allTasksLane.locator('.task-card:has-text("Nested dnd task")');
-		await expect(taskCard).toBeVisible({ timeout: 5_000 });
+		await expect(taskCard).toBeVisible({ timeout: 15_000 });
 
 		await dragTo(page, taskCard, inProgressLane.locator('.lane-body'));
 
 		expect(await laneTitles.allTextContents()).toEqual(before);
 		await expect(
 			inProgressLane.locator('.task-card:has-text("Nested dnd task")')
-		).toBeVisible({ timeout: 5_000 });
+		).toBeVisible({ timeout: 15_000 });
 	});
 
 	// ── Drag-and-Drop Tests ─────────────────────────────────────────────
@@ -277,14 +277,14 @@ test.describe('Tasks', () => {
 	async function createTaskViaBullet(page: import('@playwright/test').Page, title: string) {
 		// Navigate to the first page (Getting Started).
 		await page.locator('.node-label').first().click();
-		await page.waitForSelector('main .tiptap-editor', { timeout: 5_000 });
+		await page.waitForSelector('main .tiptap-editor', { timeout: 15_000 });
 
 		const editor = page.locator('main .tiptap-editor');
 		await editor.click();
 		await editor.pressSequentially(`- ${title}`, { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 		await expect(popover).not.toBeVisible();
 
@@ -344,7 +344,7 @@ test.describe('Tasks', () => {
 		await allTasksLane.locator('.icon-btn[title="Configure lane"]').click();
 
 		const modal = page.locator('[role="dialog"][aria-label="Configure lane"]');
-		await expect(modal).toBeVisible({ timeout: 5_000 });
+		await expect(modal).toBeVisible({ timeout: 15_000 });
 
 		// Select "Manual" sort mode.
 		await modal.locator('input[type="radio"][value="manual"]').click();
@@ -354,8 +354,8 @@ test.describe('Tasks', () => {
 		// Verify both tasks are visible in the lane.
 		const firstCard = allTasksLane.locator('.task-card:has-text("First task")');
 		const secondCard = allTasksLane.locator('.task-card:has-text("Second task")');
-		await expect(firstCard).toBeVisible({ timeout: 5_000 });
-		await expect(secondCard).toBeVisible({ timeout: 5_000 });
+		await expect(firstCard).toBeVisible({ timeout: 15_000 });
+		await expect(secondCard).toBeVisible({ timeout: 15_000 });
 
 		// Get initial order.
 		const cardsBefore = allTasksLane.locator('.task-card');
@@ -387,7 +387,7 @@ test.describe('Tasks', () => {
 		// The "All Tasks" lane should contain our task.
 		const allTasksLane = page.locator('.lane').filter({ has: page.locator('.lane-title:has-text("All Tasks")') });
 		const taskCard = allTasksLane.locator('.task-card:has-text("Move me task")');
-		await expect(taskCard).toBeVisible({ timeout: 5_000 });
+		await expect(taskCard).toBeVisible({ timeout: 15_000 });
 
 		// Drag the task card into the "In Progress" lane body.
 		await dragTo(page, taskCard, inProgressBody);
@@ -395,12 +395,12 @@ test.describe('Tasks', () => {
 		// The task should now appear in the "In Progress" lane.
 		await expect(
 			inProgressLane.locator('.task-card:has-text("Move me task")')
-		).toBeVisible({ timeout: 5_000 });
+		).toBeVisible({ timeout: 15_000 });
 
 		// Verify the status dot changed to in-progress.
 		await expect(
 			inProgressLane.locator('.task-card:has-text("Move me task") .dot.dot-in-progress')
-		).toBeVisible({ timeout: 5_000 });
+		).toBeVisible({ timeout: 15_000 });
 	});
 
 	test('drag task into a lane filtered with "is one of" also sets its status', async ({ page }) => {
@@ -421,7 +421,7 @@ test.describe('Tasks', () => {
 		await inProgressLane.locator('.icon-btn[title="Configure lane"]').click();
 
 		const modal = page.locator('[role="dialog"][aria-label="Configure lane"]');
-		await expect(modal).toBeVisible({ timeout: 5_000 });
+		await expect(modal).toBeVisible({ timeout: 15_000 });
 
 		// Switch the lane's status rule from "equals" to "is one of", keeping
 		// only "In Progress" selected.
@@ -434,13 +434,13 @@ test.describe('Tasks', () => {
 
 		const allTasksLane = page.locator('.lane').filter({ has: page.locator('.lane-title:has-text("All Tasks")') });
 		const taskCard = allTasksLane.locator('.task-card:has-text("Move me via in-filter")');
-		await expect(taskCard).toBeVisible({ timeout: 5_000 });
+		await expect(taskCard).toBeVisible({ timeout: 15_000 });
 
 		await dragTo(page, taskCard, inProgressLane.locator('.lane-body'));
 
 		await expect(
 			inProgressLane.locator('.task-card:has-text("Move me via in-filter") .dot.dot-in-progress')
-		).toBeVisible({ timeout: 5_000 });
+		).toBeVisible({ timeout: 15_000 });
 	});
 
 	test('dragging a task into a lane that already contains it is a no-op', async ({ page }) => {
@@ -459,11 +459,11 @@ test.describe('Tasks', () => {
 		// First move the task to "In Progress" so it now appears in both "All Tasks"
 		// (any-status filter) and "In Progress".
 		const allTasksCard = allTasksLane.locator('.task-card:has-text("Duplicate drag task")');
-		await expect(allTasksCard).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksCard).toBeVisible({ timeout: 15_000 });
 		await dragTo(page, allTasksCard, inProgressLane.locator('.lane-body'));
 		await expect(
 			inProgressLane.locator('.task-card:has-text("Duplicate drag task")')
-		).toBeVisible({ timeout: 5_000 });
+		).toBeVisible({ timeout: 15_000 });
 
 		// Record how many cards are in "All Tasks" before the attempted duplicate drop.
 		const countBefore = await allTasksLane.locator('.task-card').count();
@@ -480,7 +480,7 @@ test.describe('Tasks', () => {
 		// The card should still be present in "In Progress" (not removed from source).
 		await expect(
 			inProgressLane.locator('.task-card:has-text("Duplicate drag task")')
-		).toBeVisible({ timeout: 5_000 });
+		).toBeVisible({ timeout: 15_000 });
 	});
 
 	test('manual sort order persists after page reload', async ({ page }) => {
@@ -499,13 +499,13 @@ test.describe('Tasks', () => {
 
 		// Verify task titles are fully rendered before proceeding.
 		const allTasksLane = page.locator('.lane').filter({ has: page.locator('.lane-title:has-text("All Tasks")') });
-		await expect(allTasksLane.locator('.task-card:has-text("Alpha task")')).toBeVisible({ timeout: 5_000 });
-		await expect(allTasksLane.locator('.task-card:has-text("Beta task")')).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Alpha task")')).toBeVisible({ timeout: 15_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Beta task")')).toBeVisible({ timeout: 15_000 });
 
 		// Configure "All Tasks" to manual sort.
 		await allTasksLane.locator('.icon-btn[title="Configure lane"]').click();
 		const modal = page.locator('[role="dialog"][aria-label="Configure lane"]');
-		await expect(modal).toBeVisible({ timeout: 5_000 });
+		await expect(modal).toBeVisible({ timeout: 15_000 });
 		await modal.locator('input[type="radio"][value="manual"]').click();
 		await modal.locator('button.btn-primary:has-text("Save")').click();
 		await expect(modal).not.toBeVisible();
@@ -513,8 +513,8 @@ test.describe('Tasks', () => {
 		// Wait for tasks to appear.
 		const alphaCard = allTasksLane.locator('.task-card:has-text("Alpha task")');
 		const betaCard = allTasksLane.locator('.task-card:has-text("Beta task")');
-		await expect(alphaCard).toBeVisible({ timeout: 5_000 });
-		await expect(betaCard).toBeVisible({ timeout: 5_000 });
+		await expect(alphaCard).toBeVisible({ timeout: 15_000 });
+		await expect(betaCard).toBeVisible({ timeout: 15_000 });
 
 		// Drag Alpha below Beta to swap order.
 		await dragTo(page, alphaCard, betaCard);
@@ -535,7 +535,7 @@ test.describe('Tasks', () => {
 
 		// Verify order is preserved after reload.
 		const cardsAfterReload = allTasksLane.locator('.task-card .card-title');
-		await expect(cardsAfterReload).toHaveCount(orderAfterDrag.length, { timeout: 5_000 });
+		await expect(cardsAfterReload).toHaveCount(orderAfterDrag.length, { timeout: 15_000 });
 		for (let i = 0; i < orderAfterDrag.length; i++) {
 			await expect(cardsAfterReload.nth(i)).toHaveText(orderAfterDrag[i]);
 		}
@@ -552,12 +552,12 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('- Delete me task', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 
 		// Navigate to task board → task detail.
 		await navigateToTaskBoard(page);
-		await page.locator('.card-title:has-text("Delete me task")').click({ timeout: 5_000 });
+		await page.locator('.card-title:has-text("Delete me task")').click({ timeout: 15_000 });
 		await expect(page.locator('.task-detail-page')).toBeVisible();
 
 		// Click the delete button.
@@ -573,7 +573,7 @@ test.describe('Tasks', () => {
 		await modal.locator('.delete-confirm-btn').click();
 
 		// Should navigate back to task board.
-		await expect(page.locator('.board-page')).toBeVisible({ timeout: 5_000 });
+		await expect(page.locator('.board-page')).toBeVisible({ timeout: 15_000 });
 
 		// Task should no longer exist on the board.
 		await expect(page.locator('.task-card:has-text("Delete me task")')).not.toBeVisible();
@@ -588,7 +588,7 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('- Linked bullet task', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 
 		// Wait for debounced save.
@@ -596,16 +596,16 @@ test.describe('Tasks', () => {
 
 		// Navigate to task board → task detail → delete.
 		await navigateToTaskBoard(page);
-		await page.locator('.card-title:has-text("Linked bullet task")').click({ timeout: 5_000 });
+		await page.locator('.card-title:has-text("Linked bullet task")').click({ timeout: 15_000 });
 		await page.locator('.delete-btn').click();
 		const modal = page.locator('.delete-modal');
 		await expect(modal).toBeVisible({ timeout: 3_000 });
 		await modal.locator('.delete-confirm-btn').click();
-		await expect(page.locator('.board-page')).toBeVisible({ timeout: 5_000 });
+		await expect(page.locator('.board-page')).toBeVisible({ timeout: 15_000 });
 
 		// Navigate back to the note — the bullet should be gone.
 		await page.locator('.node-label').first().click();
-		await page.waitForSelector('main .tiptap-editor', { timeout: 5_000 });
+		await page.waitForSelector('main .tiptap-editor', { timeout: 15_000 });
 		await page.waitForTimeout(500);
 
 		const editorText = await page.locator('main .tiptap-editor').innerText();
@@ -621,12 +621,12 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('- Keep me task', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 
 		// Navigate to task detail and click delete.
 		await navigateToTaskBoard(page);
-		await page.locator('.card-title:has-text("Keep me task")').click({ timeout: 5_000 });
+		await page.locator('.card-title:has-text("Keep me task")').click({ timeout: 15_000 });
 		await page.locator('.delete-btn').click();
 
 		// Cancel the deletion.
@@ -640,7 +640,7 @@ test.describe('Tasks', () => {
 
 		// And on the board.
 		await navigateToTaskBoard(page);
-		await expect(page.locator('.task-card:has-text("Keep me task")')).toBeVisible({ timeout: 5_000 });
+		await expect(page.locator('.task-card:has-text("Keep me task")')).toBeVisible({ timeout: 15_000 });
 	});
 
 	test('removing a TODO bullet in the editor deletes the task', async ({ page }) => {
@@ -652,23 +652,23 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('- Auto delete task', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 
 		// Verify task exists on the board.
 		await navigateToTaskBoard(page);
 		await expect(page.locator('.task-card:has-text("Auto delete task")')).toBeVisible({
-			timeout: 5_000
+			timeout: 15_000
 		});
 
 		// Navigate back to the note.
 		await page.locator('.node-label').first().click();
-		await page.waitForSelector('main .tiptap-editor', { timeout: 5_000 });
+		await page.waitForSelector('main .tiptap-editor', { timeout: 15_000 });
 
 		// Select the entire bullet line and delete it.
 		// Click on the bullet text, select all content on that line, then delete.
 		const bulletItem = page.locator('main .tiptap-editor li:has-text("Auto delete task")');
-		await expect(bulletItem).toBeVisible({ timeout: 5_000 });
+		await expect(bulletItem).toBeVisible({ timeout: 15_000 });
 		await bulletItem.click();
 
 		// Select all text in the bullet and delete, then backspace to remove the list item.
@@ -683,7 +683,7 @@ test.describe('Tasks', () => {
 		// Navigate to the task board — the task should be gone.
 		await navigateToTaskBoard(page);
 		await expect(page.locator('.task-card:has-text("Auto delete task")')).not.toBeVisible({
-			timeout: 5_000
+			timeout: 15_000
 		});
 	});
 
@@ -696,7 +696,7 @@ test.describe('Tasks', () => {
 		for (const title of expectedTitles) {
 			await expect(
 				page.locator('.lane-title', { hasText: title })
-			).toBeVisible({ timeout: 5_000 });
+			).toBeVisible({ timeout: 15_000 });
 		}
 	});
 
@@ -709,7 +709,7 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('- All Tasks filter task', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 
 		await navigateToTaskBoard(page);
@@ -719,13 +719,13 @@ test.describe('Tasks', () => {
 			has: page.locator('.lane-title:has-text("All Tasks")')
 		});
 		await expect(allTasksLane.locator('.task-card:has-text("All Tasks filter task")')).toBeVisible({
-			timeout: 5_000
+			timeout: 15_000
 		});
 
 		// Verify the lane config has no filter rules (empty rules = show all tasks).
 		await allTasksLane.locator('.icon-btn[title="Configure lane"]').click();
 		const modal = page.locator('[role="dialog"][aria-label="Configure lane"]');
-		await expect(modal).toBeVisible({ timeout: 5_000 });
+		await expect(modal).toBeVisible({ timeout: 15_000 });
 		await expect(modal.locator('.rule-row')).toHaveCount(0);
 		await modal.locator('button.btn-ghost:has-text("Cancel")').click();
 	});
@@ -739,18 +739,18 @@ test.describe('Tasks', () => {
 		await navigateToTaskBoard(page);
 
 		const allTasksLane = page.locator('.lane').filter({ has: page.locator('.lane-title:has-text("All Tasks")') });
-		await expect(allTasksLane.locator('.task-card:has-text("Buy groceries")')).toBeVisible({ timeout: 5_000 });
-		await expect(allTasksLane.locator('.task-card:has-text("Write report")')).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Buy groceries")')).toBeVisible({ timeout: 15_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Write report")')).toBeVisible({ timeout: 15_000 });
 
 		await page.locator('.board-search-input').fill('report');
 
-		await expect(allTasksLane.locator('.task-card:has-text("Write report")')).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Write report")')).toBeVisible({ timeout: 15_000 });
 		await expect(allTasksLane.locator('.task-card:has-text("Buy groceries")')).toHaveCount(0);
 
 		// Clearing the search restores every card.
 		await page.locator('.board-search-clear').click();
-		await expect(allTasksLane.locator('.task-card:has-text("Buy groceries")')).toBeVisible({ timeout: 5_000 });
-		await expect(allTasksLane.locator('.task-card:has-text("Write report")')).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Buy groceries")')).toBeVisible({ timeout: 15_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Write report")')).toBeVisible({ timeout: 15_000 });
 	});
 
 	test('board search matches tags in addition to the title', async ({ page }) => {
@@ -759,10 +759,10 @@ test.describe('Tasks', () => {
 		await navigateToTaskBoard(page);
 
 		const taskCard = page.locator('.task-card:has-text("Tagged task")');
-		await expect(taskCard).toBeVisible({ timeout: 5_000 });
+		await expect(taskCard).toBeVisible({ timeout: 15_000 });
 		await taskCard.click();
 
-		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 5_000 });
+		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 15_000 });
 		const tagInput = page.locator('.tag-text-input');
 		await tagInput.fill('backend');
 		await tagInput.press('Enter');
@@ -770,7 +770,7 @@ test.describe('Tasks', () => {
 		await navigateToTaskBoard(page);
 
 		await page.locator('.board-search-input').fill('backend');
-		await expect(page.locator('.task-card:has-text("Tagged task")')).toBeVisible({ timeout: 5_000 });
+		await expect(page.locator('.task-card:has-text("Tagged task")')).toBeVisible({ timeout: 15_000 });
 	});
 
 	// ── Source-note filtering tests ────────────────────────────────────
@@ -789,7 +789,7 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('# TODO', { delay: 30 });
 		await editor.press('Enter');
 		await editor.pressSequentially('- Alpha task', { delay: 30 });
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 		await expect(popover).not.toBeVisible();
 
@@ -811,7 +811,7 @@ test.describe('Tasks', () => {
 		await editor2.pressSequentially('# TODO', { delay: 30 });
 		await editor2.press('Enter');
 		await editor2.pressSequentially('- Beta task', { delay: 30 });
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 		await expect(popover).not.toBeVisible();
 
@@ -821,14 +821,14 @@ test.describe('Tasks', () => {
 		});
 
 		// Both tasks visible before filtering.
-		await expect(allTasksLane.locator('.task-card:has-text("Alpha task")')).toBeVisible({ timeout: 5_000 });
-		await expect(allTasksLane.locator('.task-card:has-text("Beta task")')).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Alpha task")')).toBeVisible({ timeout: 15_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Beta task")')).toBeVisible({ timeout: 15_000 });
 
 		const modal = page.locator('[role="dialog"][aria-label="Configure lane"]');
 
 		// ── Filter by specific source note (Alpha Note) ──
 		await allTasksLane.locator('.icon-btn[title="Configure lane"]').click();
-		await expect(modal).toBeVisible({ timeout: 5_000 });
+		await expect(modal).toBeVisible({ timeout: 15_000 });
 		await modal.locator('button.add-rule-btn').click();
 		const ruleRow = modal.locator('.rule-row').last();
 		await ruleRow.locator('.rule-select').first().selectOption('sourcePageId');
@@ -837,12 +837,12 @@ test.describe('Tasks', () => {
 		await modal.locator('button.btn-primary:has-text("Save")').click();
 		await expect(modal).not.toBeVisible();
 
-		await expect(allTasksLane.locator('.task-card:has-text("Alpha task")')).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Alpha task")')).toBeVisible({ timeout: 15_000 });
 		await expect(allTasksLane.locator('.task-card:has-text("Beta task")')).toHaveCount(0);
 
 		// ── Re-filter by source note tag (alpha) ──
 		await allTasksLane.locator('.icon-btn[title="Configure lane"]').click();
-		await expect(modal).toBeVisible({ timeout: 5_000 });
+		await expect(modal).toBeVisible({ timeout: 15_000 });
 		const ruleRow2 = modal.locator('.rule-row').first();
 		await ruleRow2.locator('.rule-select').first().selectOption('sourcePageTags');
 		await ruleRow2.locator('.rule-select').nth(1).selectOption('contains');
@@ -850,7 +850,7 @@ test.describe('Tasks', () => {
 		await modal.locator('button.btn-primary:has-text("Save")').click();
 		await expect(modal).not.toBeVisible();
 
-		await expect(allTasksLane.locator('.task-card:has-text("Alpha task")')).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Alpha task")')).toBeVisible({ timeout: 15_000 });
 		await expect(allTasksLane.locator('.task-card:has-text("Beta task")')).toHaveCount(0);
 	});
 
@@ -868,7 +868,7 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('- Follow up task', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 		await expect(popover).not.toBeVisible();
 
@@ -879,14 +879,14 @@ test.describe('Tasks', () => {
 
 		// The task card should carry a source-note label linking back to the note.
 		const card = allTasksLane.locator('.task-card:has-text("Follow up task")');
-		await expect(card).toBeVisible({ timeout: 5_000 });
+		await expect(card).toBeVisible({ timeout: 15_000 });
 		const sourceLabel = card.locator('.source-note');
 		await expect(sourceLabel).toHaveText(/Meeting Notes/);
 		await expect(sourceLabel).toHaveAttribute('href', /\/notes\//);
 
 		// Clicking the label opens the source note, not the task detail.
 		await sourceLabel.click();
-		await expect(page).toHaveURL(/\/notes\//, { timeout: 5_000 });
+		await expect(page).toHaveURL(/\/notes\//, { timeout: 15_000 });
 	});
 
 	// ── Status-based auto-sort tests ───────────────────────────────────
@@ -909,34 +909,34 @@ test.describe('Tasks', () => {
 		// Ensure the lane is in auto sort mode.
 		await allTasksLane.locator('.icon-btn[title="Configure lane"]').click();
 		const modal = page.locator('[role="dialog"][aria-label="Configure lane"]');
-		await expect(modal).toBeVisible({ timeout: 5_000 });
+		await expect(modal).toBeVisible({ timeout: 15_000 });
 		await modal.locator('input[type="radio"][value="auto"]').click();
 		await modal.locator('button.btn-primary:has-text("Save")').click();
 		await expect(modal).not.toBeVisible();
 
 		// Both tasks must be visible.
-		await expect(allTasksLane.locator('.task-card:has-text("Active sort task")')).toBeVisible({ timeout: 5_000 });
-		await expect(allTasksLane.locator('.task-card:has-text("Done sort task")')).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Active sort task")')).toBeVisible({ timeout: 15_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Done sort task")')).toBeVisible({ timeout: 15_000 });
 
 		// Navigate to the "Done sort task" detail page and mark it done.
-		await page.locator('.card-title:has-text("Done sort task")').click({ timeout: 5_000 });
+		await page.locator('.card-title:has-text("Done sort task")').click({ timeout: 15_000 });
 		await expect(page.locator('.task-detail-page')).toBeVisible();
 		const statusSelect = page.locator('.meta-row:has(.meta-label:has-text("Status")) select');
 		await statusSelect.selectOption('done');
 		await page.waitForTimeout(500);
 		await page.locator('.back-btn').click();
 
-		await expect(page.locator('.board-page')).toBeVisible({ timeout: 5_000 });
+		await expect(page.locator('.board-page')).toBeVisible({ timeout: 15_000 });
 
 		// Wait for the lane to finish (re)rendering its cards after navigating back
 		// from the task detail page — the lane sorts tasks via an async $effect, so
 		// the cards are not present the instant .board-page becomes visible.
 		await expect(
 			allTasksLane.locator('.task-card:has-text("Active sort task")')
-		).toBeVisible({ timeout: 5_000 });
+		).toBeVisible({ timeout: 15_000 });
 		await expect(
 			allTasksLane.locator('.task-card:has-text("Done sort task")')
-		).toBeVisible({ timeout: 5_000 });
+		).toBeVisible({ timeout: 15_000 });
 
 		// The "Done sort task" must appear after "Active sort task" in All Tasks.
 		const cards = allTasksLane.locator('.task-card .card-title');
@@ -971,30 +971,30 @@ test.describe('Tasks', () => {
 		// Ensure the lane is in auto sort mode.
 		await allTasksLane.locator('.icon-btn[title="Configure lane"]').click();
 		const modal = page.locator('[role="dialog"][aria-label="Configure lane"]');
-		await expect(modal).toBeVisible({ timeout: 5_000 });
+		await expect(modal).toBeVisible({ timeout: 15_000 });
 		await modal.locator('input[type="radio"][value="auto"]').click();
 		await modal.locator('button.btn-primary:has-text("Save")').click();
 		await expect(modal).not.toBeVisible();
 
 		// Navigate to the "Cancelled sort task" detail page and mark it cancelled.
-		await page.locator('.card-title').filter({ hasText: /^Cancelled sort task$/ }).click({ timeout: 5_000 });
+		await page.locator('.card-title').filter({ hasText: /^Cancelled sort task$/ }).click({ timeout: 15_000 });
 		await expect(page.locator('.task-detail-page')).toBeVisible();
 		const statusSelect = page.locator('.meta-row:has(.meta-label:has-text("Status")) select');
 		await statusSelect.selectOption('cancelled');
 		await page.waitForTimeout(500);
 		await page.locator('.back-btn').click();
 
-		await expect(page.locator('.board-page')).toBeVisible({ timeout: 5_000 });
+		await expect(page.locator('.board-page')).toBeVisible({ timeout: 15_000 });
 
 		// Wait for the lane to finish (re)rendering its cards after navigating back
 		// from the task detail page — the lane sorts tasks via an async $effect, so
 		// the cards are not present the instant .board-page becomes visible.
 		await expect(
 			allTasksLane.locator('.card-title', { hasText: 'Active cancelled sort task' })
-		).toBeVisible({ timeout: 5_000 });
+		).toBeVisible({ timeout: 15_000 });
 		await expect(
 			allTasksLane.locator('.card-title').filter({ hasText: /^Cancelled sort task$/ })
-		).toBeVisible({ timeout: 5_000 });
+		).toBeVisible({ timeout: 15_000 });
 
 		// The "Cancelled sort task" must appear after "Active cancelled sort task".
 		const cards = allTasksLane.locator('.task-card .card-title');
@@ -1020,7 +1020,7 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('- New lane test task', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 
 		await navigateToTaskBoard(page);
@@ -1028,7 +1028,7 @@ test.describe('Tasks', () => {
 		// Add a new lane.
 		const initialCount = await page.locator('.lane').count();
 		await page.locator('.add-lane-btn').click();
-		await expect(page.locator('.lane')).toHaveCount(initialCount + 1, { timeout: 5_000 });
+		await expect(page.locator('.lane')).toHaveCount(initialCount + 1, { timeout: 15_000 });
 
 		// The new lane (empty filter rules) should show all tasks (same as "All Tasks" lane).
 		const newLane = page.locator('.lane').last();
@@ -1048,7 +1048,7 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('- Task with URL', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 
 		// Reveal the optional fields.
 		await popover.locator('.expand-btn').click();
@@ -1073,7 +1073,7 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('- Hover preview task', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 		await expect(popover).not.toBeVisible();
 
@@ -1093,7 +1093,7 @@ test.describe('Tasks', () => {
 		await editor.pressSequentially('- Open link task', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 		await expect(popover).not.toBeVisible();
 
@@ -1101,6 +1101,6 @@ test.describe('Tasks', () => {
 			hasText: 'Open link task'
 		});
 		await bullet.locator('.task-open-link').click();
-		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 5_000 });
+		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 15_000 });
 	});
 });

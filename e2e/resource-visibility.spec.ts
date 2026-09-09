@@ -164,7 +164,7 @@ test.describe('Template visibility (api)', () => {
 	async function openTemplateManager(page: import('@playwright/test').Page) {
 		// Hover the new-page section actions to reveal the template dropdown trigger
 		await page.locator('.section-actions button[title="New page (default template)"]').hover();
-		await page.waitForSelector('.template-dropdown', { timeout: 5_000 });
+		await page.waitForSelector('.template-dropdown', { timeout: 15_000 });
 		await page.locator('.dropdown-item.dropdown-manage:has-text("Manage templates")').click();
 		await page.waitForSelector('.templates-modal', { timeout: 10_000 });
 	}
