@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { matchesRule, applyFilter } from './filterUtils';
+import { matchesRule, applyFilter, matchesSearchText } from './filterUtils';
 import type { Task, FilterRule, FilterSet } from '$lib/models/types';
 
 function makeTask(overrides: Partial<Task> = {}): Task {
@@ -283,5 +283,38 @@ describe('applyFilter', () => {
       rules: [{ id: 'r1', field: 'sourcePageTags', operator: 'contains', value: 'work' }]
     };
     expect(applyFilter(ctxTasks, fs, ctx).map((t) => t.id)).toEqual(['a']);
+  });
+});
+
+// ─── matchesSearchText ──────────────────────────────────────────────────────
+
+describe('matchesSearchText', () => {
+  it('returns true for an empty or whitespace-only query', () => {
+    const task = makeTask({ title: 'Anything' });
+    expect(matchesSearchText(task, '')).toBe(true);
+    expect(matchesSearchText(task, '   ')).toBe(true);
+  });
+
+  it('matches case-insensitively against the title', () => {
+    const task = makeTask({ title: 'Write Release Notes' });
+    expect(matchesSearchText(task, 'release')).toBe(true);
+    expect(matchesSearchText(task, 'RELEASE')).toBe(true);
+    expect(matchesSearchText(task, 'nope')).toBe(false);
+  });
+
+  it('matches against the description', () => {
+    const task = makeTask({ title: 'Task', description: 'Contains a secret keyword' });
+    expect(matchesSearchText(task, 'secret')).toBe(true);
+  });
+
+  it('matches against any tag', () => {
+    const task = makeTask({ title: 'Task', tags: ['urgent', 'backend'] });
+    expect(matchesSearchText(task, 'backend')).toBe(true);
+    expect(matchesSearchText(task, 'frontend')).toBe(false);
+  });
+
+  it('returns false when the query matches nothing', () => {
+    const task = makeTask({ title: 'Task', description: 'desc', tags: ['tag'] });
+    expect(matchesSearchText(task, 'zzz')).toBe(false);
   });
 });

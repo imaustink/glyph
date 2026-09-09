@@ -222,6 +222,52 @@ test.describe('Tasks', () => {
 		await expect(page.locator('.lane')).toHaveCount(initialCount + 1);
 	});
 
+	test('drag a lane by its handle to reorder lanes, persists after reload', async ({ page }) => {
+		await navigateToTaskBoard(page);
+
+		const laneTitles = page.locator('.lane-title');
+		const before = await laneTitles.allTextContents();
+
+		// Drag the first lane's handle onto the third lane's header.
+		await dragTo(page, page.locator('.lane-drag-handle').nth(0), page.locator('.lane-header').nth(2));
+
+		const afterDrag = await laneTitles.allTextContents();
+		expect(afterDrag).not.toEqual(before);
+		expect(new Set(afterDrag)).toEqual(new Set(before));
+
+		// Order should survive a reload (persisted via lanesStore.reorderLanes).
+		await page.reload();
+		await page.waitForSelector('.app-shell .sidebar');
+		await navigateToTaskBoard(page);
+		await expect(laneTitles).toHaveCount(before.length);
+		expect(await laneTitles.allTextContents()).toEqual(afterDrag);
+	});
+
+	test('dragging a task card does not reorder lanes', async ({ page }) => {
+		const editor = page.locator('main .tiptap-editor');
+		await editor.click();
+		await editor.pressSequentially('# TODO', { delay: 30 });
+		await editor.press('Enter');
+		await createTaskViaBullet(page, 'Nested dnd task');
+
+		await navigateToTaskBoard(page);
+
+		const laneTitles = page.locator('.lane-title');
+		const before = await laneTitles.allTextContents();
+
+		const allTasksLane = page.locator('.lane').filter({ has: page.locator('.lane-title:has-text("All Tasks")') });
+		const inProgressLane = page.locator('.lane').filter({ has: page.locator('.lane-title:has-text("In Progress")') });
+		const taskCard = allTasksLane.locator('.task-card:has-text("Nested dnd task")');
+		await expect(taskCard).toBeVisible({ timeout: 5_000 });
+
+		await dragTo(page, taskCard, inProgressLane.locator('.lane-body'));
+
+		expect(await laneTitles.allTextContents()).toEqual(before);
+		await expect(
+			inProgressLane.locator('.task-card:has-text("Nested dnd task")')
+		).toBeVisible({ timeout: 5_000 });
+	});
+
 	// ── Drag-and-Drop Tests ─────────────────────────────────────────────
 
 	/**
@@ -354,6 +400,46 @@ test.describe('Tasks', () => {
 		// Verify the status dot changed to in-progress.
 		await expect(
 			inProgressLane.locator('.task-card:has-text("Move me task") .dot.dot-in-progress')
+		).toBeVisible({ timeout: 5_000 });
+	});
+
+	test('drag task into a lane filtered with "is one of" also sets its status', async ({ page }) => {
+		// Regression test: a lane filtered on status via the "is one of" (`in`)
+		// operator with a single value should be just as valid a drop target as
+		// one using "equals" — the drop handler previously only recognized `eq`
+		// rules, so dropping into an `in`-filtered lane silently left the task's
+		// status unchanged.
+		const editor = page.locator('main .tiptap-editor');
+		await editor.click();
+		await editor.pressSequentially('# TODO', { delay: 30 });
+		await editor.press('Enter');
+		await createTaskViaBullet(page, 'Move me via in-filter');
+
+		await navigateToTaskBoard(page);
+
+		const inProgressLane = page.locator('.lane').filter({ has: page.locator('.lane-title:has-text("In Progress")') });
+		await inProgressLane.locator('.icon-btn[title="Configure lane"]').click();
+
+		const modal = page.locator('[role="dialog"][aria-label="Configure lane"]');
+		await expect(modal).toBeVisible({ timeout: 5_000 });
+
+		// Switch the lane's status rule from "equals" to "is one of", keeping
+		// only "In Progress" selected.
+		const ruleRow = modal.locator('.rule-row').first();
+		await ruleRow.locator('select').nth(1).selectOption('in');
+		const multiSelect = ruleRow.locator('select.note-multi');
+		await multiSelect.selectOption(['in-progress']);
+		await modal.locator('button.btn-primary:has-text("Save")').click();
+		await expect(modal).not.toBeVisible();
+
+		const allTasksLane = page.locator('.lane').filter({ has: page.locator('.lane-title:has-text("All Tasks")') });
+		const taskCard = allTasksLane.locator('.task-card:has-text("Move me via in-filter")');
+		await expect(taskCard).toBeVisible({ timeout: 5_000 });
+
+		await dragTo(page, taskCard, inProgressLane.locator('.lane-body'));
+
+		await expect(
+			inProgressLane.locator('.task-card:has-text("Move me via in-filter") .dot.dot-in-progress')
 		).toBeVisible({ timeout: 5_000 });
 	});
 
@@ -642,6 +728,49 @@ test.describe('Tasks', () => {
 		await expect(modal).toBeVisible({ timeout: 5_000 });
 		await expect(modal.locator('.rule-row')).toHaveCount(0);
 		await modal.locator('button.btn-ghost:has-text("Cancel")').click();
+	});
+
+	// ── Board Search Tests ──────────────────────────────────────────────
+
+	test('board search filters task cards across all lanes by title', async ({ page }) => {
+		await createTaskViaBullet(page, 'Buy groceries');
+		await createTaskViaBullet(page, 'Write report');
+
+		await navigateToTaskBoard(page);
+
+		const allTasksLane = page.locator('.lane').filter({ has: page.locator('.lane-title:has-text("All Tasks")') });
+		await expect(allTasksLane.locator('.task-card:has-text("Buy groceries")')).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Write report")')).toBeVisible({ timeout: 5_000 });
+
+		await page.locator('.board-search-input').fill('report');
+
+		await expect(allTasksLane.locator('.task-card:has-text("Write report")')).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Buy groceries")')).toHaveCount(0);
+
+		// Clearing the search restores every card.
+		await page.locator('.board-search-clear').click();
+		await expect(allTasksLane.locator('.task-card:has-text("Buy groceries")')).toBeVisible({ timeout: 5_000 });
+		await expect(allTasksLane.locator('.task-card:has-text("Write report")')).toBeVisible({ timeout: 5_000 });
+	});
+
+	test('board search matches tags in addition to the title', async ({ page }) => {
+		await createTaskViaBullet(page, 'Tagged task');
+
+		await navigateToTaskBoard(page);
+
+		const taskCard = page.locator('.task-card:has-text("Tagged task")');
+		await expect(taskCard).toBeVisible({ timeout: 5_000 });
+		await taskCard.click();
+
+		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 5_000 });
+		const tagInput = page.locator('.tag-text-input');
+		await tagInput.fill('backend');
+		await tagInput.press('Enter');
+
+		await navigateToTaskBoard(page);
+
+		await page.locator('.board-search-input').fill('backend');
+		await expect(page.locator('.task-card:has-text("Tagged task")')).toBeVisible({ timeout: 5_000 });
 	});
 
 	// ── Source-note filtering tests ────────────────────────────────────

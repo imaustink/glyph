@@ -59,7 +59,7 @@ export interface TreeNode {
   parentId: string | null;
   order: number;
   tags: string[];
-  /** Priority of this note. Drives task-board ordering (note priority first, then task priority). Defaults to 'none'. */
+  /** Priority of this note. Drives task-board ordering as a tie breaker after task priority and due date. Defaults to 'none'. */
   priority?: Priority;
   /** Owner of this node. */
   userId?: string;
@@ -127,11 +127,26 @@ export type FilterConjunction = 'and' | 'or';
 export type FilterValue = string | string[] | number | boolean | null;
 
 /**
- * Fields a filter rule can target. This is any direct field of a Task, plus
- * synthetic/computed fields that are resolved from related resources:
+ * Fields a filter rule can target. This is a curated subset of Task fields that
+ * make sense to filter on, plus synthetic/computed fields resolved from related
+ * resources:
+ * - `sourcePageId`: the note (page) a task was created from.
  * - `sourcePageTags`: the tags of the note (source page) a task was created from.
+ *
+ * Deliberately narrower than `keyof Task` — each field here has matching
+ * metadata in `FILTER_FIELD_META` (models/constants.ts) describing its value
+ * kind (enum/text/date/tags/note) and the operators/inputs that make sense for it.
  */
-export type TaskFilterField = keyof Task | 'sourcePageTags';
+export type TaskFilterField =
+  | 'status'
+  | 'priority'
+  | 'dueDate'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'title'
+  | 'tags'
+  | 'sourcePageId'
+  | 'sourcePageTags';
 
 export interface FilterRule {
   id: string;
@@ -162,10 +177,10 @@ export interface SortConfig {
  */
 export interface SortContext {
   /**
-   * Resolve the priority of a task's source note (page). Providers use this to
-   * order tasks by their originating note's priority before the task's own
-   * priority. Returns 'none' when the task has no linked note or the note has
-   * no priority set.
+   * Resolve the priority of a task's source note (page). Providers use this as
+   * a final tie breaker — after the task's own due date and priority — rather
+   * than as a primary sort key. Returns 'none' when the task has no linked
+   * note or the note has no priority set.
    */
   getNotePriority?: (task: Task) => Priority;
 }

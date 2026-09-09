@@ -5,7 +5,7 @@
  * to avoid duplication and make them easy to tune.
  */
 
-import type { TaskStatus, Priority } from './types';
+import type { TaskStatus, Priority, TaskFilterField, FilterOperator } from './types';
 
 // ─── Task Labels ──────────────────────────────────────────────────────────────
 
@@ -15,6 +15,14 @@ export const STATUS_LABELS: Record<TaskStatus, string> = {
 	done: 'Done',
 	cancelled: 'Cancelled'
 };
+
+/** Status options for select inputs, in workflow order. */
+export const STATUS_OPTIONS: { value: TaskStatus; label: string }[] = [
+	{ value: 'todo', label: 'Todo' },
+	{ value: 'in-progress', label: 'In Progress' },
+	{ value: 'done', label: 'Done' },
+	{ value: 'cancelled', label: 'Cancelled' }
+];
 
 export const PRIORITY_LABELS: Record<Priority, string> = {
 	urgent: 'Urgent',
@@ -124,3 +132,48 @@ export function isValidTaskStatus(value: unknown): value is TaskStatus {
 export function isValidPriority(value: unknown): value is Priority {
 	return typeof value === 'string' && VALID_PRIORITIES.has(value as Priority);
 }
+
+// ─── Filter Field Metadata ────────────────────────────────────────────────────
+
+/**
+ * The kind of value a filterable field holds, driving which input control the
+ * filter builder renders and which operators are valid for it.
+ * - `enum`: fixed set of string values (e.g. status, priority) — renders a select.
+ * - `text`: free-form string — renders a text input.
+ * - `date`: ISO date string — supports before/after comparisons.
+ * - `tags`: string array membership — renders a tag input/autocomplete.
+ * - `note`: references a page/note by id — renders a note picker.
+ */
+export type FilterFieldKind = 'enum' | 'text' | 'date' | 'tags' | 'note';
+
+export interface FilterFieldMeta {
+	kind: FilterFieldKind;
+	label: string;
+	/** Operators that are meaningful for this field's kind. */
+	operators: FilterOperator[];
+	/** Valid values for `enum` fields, used to render a select instead of free text. */
+	options?: { value: string; label: string }[];
+}
+
+const ENUM_OPERATORS: FilterOperator[] = ['any', 'eq', 'neq', 'in', 'not_in', 'exists', 'not_exists'];
+const TEXT_OPERATORS: FilterOperator[] = ['any', 'eq', 'neq', 'contains', 'exists', 'not_exists'];
+const DATE_OPERATORS: FilterOperator[] = ['any', 'eq', 'neq', 'before', 'after', 'exists', 'not_exists'];
+const TAGS_OPERATORS: FilterOperator[] = ['any', 'contains', 'in', 'not_in', 'exists', 'not_exists'];
+const NOTE_OPERATORS: FilterOperator[] = ['any', 'eq', 'neq', 'in', 'not_in', 'exists', 'not_exists'];
+
+/**
+ * Per-field metadata for the task filter builder (`LaneConfig.svelte`). Keeps the
+ * UI type-aware: enum fields like status/priority can only ever hold a value that
+ * actually exists on the type, instead of an arbitrary free-text string.
+ */
+export const FILTER_FIELD_META: Record<TaskFilterField, FilterFieldMeta> = {
+	status: { kind: 'enum', label: 'Status', operators: ENUM_OPERATORS, options: STATUS_OPTIONS },
+	priority: { kind: 'enum', label: 'Priority', operators: ENUM_OPERATORS, options: PRIORITY_OPTIONS },
+	dueDate: { kind: 'date', label: 'Due Date', operators: DATE_OPERATORS },
+	createdAt: { kind: 'date', label: 'Created', operators: DATE_OPERATORS },
+	updatedAt: { kind: 'date', label: 'Updated', operators: DATE_OPERATORS },
+	title: { kind: 'text', label: 'Title', operators: TEXT_OPERATORS },
+	tags: { kind: 'tags', label: 'Tags', operators: TAGS_OPERATORS },
+	sourcePageId: { kind: 'note', label: 'Source Note', operators: NOTE_OPERATORS },
+	sourcePageTags: { kind: 'tags', label: 'Source Note Tag', operators: TAGS_OPERATORS }
+};

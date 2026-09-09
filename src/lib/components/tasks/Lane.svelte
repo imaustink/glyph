@@ -7,8 +7,9 @@
   import { notificationsStore } from '$lib/stores/notifications.svelte';
   import { autoSortProvider } from '$lib/sort/AutoSortProvider';
   import { fieldSortProvider } from '$lib/sort/FieldSortProvider';
+  import { isValidTaskStatus } from '$lib/models/constants';
 
-  import { dndzone, TRIGGERS, type DndEvent } from 'svelte-dnd-action';
+  import { dndzone, dragHandle, TRIGGERS, type DndEvent } from 'svelte-dnd-action';
   import TaskCard from './TaskCard.svelte';
 
   let {
@@ -111,10 +112,22 @@
     return colonIndex >= 0 ? dndId.substring(colonIndex + 1) : dndId;
   }
 
+  /**
+   * Infer the status a dropped task should take on from a lane's filter rules.
+   * Handles both "equals" (single value) and "is one of" (array) status rules —
+   * the filter builder allows either, and a lane filtered on exactly one status
+   * via "is one of" is just as unambiguous a drop target as one using "equals".
+   * A lane whose "is one of" rule lists multiple statuses has no single target
+   * status, so drops into it leave the task's status untouched.
+   */
   function inferStatusFromFilter(filterSet: FilterSet): TaskStatus | null {
     for (const rule of filterSet.rules) {
-      if (rule.field === 'status' && rule.operator === 'eq' && typeof rule.value === 'string') {
-        return rule.value as TaskStatus;
+      if (rule.field !== 'status') continue;
+      if (rule.operator === 'eq' && typeof rule.value === 'string' && isValidTaskStatus(rule.value)) {
+        return rule.value;
+      }
+      if (rule.operator === 'in' && Array.isArray(rule.value) && rule.value.length === 1 && isValidTaskStatus(rule.value[0])) {
+        return rule.value[0];
       }
     }
     return null;
@@ -200,6 +213,20 @@
 
 <div class="lane">
   <div class="lane-header">
+    {#if !readonly}
+      <div
+        class="lane-drag-handle"
+        use:dragHandle
+        aria-label="Drag to reorder {lane.title} lane"
+        title="Drag to reorder lane"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+          <circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/>
+          <circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/>
+          <circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/>
+        </svg>
+      </div>
+    {/if}
     <div class="lane-title-row">
       {#if editingTitle}
         <!-- svelte-ignore a11y_autofocus -->
@@ -276,6 +303,20 @@
     flex: 1;
     min-width: 0;
   }
+
+  .lane-drag-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 2px;
+    margin-right: 2px;
+    color: var(--text-muted);
+    cursor: grab;
+    flex-shrink: 0;
+    border-radius: var(--radius-sm);
+  }
+  .lane-drag-handle:hover { color: var(--text-primary); background: var(--bg-hover); }
+  .lane-drag-handle:active { cursor: grabbing; }
 
   .lane-title {
     background: none;

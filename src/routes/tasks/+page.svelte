@@ -3,11 +3,41 @@
   import { tasksStore } from '$lib/stores/tasks.svelte';
   import { pagesStore } from '$lib/stores/pages.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
+  import { notificationsStore } from '$lib/stores/notifications.svelte';
   import Lane from '$lib/components/tasks/Lane.svelte';
   import LaneConfig from '$lib/components/tasks/LaneConfig.svelte';
+  import { dragHandleZone, type DndEvent } from 'svelte-dnd-action';
+  import { matchesSearchText } from '$lib/storage/filterUtils';
   import type { Lane as LaneType, Task } from '$lib/models/types';
 
   let configuringLane = $state<LaneType | null>(null);
+  let searchQuery = $state('');
+
+  // Lane reordering — mirrors the store's lanes except mid-drag, when the
+  // dnd library owns the array so the effect below doesn't fight it.
+  let laneItems = $state<LaneType[]>([]);
+  let isDraggingLanes = false;
+  const laneFlipDurationMs = 200;
+
+  $effect(() => {
+    if (isDraggingLanes) return;
+    laneItems = lanesStore.lanes;
+  });
+
+  function handleLaneConsider(e: CustomEvent<DndEvent<LaneType>>) {
+    isDraggingLanes = true;
+    laneItems = e.detail.items;
+  }
+
+  async function handleLaneFinalize(e: CustomEvent<DndEvent<LaneType>>) {
+    laneItems = e.detail.items;
+    isDraggingLanes = false;
+    try {
+      await lanesStore.reorderLanes(laneItems.map((l) => l.id));
+    } catch {
+      notificationsStore.error('Failed to save lane order.');
+    }
+  }
 
   // Filtered tasks per lane — sync lanes (empty rules / local mode) update immediately;
   // API-backed async lanes update when their network call resolves.
@@ -47,12 +77,45 @@
       Promise.all(asyncWork).then(() => { filteredByLane = new Map(newMap); });
     }
   });
+
+  // Layered on top of each lane's own filter — narrows what's already shown
+  // rather than triggering another (possibly async) lane re-filter, so typing
+  // in the search box never issues extra API calls.
+  const displayedByLane = $derived.by(() => {
+    if (!searchQuery.trim()) return filteredByLane;
+    const map = new Map<string, Task[]>();
+    for (const [laneId, tasks] of filteredByLane) {
+      map.set(laneId, tasks.filter((t) => matchesSearchText(t, searchQuery)));
+    }
+    return map;
+  });
 </script>
 
 <div class="board-page">
   <div class="board-header">
     <h1 class="board-title">Task Board</h1>
     <div class="board-actions">
+      <div class="board-search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input
+          type="text"
+          class="board-search-input"
+          placeholder="Search tasks…"
+          bind:value={searchQuery}
+          aria-label="Search tasks"
+        />
+        {#if searchQuery}
+          <button class="board-search-clear" onclick={() => searchQuery = ''} aria-label="Clear search">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        {/if}
+      </div>
       <span class="task-count">{tasksStore.tasks.length} tasks</span>
       <button class="btn-primary new-task-btn" onclick={() => uiStore.openCreateTask()}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -66,13 +129,20 @@
 
   <div class="board-container">
     <div class="lanes-scroll">
-      {#each lanesStore.lanes as lane (lane.id)}
-        <Lane
-          {lane}
-          filteredTasks={filteredByLane.get(lane.id) ?? []}
-          onconfig={() => configuringLane = lane}
-        />
-      {/each}
+      <div
+        class="lanes-dndzone"
+        use:dragHandleZone={{ items: laneItems, flipDurationMs: laneFlipDurationMs, type: 'lane', dropTargetStyle: {} }}
+        onconsider={handleLaneConsider}
+        onfinalize={handleLaneFinalize}
+      >
+        {#each laneItems as lane (lane.id)}
+          <Lane
+            {lane}
+            filteredTasks={displayedByLane.get(lane.id) ?? []}
+            onconfig={() => configuringLane = lane}
+          />
+        {/each}
+      </div>
 
       <div class="add-lane-col">
         <button
@@ -130,6 +200,7 @@
   .task-count {
     font-size: var(--font-size-sm);
     color: var(--text-muted);
+    white-space: nowrap;
   }
 
   .new-task-btn {
@@ -137,6 +208,43 @@
     align-items: center;
     gap: 6px;
   }
+
+  .board-search {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 220px;
+    padding: 6px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    color: var(--text-muted);
+    transition: border-color var(--transition-fast);
+  }
+  .board-search:focus-within { border-color: var(--accent); color: var(--text-primary); }
+  .board-search svg { flex-shrink: 0; }
+
+  .board-search-input {
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    outline: none;
+    padding: 0;
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
+  }
+  .board-search-input::placeholder { color: var(--text-muted); }
+
+  .board-search-clear {
+    display: flex;
+    flex-shrink: 0;
+    color: var(--text-muted);
+    padding: 2px;
+    border-radius: var(--radius-sm);
+    line-height: 0;
+  }
+  .board-search-clear:hover { color: var(--text-primary); background: var(--bg-hover); }
 
   .board-container {
     flex: 1;
@@ -150,6 +258,13 @@
     height: 100%;
     overflow-x: auto;
     align-items: flex-start;
+  }
+
+  .lanes-dndzone {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    flex-shrink: 0;
   }
 
   .add-lane-col {
@@ -182,6 +297,18 @@
     .board-header {
       /* Clear the fixed hamburger button (top:10 + height:36 = 46px) */
       padding: 56px 16px 12px;
+      flex-wrap: wrap;
+      row-gap: 10px;
+    }
+
+    .board-actions {
+      width: 100%;
+      justify-content: space-between;
+    }
+
+    .board-search {
+      width: auto;
+      flex: 1;
     }
 
     .lanes-scroll {

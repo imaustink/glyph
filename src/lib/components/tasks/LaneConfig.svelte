@@ -1,10 +1,11 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { nanoid } from 'nanoid';
-  import type { Lane, FilterRule, FilterSet, SortConfig, SortMode, SortDirection, TaskFilterField, Task } from '$lib/models/types';
+  import type { Lane, FilterRule, FilterSet, SortConfig, SortMode, SortDirection, TaskFilterField, Task, FilterOperator } from '$lib/models/types';
   import { lanesStore } from '$lib/stores/lanes.svelte';
   import { pagesStore } from '$lib/stores/pages.svelte';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
+  import { FILTER_FIELD_META } from '$lib/models/constants';
 
   let {
     lane,
@@ -42,11 +43,9 @@
   ];
 
   // Filters can additionally target synthetic note-derived fields.
-  const FILTER_FIELD_OPTIONS: { value: TaskFilterField; label: string }[] = [
-    ...FIELD_OPTIONS,
-    { value: 'sourcePageId', label: 'Source Note' },
-    { value: 'sourcePageTags', label: 'Source Note Tag' }
-  ];
+  const FILTER_FIELD_OPTIONS: { value: TaskFilterField; label: string }[] = (
+    Object.entries(FILTER_FIELD_META) as [TaskFilterField, (typeof FILTER_FIELD_META)[TaskFilterField]][]
+  ).map(([value, meta]) => ({ value, label: meta.label }));
 
   // Notes (pages) available as source-note filter targets.
   const noteOptions = $derived(
@@ -61,35 +60,42 @@
     Array.from(new Set(pagesStore.nodes.flatMap((n) => n.tags ?? []))).sort()
   );
 
-  const OPERATOR_OPTIONS: { value: import('$lib/models/types').FilterOperator; label: string }[] = [
-    { value: 'any', label: 'is any value' },
-    { value: 'eq', label: 'equals' },
-    { value: 'neq', label: 'not equals' },
-    { value: 'in', label: 'is one of' },
-    { value: 'not_in', label: 'is not one of' },
-    { value: 'contains', label: 'contains' },
-    { value: 'before', label: 'before' },
-    { value: 'after', label: 'after' },
-    { value: 'exists', label: 'exists' },
-    { value: 'not_exists', label: 'does not exist' }
-  ];
+  const OPERATOR_LABELS: Record<FilterOperator, string> = {
+    any: 'is any value',
+    eq: 'equals',
+    neq: 'not equals',
+    in: 'is one of',
+    not_in: 'is not one of',
+    contains: 'contains',
+    before: 'before',
+    after: 'after',
+    exists: 'exists',
+    not_exists: 'does not exist'
+  };
+
+  /** Operators valid for a rule's field, per its metadata — keeps e.g. status/priority from offering "before"/"after". */
+  function operatorOptionsFor(field: TaskFilterField): { value: FilterOperator; label: string }[] {
+    return FILTER_FIELD_META[field].operators.map((value) => ({ value, label: OPERATOR_LABELS[value] }));
+  }
 
     function handleBackdropClick(e: MouseEvent) {
     if (e.target === e.currentTarget) onclose();
   }
 
   function addRule() {
-    rules = [...rules, { id: nanoid(), field: 'status', operator: 'eq', value: 'todo' }];
+    rules = [...rules, { id: nanoid(), field: 'status', operator: 'eq', value: FILTER_FIELD_META.status.options![0].value }];
   }
 
-  /** Reset a rule's value to a sensible default when its target field changes. */
+  /** Reset a rule's value and operator to sensible defaults when its target field changes. */
   function onFieldChange(rule: FilterRule) {
-    if (rule.field === 'sourcePageId') {
-      rule.value = isMultiValue(rule) ? [] : '';
-    } else if (rule.field === 'sourcePageTags') {
-      rule.value = isMultiValue(rule) ? [] : '';
+    const meta = FILTER_FIELD_META[rule.field];
+    if (!meta.operators.includes(rule.operator)) {
+      rule.operator = meta.operators[0];
+    }
+    if (meta.kind === 'enum') {
+      rule.value = isMultiValue(rule) ? [] : meta.options![0].value;
     } else {
-      rule.value = '';
+      rule.value = isMultiValue(rule) ? [] : '';
     }
   }
 
@@ -165,6 +171,32 @@
     rule.value = Array.from(select.selectedOptions).map((o) => o.value);
   }
 
+  /** Reset a rule's value shape when the operator's multiplicity (single vs. multi) changes. */
+  function onOperatorChange(rule: FilterRule, newOperator: FilterOperator) {
+    rule.operator = newOperator;
+    const meta = FILTER_FIELD_META[rule.field];
+    const wantsArray = isMultiValue(rule);
+    if (wantsArray === Array.isArray(rule.value)) return;
+    if (wantsArray) {
+      rule.value = rule.value ? [String(rule.value)] : [];
+    } else {
+      rule.value = Array.isArray(rule.value) ? (rule.value[0] ?? (meta.kind === 'enum' ? meta.options![0].value : '')) : rule.value;
+    }
+  }
+
+  function getSelectedEnumValues(rule: FilterRule): string[] {
+    if (Array.isArray(rule.value)) return rule.value as string[];
+    return rule.value ? [String(rule.value)] : [];
+  }
+
+  function setSingleEnumValue(rule: FilterRule, value: string) {
+    rule.value = value;
+  }
+
+  function setMultiEnumValues(rule: FilterRule, select: HTMLSelectElement) {
+    rule.value = Array.from(select.selectedOptions).map((o) => o.value);
+  }
+
   /** Whether the value control should be hidden entirely for this operator. */
   function hidesValue(rule: FilterRule): boolean {
     return rule.operator === 'exists' || rule.operator === 'not_exists' || rule.operator === 'any';
@@ -209,13 +241,39 @@
                 <option value={opt.value}>{opt.label}</option>
               {/each}
             </select>
-            <select bind:value={rule.operator} class="rule-select">
-              {#each OPERATOR_OPTIONS as opt}
+            <select
+              value={rule.operator}
+              onchange={(e) => onOperatorChange(rule, (e.target as HTMLSelectElement).value as FilterOperator)}
+              class="rule-select"
+            >
+              {#each operatorOptionsFor(rule.field) as opt}
                 <option value={opt.value}>{opt.label}</option>
               {/each}
             </select>
             {#if !hidesValue(rule)}
-              {#if isNoteField(rule)}
+              {#if FILTER_FIELD_META[rule.field].kind === 'enum'}
+                {#if isMultiValue(rule)}
+                  <select
+                    class="rule-value note-multi"
+                    multiple
+                    onchange={(e) => setMultiEnumValues(rule, e.currentTarget as HTMLSelectElement)}
+                  >
+                    {#each FILTER_FIELD_META[rule.field].options! as opt}
+                      <option value={opt.value} selected={getSelectedEnumValues(rule).includes(opt.value)}>{opt.label}</option>
+                    {/each}
+                  </select>
+                {:else}
+                  <select
+                    class="rule-value"
+                    value={getSelectedEnumValues(rule)[0] ?? ''}
+                    onchange={(e) => setSingleEnumValue(rule, (e.target as HTMLSelectElement).value)}
+                  >
+                    {#each FILTER_FIELD_META[rule.field].options! as opt}
+                      <option value={opt.value}>{opt.label}</option>
+                    {/each}
+                  </select>
+                {/if}
+              {:else if isNoteField(rule)}
                 {#if isMultiValue(rule)}
                   <select
                     class="rule-value note-multi"
