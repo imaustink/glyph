@@ -20,6 +20,8 @@ declare module '@tiptap/core' {
 export interface TaskLinkOptions {
   /** Called when the user clicks the status indicator on a task-linked bullet */
   onStatusCycled: ((nodeId: string, taskId: string, currentStatus: string) => void) | undefined;
+  /** Called when the user clicks the text of a task-linked bullet (not the status indicator) */
+  onTaskClicked: ((taskId: string) => void) | undefined;
 }
 
 /**
@@ -38,7 +40,8 @@ export const TaskLinkExtension = ListItem.extend<TaskLinkOptions>({
   addOptions() {
     return {
       ...this.parent?.(),
-      onStatusCycled: undefined
+      onStatusCycled: undefined,
+      onTaskClicked: undefined
     };
   },
 
@@ -104,7 +107,18 @@ export const TaskLinkExtension = ListItem.extend<TaskLinkOptions>({
       contentDOM.className = 'list-item-content';
       dom.appendChild(contentDOM);
 
-      // Track current attrs so the click handler always reads the latest values
+      // Open-task affordance — always visible (not hover-revealed) so the row
+      // reads as clickable; hidden when no taskId is set
+      const openLink = document.createElement('button');
+      openLink.type = 'button';
+      openLink.className = 'task-open-link';
+      openLink.setAttribute('aria-label', 'Open task');
+      openLink.contentEditable = 'false';
+      openLink.innerHTML =
+        '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>';
+      dom.appendChild(openLink);
+
+      // Track current attrs so the click handlers always read the latest values
       let currentNodeId = node.attrs.nodeId as string | null;
       let currentTaskId = node.attrs.taskId as string | null;
 
@@ -114,6 +128,12 @@ export const TaskLinkExtension = ListItem.extend<TaskLinkOptions>({
         /* c8 ignore next -- getAttribute returns a value whenever taskId is set; || 'todo' unreachable */
         const currentStatus = (dom.getAttribute('data-task-status') || 'todo') as string;
         extension.options.onStatusCycled?.(currentNodeId, currentTaskId, currentStatus);
+      });
+
+      openLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (!currentTaskId) return;
+        extension.options.onTaskClicked?.(currentTaskId);
       });
 
       function syncAttrs(n: typeof node) {
@@ -134,11 +154,13 @@ export const TaskLinkExtension = ListItem.extend<TaskLinkOptions>({
           dom.setAttribute('data-task-status', status);
           indicator.setAttribute('data-status', status);
           indicatorWrapper.style.display = '';
+          openLink.style.display = '';
         } else {
           dom.removeAttribute('data-task-id');
           dom.removeAttribute('data-checked');
           dom.removeAttribute('data-task-status');
           indicatorWrapper.style.display = 'none';
+          openLink.style.display = 'none';
         }
       }
 

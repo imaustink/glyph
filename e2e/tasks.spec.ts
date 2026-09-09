@@ -936,7 +936,7 @@ test.describe('Tasks', () => {
 		await expect(popover).not.toBeVisible();
 	});
 
-	test('hover preview stays open when moving the pointer onto it', async ({ page }) => {
+	test('hovering a task bullet does not show a floating preview', async ({ page }) => {
 		const editor = page.locator('main .tiptap-editor');
 		await editor.click();
 		await editor.pressSequentially('# TODO', { delay: 30 });
@@ -948,23 +948,30 @@ test.describe('Tasks', () => {
 		await popover.locator('button.btn-primary').click();
 		await expect(popover).not.toBeVisible();
 
-		// Hover the linked bullet to trigger the floating preview.
 		const bullet = page.locator('main .tiptap-editor li[data-task-id]', {
 			hasText: 'Hover preview task'
 		});
 		await bullet.hover();
+		await page.waitForTimeout(500);
+		await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+	});
 
-		const preview = page.locator('.preview[role="tooltip"]');
-		await expect(preview).toBeVisible({ timeout: 5_000 });
+	test('clicking the open-task icon on a bullet navigates to the task detail page', async ({ page }) => {
+		const editor = page.locator('main .tiptap-editor');
+		await editor.click();
+		await editor.pressSequentially('# TODO', { delay: 30 });
+		await editor.press('Enter');
+		await editor.pressSequentially('- Open link task', { delay: 30 });
 
-		// Move the pointer onto the preview — it must stay visible so "Open" is clickable.
-		const openLink = preview.locator('.preview-link');
-		await openLink.hover();
-		await expect(preview).toBeVisible();
-		await expect(openLink).toBeVisible();
+		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
+		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await popover.locator('button.btn-primary').click();
+		await expect(popover).not.toBeVisible();
 
-		// Clicking "Open" navigates to the task detail page.
-		await openLink.click();
+		const bullet = page.locator('main .tiptap-editor li[data-task-id]', {
+			hasText: 'Open link task'
+		});
+		await bullet.locator('.task-open-link').click();
 		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 5_000 });
 	});
 });
