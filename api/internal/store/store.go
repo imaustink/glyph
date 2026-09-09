@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/glyph/api/internal/model"
 	"github.com/google/uuid"
@@ -143,4 +144,50 @@ type ShareStore interface {
 	GetForUserAndResource(ctx context.Context, userID uuid.UUID, resourceType model.ShareResourceType, resourceID uuid.UUID) (*model.Share, error)
 	UpdatePermission(ctx context.Context, id uuid.UUID, permission model.SharePermission) (*model.Share, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+}
+
+// ─── OAuth ──────────────────────────────────────────────────────────────────
+
+// OAuthClientStore handles OAuth client registration and org-scoping.
+type OAuthClientStore interface {
+	Create(ctx context.Context, c *model.OAuthClient, secretHash string) (*model.OAuthClient, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*model.OAuthClient, error)
+	// GetByClientID returns the client plus its secret hash, for authenticating
+	// client_credentials/authorization_code requests. Used only by the OAuth
+	// protocol handlers, never exposed to the admin API.
+	GetByClientID(ctx context.Context, clientID string) (*model.OAuthClient, string, error)
+	// ListForOrg returns clients scoped to the given org, for the admin UI.
+	ListForOrg(ctx context.Context, orgID uuid.UUID) ([]*model.OAuthClient, error)
+	Update(ctx context.Context, id uuid.UUID, name *string, description *string, scopes []model.OAuthScope, redirectURIs []string) (*model.OAuthClient, error)
+	AddOrg(ctx context.Context, clientID, orgID, addedByID uuid.UUID) error
+	RemoveOrg(ctx context.Context, clientID, orgID uuid.UUID) error
+	HasOrg(ctx context.Context, clientID, orgID uuid.UUID) (bool, error)
+	RotateSecret(ctx context.Context, id uuid.UUID, newSecretHash string) (*model.OAuthClient, error)
+	Revoke(ctx context.Context, id uuid.UUID) error
+}
+
+// OAuthCodeStore handles single-use authorization codes for the
+// authorization_code + PKCE flow.
+type OAuthCodeStore interface {
+	Create(ctx context.Context, code *model.OAuthAuthorizationCode, codeHash string) error
+	// ConsumeByHash atomically marks the code used and returns it, or
+	// ErrNotFound/ErrConflict if it does not exist, is already used, or has expired.
+	ConsumeByHash(ctx context.Context, codeHash string) (*model.OAuthAuthorizationCode, error)
+}
+
+// OAuthTokenStore handles issued access/refresh tokens.
+type OAuthTokenStore interface {
+	Create(ctx context.Context, t *model.OAuthToken, accessHash string, refreshHash *string) error
+	GetByAccessHash(ctx context.Context, hash string) (*model.OAuthToken, error)
+	// RotateRefresh atomically replaces both hashes + expiries on the same row,
+	// guarded by WHERE refresh_token_hash = oldRefreshHash AND revoked_at IS NULL.
+	// Returns ErrConflict if oldRefreshHash does not match (already rotated/revoked) —
+	// callers should treat this as a possible replay and revoke the token outright.
+	RotateRefresh(ctx context.Context, oldRefreshHash, newAccessHash, newRefreshHash string, accessExp time.Time, refreshExp time.Time) (*model.OAuthToken, error)
+	TouchLastUsed(ctx context.Context, id uuid.UUID) error
+	Revoke(ctx context.Context, id uuid.UUID) error
+	RevokeAllForClient(ctx context.Context, clientID uuid.UUID) error
+	// ListActiveForClient returns non-revoked tokens for a client, with the
+	// acting user's email hydrated, for the admin audit view.
+	ListActiveForClient(ctx context.Context, clientID uuid.UUID) ([]*model.OAuthToken, error)
 }

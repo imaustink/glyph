@@ -327,6 +327,126 @@ func TestCanWriteResource_ShareStoreErrorReturns500(t *testing.T) {
 	}
 }
 
+// ─── Token scope tests ────────────────────────────────────────────────────────
+
+func newScopedGinContext(scope *model.TokenScope) (*gin.Context, *httptest.ResponseRecorder) {
+	c, w := newTestGinContext()
+	if scope != nil {
+		c.Set(model.TokenScopeContextKey, scope)
+	}
+	return c, w
+}
+
+func TestCanWriteResource_ScopedToken_WrongOrgDenied(t *testing.T) {
+	ownerID := uuid.New()
+	orgID := uuid.New()
+	otherOrgID := uuid.New()
+
+	pc := &PermissionChecker{}
+	c, w := newScopedGinContext(&model.TokenScope{
+		ClientID: uuid.New(),
+		Scopes:   []model.OAuthScope{model.ScopePageWrite},
+		OrgIDs:   []uuid.UUID{otherOrgID},
+	})
+
+	// Even the resource's own owner cannot exceed the token's org grant.
+	if pc.CanWriteResource(c, ownerID, &orgID, model.ShareResourcePage, uuid.New(), ownerID) {
+		t.Error("token scoped to a different org should not grant write access")
+	}
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestCanWriteResource_ScopedToken_NoOrgResourceDenied(t *testing.T) {
+	ownerID := uuid.New()
+	pc := &PermissionChecker{}
+	c, w := newScopedGinContext(&model.TokenScope{
+		Scopes: []model.OAuthScope{model.ScopePageWrite},
+		OrgIDs: []uuid.UUID{uuid.New()},
+	})
+
+	// Personal (nil-org) resources are unreachable via an org-scoped token.
+	if pc.CanWriteResource(c, ownerID, nil, model.ShareResourcePage, uuid.New(), ownerID) {
+		t.Error("personal (non-org) resource should not be reachable via a scoped token")
+	}
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestCanWriteResource_ScopedToken_MissingScopeDenied(t *testing.T) {
+	ownerID := uuid.New()
+	orgID := uuid.New()
+	pc := &PermissionChecker{}
+	c, w := newScopedGinContext(&model.TokenScope{
+		Scopes: []model.OAuthScope{model.ScopeTaskWrite}, // task write, not page
+		OrgIDs: []uuid.UUID{orgID},
+	})
+
+	if pc.CanWriteResource(c, ownerID, &orgID, model.ShareResourcePage, uuid.New(), ownerID) {
+		t.Error("token without page:write scope should not grant page write access")
+	}
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestCanWriteResource_ScopedToken_ReadOnlyScopeDeniedForWrite(t *testing.T) {
+	ownerID := uuid.New()
+	orgID := uuid.New()
+	pc := &PermissionChecker{}
+	c, w := newScopedGinContext(&model.TokenScope{
+		Scopes: []model.OAuthScope{model.ScopePageRead},
+		OrgIDs: []uuid.UUID{orgID},
+	})
+
+	if pc.CanWriteResource(c, ownerID, &orgID, model.ShareResourcePage, uuid.New(), ownerID) {
+		t.Error("read-only scope should not grant write access")
+	}
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestCanWriteResource_ScopedToken_MatchingScopeAllowed(t *testing.T) {
+	ownerID := uuid.New()
+	orgID := uuid.New()
+	pc := &PermissionChecker{}
+	c, _ := newScopedGinContext(&model.TokenScope{
+		Scopes: []model.OAuthScope{model.ScopePageWrite},
+		OrgIDs: []uuid.UUID{orgID},
+	})
+
+	if !pc.CanWriteResource(c, ownerID, &orgID, model.ShareResourcePage, uuid.New(), ownerID) {
+		t.Error("token with matching org+scope should grant write access to its own resource")
+	}
+}
+
+func TestCanReadResource_UnscopedRequestAlwaysAllowed(t *testing.T) {
+	pc := &PermissionChecker{}
+	c, _ := newTestGinContext()
+	orgID := uuid.New()
+	if !pc.CanReadResource(c, &orgID, model.ShareResourcePage) {
+		t.Error("cookie-session (unscoped) requests should always pass the scope check")
+	}
+}
+
+func TestCanReadResource_ScopedToken_WrongResourceTypeDenied(t *testing.T) {
+	pc := &PermissionChecker{}
+	orgID := uuid.New()
+	c, w := newScopedGinContext(&model.TokenScope{
+		Scopes: []model.OAuthScope{model.ScopeTaskRead},
+		OrgIDs: []uuid.UUID{orgID},
+	})
+	if pc.CanReadResource(c, &orgID, model.ShareResourcePage) {
+		t.Error("token without page scope should not permit reading a page")
+	}
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
 func TestCanWritePage_DelegatesToCanWriteResource(t *testing.T) {
 	ownerID := uuid.New()
 	page := &model.Page{

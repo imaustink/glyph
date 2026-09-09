@@ -4,8 +4,15 @@ import { env } from '$env/dynamic/private';
 const API_PROXY_TARGET = env.API_PROXY_TARGET;
 
 /**
- * When API_PROXY_TARGET is set (e.g. in E2E CI builds), proxy all
- * /api, /auth, /test, and /health requests to the Go backend.
+ * When API_PROXY_TARGET is set (e.g. in E2E CI builds), proxy /api, /auth,
+ * /oauth/token, /oauth/revoke, /test, and /health requests to the Go
+ * backend.
+ *
+ * /oauth/authorize is deliberately NOT proxied — it's the SvelteKit consent
+ * page's own route (src/routes/oauth/authorize); that page's own API calls
+ * go through /api/v1/oauth/consent instead, already covered by the /api
+ * prefix below. Proxying /oauth/authorize itself would hijack the page
+ * navigation before SvelteKit's router ever sees it.
  *
  * This mirrors what the Vite dev server does via vite.config.ts proxy,
  * allowing us to serve a pre-built adapter-node bundle in CI without
@@ -16,6 +23,8 @@ export const handle: Handle = async ({ event, resolve }) => {
 		API_PROXY_TARGET &&
 		(event.url.pathname.startsWith('/api') ||
 			event.url.pathname.startsWith('/auth') ||
+			event.url.pathname === '/oauth/token' ||
+			event.url.pathname === '/oauth/revoke' ||
 			event.url.pathname.startsWith('/test') ||
 			event.url.pathname.startsWith('/health'))
 	) {

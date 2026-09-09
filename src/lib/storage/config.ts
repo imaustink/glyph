@@ -20,6 +20,7 @@ import { ApiLaneRepository } from '$lib/storage/repositories/ApiLaneRepository';
 import { ApiTemplateRepository } from '$lib/storage/repositories/ApiTemplateRepository';
 import { ApiOrgRepository } from '$lib/storage/repositories/ApiOrgRepository';
 import { ApiShareRepository } from '$lib/storage/repositories/ApiShareRepository';
+import { ApiOAuthClientRepository } from '$lib/storage/repositories/ApiOAuthClientRepository';
 import { ApiFolderBoardRepository } from '$lib/storage/repositories/ApiFolderBoardRepository';
 import { LocalFolderBoardRepository } from '$lib/storage/repositories/LocalFolderBoardRepository';
 import type { IPageRepository, ITaskRepository, ILaneRepository, ITemplateRepository } from '$lib/storage/interfaces';
@@ -38,6 +39,7 @@ export type LaneRepo = ILaneRepository;
 export type TemplateRepo = ITemplateRepository;
 export type OrgRepo = ApiOrgRepository | null;
 export type ShareRepo = ApiShareRepository | null;
+export type OAuthClientRepo = ApiOAuthClientRepository | null;
 export type FolderBoardRepo = ApiFolderBoardRepository | LocalFolderBoardRepository;
 
 // ─── Instantiate once ─────────────────────────────────────────────────────────
@@ -51,6 +53,7 @@ function createRepositories() {
 			templates: new ApiTemplateRepository() as TemplateRepo,
 			orgs: new ApiOrgRepository() as OrgRepo,
 			shares: new ApiShareRepository() as ShareRepo,
+			oauthClients: new ApiOAuthClientRepository() as OAuthClientRepo,
 			folderBoard: new ApiFolderBoardRepository() as FolderBoardRepo
 		};
 	}
@@ -66,6 +69,7 @@ function createRepositories() {
 		templates: new TemplateRepository(adapter) as TemplateRepo,
 		orgs: null as OrgRepo,
 		shares: null as ShareRepo,
+		oauthClients: null as OAuthClientRepo,
 		folderBoard: new LocalFolderBoardRepository(pages, lanes, tasks) as FolderBoardRepo
 	};
 }

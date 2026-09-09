@@ -7,6 +7,7 @@ import (
 	"github.com/glyph/api/internal/auth"
 	"github.com/glyph/api/internal/model"
 	"github.com/glyph/api/internal/store"
+	"github.com/google/uuid"
 )
 
 // TemplateHandler handles template CRUD operations.
@@ -24,6 +25,7 @@ func (h *TemplateHandler) ListTemplates(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
+	templates = FilterByTokenScope(c, model.ShareResourceTemplate, templates, func(t *model.Template) *uuid.UUID { return t.OrgID })
 	c.JSON(http.StatusOK, templates)
 }
 
@@ -32,6 +34,9 @@ func (h *TemplateHandler) CreateTemplate(c *gin.Context) {
 	user := auth.CurrentUser(c)
 	var body model.Template
 	if !bindJSON(c, &body) {
+		return
+	}
+	if !checkTokenScope(c, body.OrgID, model.ShareResourceTemplate, true) {
 		return
 	}
 	body.UserID = user.ID
@@ -53,6 +58,9 @@ func (h *TemplateHandler) GetTemplate(c *gin.Context) {
 	tmpl, err := h.Templates.GetByID(c.Request.Context(), id, user.ID)
 	if err != nil {
 		notFoundOrError(c, err)
+		return
+	}
+	if !checkTokenScope(c, tmpl.OrgID, model.ShareResourceTemplate, false) {
 		return
 	}
 	c.JSON(http.StatusOK, tmpl)
@@ -90,6 +98,16 @@ func (h *TemplateHandler) DeleteTemplate(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if scope := currentTokenScope(c); scope != nil {
+		existing, err := h.Templates.GetByID(c.Request.Context(), id, user.ID)
+		if err != nil {
+			notFoundOrError(c, err)
+			return
+		}
+		if !checkTokenScope(c, existing.OrgID, model.ShareResourceTemplate, true) {
+			return
+		}
+	}
 	if err := h.Templates.Delete(c.Request.Context(), id, user.ID); err != nil {
 		notFoundOrError(c, err)
 		return
@@ -106,6 +124,9 @@ func (h *TemplateHandler) UpsertTemplate(c *gin.Context) {
 	}
 	var body model.Template
 	if !bindJSON(c, &body) {
+		return
+	}
+	if !checkTokenScope(c, body.OrgID, model.ShareResourceTemplate, true) {
 		return
 	}
 	body.ID = id

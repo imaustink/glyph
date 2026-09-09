@@ -181,7 +181,14 @@
         {#if !selectedOrg}
           <p class="empty-state">Select an organization to manage members.</p>
         {:else}
-          <h2>{selectedOrg.name}</h2>
+          <div class="detail-title-row">
+            <h2>{selectedOrg.name}</h2>
+            {#if selectedOrg.role === 'owner'}
+              <a class="oauth-link" href="/settings/orgs/{selectedOrg.id}/oauth-clients">
+                Manage OAuth clients →
+              </a>
+            {/if}
+          </div>
 
           {#if selectedOrg.role !== 'viewer'}
             <div class="add-member-row">
@@ -388,6 +395,21 @@
     color: var(--text-heading);
     margin: 0;
   }
+
+  .detail-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .oauth-link {
+    font-size: var(--font-size-sm);
+    color: var(--accent);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .oauth-link:hover { text-decoration: underline; }
 
   .add-member-row {
     display: flex;
