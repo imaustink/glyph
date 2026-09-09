@@ -165,6 +165,15 @@ test.describe('OAuth clients admin (api)', () => {
 		const secret = (await page.locator('.secret-value').innerText()).trim();
 		await page.locator('.secret-reveal .dismiss').click();
 
+		// A freshly created client has no scopes at all — grant page:read so
+		// the token below actually has something to check against (an OAuth
+		// bearer token with zero granted scopes is correctly refused by every
+		// scope-checked endpoint, /api/v1/orgs included).
+		const pageRow = page.locator('.scope-grid tbody tr').nth(0);
+		await pageRow.locator('td').nth(1).locator('input[type=checkbox]').check();
+		await page.locator('.actions-row .btn-primary').click();
+		await expect(page.locator('.field-error')).toHaveCount(0);
+
 		// Obtain a token as the agent, delegated to act as bob.
 		const tokenRes = await page.request.post(`${baseURL}/oauth/token`, {
 			form: {
@@ -186,8 +195,9 @@ test.describe('OAuth clients admin (api)', () => {
 		await expect(page.locator('.token-row')).toHaveCount(1);
 		await expect(page.locator('.token-user')).toContainText(seedUsers.userB.email);
 
-		// Confirm the token currently authenticates.
-		const check1 = await page.request.get(`${baseURL}/api/v1/orgs`, {
+		// Confirm the token currently authenticates and can use its granted
+		// page:read scope.
+		const check1 = await page.request.get(`${baseURL}/api/v1/pages`, {
 			headers: { Authorization: `Bearer ${tokenBody.access_token}` }
 		});
 		expect(check1.ok()).toBeTruthy();
@@ -198,7 +208,7 @@ test.describe('OAuth clients admin (api)', () => {
 		await expect(page.locator('.empty-state', { hasText: 'No active tokens' })).toBeVisible();
 
 		// Confirm it no longer authenticates.
-		const check2 = await page.request.get(`${baseURL}/api/v1/orgs`, {
+		const check2 = await page.request.get(`${baseURL}/api/v1/pages`, {
 			headers: { Authorization: `Bearer ${tokenBody.access_token}` }
 		});
 		expect(check2.status()).toBe(401);

@@ -432,11 +432,11 @@
             <button class="btn-primary" onclick={saveClient} disabled={saving || !editingName.trim()}>
               {saving ? 'Saving…' : 'Save changes'}
             </button>
-            <button class="btn-ghost" onclick={rotateSecret}>Rotate secret</button>
-            <button class="btn-ghost danger" onclick={rotateSecretAndRevoke}>
-              Rotate &amp; revoke all tokens
-            </button>
             {#if !selectedClient.revokedAt}
+              <button class="btn-ghost" onclick={rotateSecret}>Rotate secret</button>
+              <button class="btn-ghost danger" onclick={rotateSecretAndRevoke}>
+                Rotate &amp; revoke all tokens
+              </button>
               <button class="btn-ghost danger" onclick={revokeClient}>Revoke client</button>
             {/if}
           </div>
