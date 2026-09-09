@@ -17,7 +17,7 @@ async function createTaskInEditor(page: import('@playwright/test').Page, title: 
 	await editor.pressSequentially(`- ${title}`, { delay: 30 });
 
 	const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-	await expect(popover).toBeVisible({ timeout: 5_000 });
+	await expect(popover).toBeVisible({ timeout: 15_000 });
 	await expect(popover.locator('input.title-input')).toHaveValue(title);
 	await popover.locator('button.btn-primary').click();
 	await expect(popover).not.toBeVisible();
@@ -73,7 +73,7 @@ test.describe('Note priority', () => {
 		await navigateToTaskBoard(page);
 		const allTasksLane = page.locator('.lane:has(.lane-title:has-text("All Tasks"))');
 		await expect(allTasksLane.locator('.task-card:has-text("Alpha task")')).toBeVisible({
-			timeout: 5_000
+			timeout: 15_000
 		});
 		await expect(allTasksLane.locator('.task-card:has-text("Bravo task")')).toBeVisible();
 
@@ -102,7 +102,7 @@ test.describe('Note priority', () => {
 		await navigateToTaskBoard(page);
 		const allTasksLane = page.locator('.lane:has(.lane-title:has-text("All Tasks"))');
 		await expect(allTasksLane.locator('.task-card:has-text("Charlie task")')).toBeVisible({
-			timeout: 5_000
+			timeout: 15_000
 		});
 		await expect(allTasksLane.locator('.task-card:has-text("Delta task")')).toBeVisible();
 

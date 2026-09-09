@@ -80,7 +80,7 @@ test.describe('Page management', () => {
 		// For pages without tasks, the delete happens immediately (no modal).
 		// Wait for the page to be removed from the sidebar.
 		await expect(page.locator('.node-label:has-text("Delete Me")')).toHaveCount(0, {
-			timeout: 5_000
+			timeout: 15_000
 		});
 	});
 

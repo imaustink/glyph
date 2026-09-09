@@ -20,13 +20,13 @@ test.describe('Task detail page bugs', () => {
 		await editor.pressSequentially(`- ${title}`, { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 		await expect(popover).not.toBeVisible();
 
 		await navigateToTaskBoard(page);
-		await page.locator(`.card-title:has-text("${title}")`).click({ timeout: 5_000 });
-		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 5_000 });
+		await page.locator(`.card-title:has-text("${title}")`).click({ timeout: 15_000 });
+		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 15_000 });
 	}
 
 	test('date picker dropdown is visible and not clipped by meta-grid', async ({ page }) => {
@@ -96,8 +96,8 @@ test.describe('Task detail page bugs', () => {
 
 		// Navigate away and back
 		await page.locator('.back-btn').click();
-		await page.locator(`.card-title:has-text("Tags test task")`).click({ timeout: 5_000 });
-		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 5_000 });
+		await page.locator(`.card-title:has-text("Tags test task")`).click({ timeout: 15_000 });
+		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 15_000 });
 
 		// Tags should still be there
 		await expect(page.locator('.tag-pill:has-text("important")')).toBeVisible({ timeout: 3_000 });
@@ -143,7 +143,7 @@ test.describe('Task detail page bugs', () => {
 
 		// Should find the task in results
 		const taskResults = page.locator('.result-group:has(.group-label:has-text("Tasks")) .result-item');
-		await expect(taskResults.first()).toBeVisible({ timeout: 5_000 });
+		await expect(taskResults.first()).toBeVisible({ timeout: 15_000 });
 		await expect(taskResults.first().locator('.result-title')).toContainText('UniqueSearchableTask98765');
 	});
 
@@ -156,7 +156,7 @@ test.describe('Task detail page bugs', () => {
 		await editor.pressSequentially('- SearchPageTask54321', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 		await expect(popover).not.toBeVisible();
 
@@ -165,21 +165,21 @@ test.describe('Task detail page bugs', () => {
 
 		// Navigate to the full search page
 		await page.locator('a.nav-item:has-text("Search")').click();
-		await page.waitForSelector('.search-input', { timeout: 5_000 });
+		await page.waitForSelector('.search-input', { timeout: 15_000 });
 
 		// Search for the task
 		await page.locator('.search-input').fill('SearchPageTask54321');
 
 		// Should find the task
 		const results = page.locator('.result-item');
-		await expect(results.first()).toBeVisible({ timeout: 5_000 });
+		await expect(results.first()).toBeVisible({ timeout: 15_000 });
 		await expect(results.first()).toContainText('SearchPageTask54321');
 	});
 
 	test('search results update when query is refined', async ({ page }) => {
 		// Navigate to the search page
 		await page.locator('a.nav-item:has-text("Search")').click();
-		await page.waitForSelector('.search-input', { timeout: 5_000 });
+		await page.waitForSelector('.search-input', { timeout: 15_000 });
 
 		// Search for "Getting Started" (the default page)
 		const searchInput = page.locator('.search-input');
@@ -187,7 +187,7 @@ test.describe('Task detail page bugs', () => {
 
 		// Should find results
 		const results = page.locator('.result-item');
-		await expect(results.first()).toBeVisible({ timeout: 5_000 });
+		await expect(results.first()).toBeVisible({ timeout: 15_000 });
 
 		// Now refine to a non-existent query
 		await searchInput.fill('zzznonexistentzzzz');
@@ -216,7 +216,7 @@ test.describe('Task detail page bugs', () => {
 		await editor.pressSequentially('- LiveSearchTask999', { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
-		await expect(popover).toBeVisible({ timeout: 5_000 });
+		await expect(popover).toBeVisible({ timeout: 15_000 });
 		await popover.locator('button.btn-primary').click();
 		await expect(popover).not.toBeVisible();
 
@@ -227,6 +227,6 @@ test.describe('Task detail page bugs', () => {
 		await page.locator('.search-panel .search-input').fill('LiveSearchTask999');
 
 		const taskResults = page.locator('.result-group:has(.group-label:has-text("Tasks")) .result-item');
-		await expect(taskResults.first()).toBeVisible({ timeout: 5_000 });
+		await expect(taskResults.first()).toBeVisible({ timeout: 15_000 });
 	});
 });

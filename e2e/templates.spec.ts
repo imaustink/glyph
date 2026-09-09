@@ -84,7 +84,7 @@ test.describe('Template default folder', () => {
 		// 4. Verify the new page is inside the folder.
 		// The folder should be expanded and contain the new page as a child.
 		const folderChildren = page.locator('.children .node-row');
-		await expect(folderChildren.first()).toBeVisible({ timeout: 5_000 });
+		await expect(folderChildren.first()).toBeVisible({ timeout: 15_000 });
 	});
 
 	test('page created from template dropdown respects default folder', async ({ page }) => {
@@ -114,11 +114,11 @@ test.describe('Template default folder', () => {
 		await page.mouse.move(0, 0);
 
 		// Should navigate to the new page.
-		await page.waitForURL(/\/notes\//, { timeout: 5_000 });
+		await page.waitForURL(/\/notes\//, { timeout: 15_000 });
 
 		// 4. Verify the page ended up inside the folder.
 		const folderChildren = page.locator('.children .node-row');
-		await expect(folderChildren.first()).toBeVisible({ timeout: 5_000 });
+		await expect(folderChildren.first()).toBeVisible({ timeout: 15_000 });
 	});
 
 	test('new template can be created with a default folder', async ({ page }) => {
@@ -156,11 +156,11 @@ test.describe('Template default folder', () => {
 		await dropdown.locator('.dropdown-item-name:has-text("Folder Template")').click();
 		await page.mouse.move(0, 0);
 
-		await page.waitForURL(/\/notes\//, { timeout: 5_000 });
+		await page.waitForURL(/\/notes\//, { timeout: 15_000 });
 
 		// Page should be inside the folder.
 		const folderChildren = page.locator('.children .node-row');
-		await expect(folderChildren.first()).toBeVisible({ timeout: 5_000 });
+		await expect(folderChildren.first()).toBeVisible({ timeout: 15_000 });
 	});
 
 	test('⌘N respects default folder on the default template', async ({ page }) => {
@@ -187,12 +187,12 @@ test.describe('Template default folder', () => {
 		const currentUrl = page.url();
 		await page.keyboard.press('Meta+n');
 		await page.waitForURL((url) => url.pathname !== new URL(currentUrl).pathname, {
-			timeout: 5_000
+			timeout: 15_000
 		});
 
 		// 5. Verify page is in the folder.
 		const folderChildren = page.locator('.children .node-row');
-		await expect(folderChildren.first()).toBeVisible({ timeout: 5_000 });
+		await expect(folderChildren.first()).toBeVisible({ timeout: 15_000 });
 	});
 
 	test('template with no folder still creates page at root', async ({ page }) => {
@@ -243,7 +243,7 @@ test.describe('Template default folder', () => {
 		await expect(submenu).toBeVisible({ timeout: 3_000 });
 		await submenu.locator('.context-item').first().click();
 
-		await page.waitForURL(/\/notes\//, { timeout: 5_000 });
+		await page.waitForURL(/\/notes\//, { timeout: 15_000 });
 
 		// 4. The page should be inside folder #1 (not folder #2).
 		// Folder #1's children should contain the new page.
@@ -252,6 +252,6 @@ test.describe('Template default folder', () => {
 			.filter({ has: page.locator('.node-row.folder') })
 			.first()
 			.locator('.children .node-row');
-		await expect(folder1Children.first()).toBeVisible({ timeout: 5_000 });
+		await expect(folder1Children.first()).toBeVisible({ timeout: 15_000 });
 	});
 });

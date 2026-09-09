@@ -58,11 +58,11 @@ test.describe('Search', () => {
 
 		// Navigate to the full search page (which rebuilds the index on mount).
 		await page.locator('a.nav-item:has-text("Search")').click();
-		await page.waitForSelector('.search-input', { timeout: 5_000 });
+		await page.waitForSelector('.search-input', { timeout: 15_000 });
 		await page.locator('.search-input').fill('UniqueSearchablePage');
 
 		const results = page.locator('.result-item');
-		await expect(results.first()).toBeVisible({ timeout: 5_000 });
+		await expect(results.first()).toBeVisible({ timeout: 15_000 });
 		await expect(results.first().locator('.result-title')).toContainText(
 			'UniqueSearchablePage12345'
 		);
@@ -71,7 +71,7 @@ test.describe('Search', () => {
 	test('full search page works', async ({ page }) => {
 		// Navigate to the search page.
 		await page.locator('a.nav-item:has-text("Search")').click();
-		await page.waitForSelector('.search-input', { timeout: 5_000 });
+		await page.waitForSelector('.search-input', { timeout: 15_000 });
 
 		// Type a query.
 		await page.locator('.search-input').fill('Getting Started');

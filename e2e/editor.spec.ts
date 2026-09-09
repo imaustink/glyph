@@ -29,7 +29,10 @@ test.describe('Editor', () => {
 		await editor.pressSequentially('Second item', { delay: 20 });
 
 		// Should have bullet list items (default template may add more).
+		// Wait for the second item to land before counting — the input-rule
+		// conversion of "- " into a list is async and can otherwise race.
 		const listItems = page.locator('main .tiptap-editor li');
+		await expect(listItems.nth(1)).toBeVisible({ timeout: 15_000 });
 		const count = await listItems.count();
 		expect(count).toBeGreaterThanOrEqual(2);
 	});
