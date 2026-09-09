@@ -9,11 +9,14 @@
 #   docker compose -f docker-compose.test.yml down -v
 #
 # Ports (chosen to avoid collision with local dev):
-#   Postgres → localhost:5433  (dev uses 5432)
-#   Go API   → localhost:8083  (dev API is container-internal only)
+#   Postgres → localhost:5433  (dev uses 5432)  — override with TEST_PG_PORT
+#   Go API   → localhost:8083  (dev API is container-internal only) — override with TEST_API_PORT
 #
-# The project name "glyph-test" keeps all resources (network, volumes)
-# namespaced away from the dev "glyph" compose project.
+# Both the port numbers and the project name below are only defaults for a
+# single ad-hoc `docker compose up`. scripts/test-e2e.sh overrides both
+# (via TEST_PG_PORT/TEST_API_PORT and COMPOSE_PROJECT_NAME) with values that
+# are unique per invocation, so multiple agents/worktrees can run the E2E
+# suite on the same machine at the same time without colliding.
 
 name: glyph-test
 
@@ -26,7 +29,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-glyph}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-glyph}
     ports:
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:${TEST_PG_PORT:-5433}:5432"
     # No named volume → ephemeral data; each `up` starts with a clean DB.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U glyph"]
@@ -55,7 +58,7 @@ services:
       context: ./api
       dockerfile: Dockerfile.test
     ports:
-      - "127.0.0.1:8083:8080"
+      - "127.0.0.1:${TEST_API_PORT:-8083}:8080"
     depends_on:
       postgres:
         condition: service_healthy
