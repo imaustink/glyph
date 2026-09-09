@@ -232,7 +232,10 @@ jobs:
   build-and-push:
     needs: [frontend, api, e2e-local, e2e-api]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'imaustink/glyph'
-    runs-on: ubuntu-latest
+    # Self-hosted, arm64 — matches the production cluster's nodes. Building on
+    # ubuntu-latest (amd64) produces images that fail with "exec format error"
+    # when the kubelet tries to run them.
+    runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
 

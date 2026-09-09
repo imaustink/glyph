@@ -28,6 +28,34 @@
   let viewDate = $state(new Date());
   let triggerEl: HTMLButtonElement | undefined = $state();
   let dropdownEl: HTMLDivElement | undefined = $state();
+  let dropdownPos = $state({ top: 0, left: 0 });
+
+  function updatePosition() {
+    if (!triggerEl) return;
+    const rect = triggerEl.getBoundingClientRect();
+    dropdownPos = { top: rect.bottom + 4, left: rect.left };
+  }
+
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        node.remove();
+      }
+    };
+  }
+
+  $effect(() => {
+    if (open) {
+      updatePosition();
+      window.addEventListener('scroll', updatePosition, true);
+      window.addEventListener('resize', updatePosition);
+      return () => {
+        window.removeEventListener('scroll', updatePosition, true);
+        window.removeEventListener('resize', updatePosition);
+      };
+    }
+  });
 
   const selectedDate = $derived(value ? parseISO(value) : null);
 
@@ -125,7 +153,14 @@
   </button>
 
   {#if open}
-    <div class="datepicker-dropdown" bind:this={dropdownEl} role="dialog" aria-label="Choose date">
+    <div
+      class="datepicker-dropdown"
+      use:portal
+      bind:this={dropdownEl}
+      role="dialog"
+      aria-label="Choose date"
+      style="top: {dropdownPos.top}px; left: {dropdownPos.left}px;"
+    >
       <div class="dp-header">
         <button type="button" class="dp-nav-btn" onclick={prevMonth} aria-label="Previous month">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -219,10 +254,8 @@
   }
 
   .datepicker-dropdown {
-    position: absolute;
-    top: calc(100% + 4px);
-    left: 0;
-    z-index: 100;
+    position: fixed;
+    z-index: 1001;
     background: var(--bg-modal);
     border: 1px solid var(--border-default);
     border-radius: var(--radius-lg);
