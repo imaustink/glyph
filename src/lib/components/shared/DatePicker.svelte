@@ -159,7 +159,9 @@
       bind:this={dropdownEl}
       role="dialog"
       aria-label="Choose date"
+      tabindex="-1"
       style="top: {dropdownPos.top}px; left: {dropdownPos.left}px;"
+      onmousedown={(e) => e.stopImmediatePropagation()}
     >
       <div class="dp-header">
         <button type="button" class="dp-nav-btn" onclick={prevMonth} aria-label="Previous month">
