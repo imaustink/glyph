@@ -1,0 +1,36 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Glyph",
+  "version": "0.1.0",
+  "identifier": "com.k5s.glyph",
+  "build": {
+    "frontendDist": "./shell"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage", "dmg", "app"],
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ0NzMyQzRBRjBGMUJGMDMKUldRRHYvSHdTaXh6MUdsQVBpRDZmMUVYeU1iZzlibjJMc1MzSGpVOFl0V0M5NU5tTnRtMFZCaWcK",
+      "endpoints": [
+        "https://github.com/imaustink/glyph/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}
