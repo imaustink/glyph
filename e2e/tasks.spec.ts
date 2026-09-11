@@ -4,7 +4,8 @@ import {
 	typeInEditor,
 	navigateToTaskBoard,
 	createNewPage,
-	navigateToPage
+	navigateToPage,
+	waitForEditorReady
 } from './fixtures';
 
 test.describe('Tasks', () => {
@@ -278,13 +279,26 @@ test.describe('Tasks', () => {
 		// Navigate to the first page (Getting Started).
 		await page.locator('.node-label').first().click();
 		await page.waitForSelector('main .tiptap-editor', { timeout: 15_000 });
+		await waitForEditorReady(page);
 
 		const editor = page.locator('main .tiptap-editor');
+		// Click to (re)focus the editor — necessary since the previous
+		// iteration's popover-confirm button click stole focus — then move the
+		// cursor to the true end of the document with a keyboard shortcut
+		// rather than trusting a mouse click's bounding-box-center coordinate,
+		// which drifts away from the actual insertion point as the document
+		// grows with each created task.
 		await editor.click();
+		await page.keyboard.press('Control+End');
 		await editor.pressSequentially(`- ${title}`, { delay: 30 });
 
 		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
 		await expect(popover).toBeVisible({ timeout: 15_000 });
+		// Confirm the popover actually picked up this bullet's title before
+		// confirming, so a cursor-position regression fails loudly here
+		// instead of surfacing later as a missing task card.
+		const titleInput = popover.locator('input.title-input');
+		await expect(titleInput).toHaveValue(title, { timeout: 5_000 });
 		await popover.locator('button.btn-primary').click();
 		await expect(popover).not.toBeVisible();
 

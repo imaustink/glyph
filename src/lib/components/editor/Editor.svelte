@@ -28,6 +28,7 @@
 
   let editorEl = $state<HTMLDivElement | null>(null);
   let editor = $state<Editor | null>(null);
+  let contentLoaded = $state(false);
 
   // Reactive state for template rendering
   let pending = $state<PendingTaskDetails | null>(null);
@@ -170,6 +171,10 @@
           spellcheck: 'true'
         }
       },
+      // Disabled until the initial loadContent() below resolves — otherwise
+      // a keystroke landing before setContent() replaces the whole document
+      // gets silently discarded (or appended to the stale template content).
+      editable: false,
       onSelectionUpdate: ({ editor: ed }) => {
         dismissPendingIfCursorLeft(ed);
       },
@@ -193,6 +198,8 @@
     await loadContent();
     scheduleAutoAssignNodeIds();
     bulletRemoval.snapshot(editor);
+    editor.setEditable(true);
+    contentLoaded = true;
   });
 
   // Reload content when pageId changes (but not on initial mount — onMount handles that)
@@ -209,9 +216,13 @@
         // Clear transient UI state that is page-scoped
         pending = null;
         if (removedBulletTimer) { clearTimeout(removedBulletTimer); removedBulletTimer = null; }
-        void contentSave.flushAll().then(() => {
+        contentLoaded = false;
+        editor.setEditable(false);
+        void contentSave.flushAll().then(async () => {
           taskCreation.clearPrompted();
-          loadContent();
+          await loadContent();
+          editor?.setEditable(true);
+          contentLoaded = true;
         });
       }
     }
@@ -227,7 +238,7 @@
   });
 </script>
 
-<div class="editor-wrapper">
+<div class="editor-wrapper" data-content-loaded={contentLoaded}>
   <div bind:this={editorEl} class="editor-mount"></div>
 </div>
 

@@ -231,3 +231,45 @@ jobs:
           name: playwright-results-api
           path: test-results/
           retention-days: 7
+
+  build-and-push:
+    needs: [frontend, api, e2e-local, e2e-api]
+    if: github.repository == 'imaustink/glyph'
+    # Self-hosted, arm64 — matches the production cluster's nodes. Building on
+    # ubuntu-latest (amd64) produces images that fail with "exec format error"
+    # when the kubelet tries to run them.
+    runs-on: arc-runner-set
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker login
+        run: |
+          echo "$REGISTRY_PASSWORD" | docker login registry.kurpuis.com:5000 \
+            -u "$REGISTRY_USERNAME" --password-stdin
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+
+      # Tagged by the git tree hash (content), not the commit SHA — the PR
+      # branch's commit SHA and the eventual merge commit SHA on main differ
+      # (unless every merge is a fast-forward), but the tree hash is the same
+      # on both as long as the file contents are unchanged. That lets cd.yml
+      # compute this exact tag after merging and deploy the image built here
+      # without rebuilding it.
+      - name: Build & push frontend
+        run: |
+          tag=$(git rev-parse HEAD^{tree})
+          docker build \
+            --build-arg VITE_STORAGE_MODE=api \
+            --build-arg VITE_API_URL= \
+            -t registry.kurpuis.com:5000/glyph-frontend:"$tag" \
+            -f Dockerfile .
+          docker push registry.kurpuis.com:5000/glyph-frontend:"$tag"
+
+      - name: Build & push API
+        run: |
+          tag=$(git rev-parse HEAD^{tree})
+          docker build \
+            -t registry.kurpuis.com:5000/glyph-api:"$tag" \
+            -f api/Dockerfile api/
+          docker push registry.kurpuis.com:5000/glyph-api:"$tag"

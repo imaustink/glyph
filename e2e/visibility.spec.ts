@@ -92,8 +92,19 @@ test.describe('Note Visibility (api)', () => {
 
 		await page.locator('.visibility-btn').click();
 		await page.waitForSelector('.visibility-picker .dropdown');
-		// Click the org option (Share Test Org)
-		await page.locator('.visibility-picker .option:has-text("Share Test Org")').click();
+		// Click the org option (Share Test Org). pagesStore.updateNode() applies
+		// this optimistically (UI updates before the PATCH resolves), so wait
+		// for the actual response — otherwise switching to bob below can race
+		// ahead of the visibility change actually landing in the database.
+		await Promise.all([
+			page.waitForResponse(
+				(res) =>
+					res.request().method() === 'PATCH' &&
+					res.url().includes('/api/v1/pages/') &&
+					res.ok()
+			),
+			page.locator('.visibility-picker .option:has-text("Share Test Org")').click()
+		]);
 		// Picker should now show the org name
 		await expect(page.locator('.visibility-btn')).toContainText('Share Test Org');
 
@@ -141,13 +152,33 @@ test.describe('Note Visibility (api)', () => {
 		await page.waitForSelector('.node-label:has-text("Will Be Hidden")', { timeout: 15_000 });
 		await page.locator('.node-label:has-text("Will Be Hidden")').click();
 		await page.waitForSelector('.visibility-btn');
+		// pagesStore.updateNode() applies visibility changes optimistically (UI
+		// updates before the PATCH resolves), so wait for the actual response
+		// each time — otherwise switching to bob below can race ahead of the
+		// final "Private" change actually landing in the database.
 		await page.locator('.visibility-btn').click();
-		await page.locator('.visibility-picker .option:has-text("Hidden Test Org")').click();
+		await Promise.all([
+			page.waitForResponse(
+				(res) =>
+					res.request().method() === 'PATCH' &&
+					res.url().includes('/api/v1/pages/') &&
+					res.ok()
+			),
+			page.locator('.visibility-picker .option:has-text("Hidden Test Org")').click()
+		]);
 		await expect(page.locator('.visibility-btn')).toContainText('Hidden Test Org');
 
 		// Now set back to Private
 		await page.locator('.visibility-btn').click();
-		await page.locator('.visibility-picker .option:has-text("Private")').click();
+		await Promise.all([
+			page.waitForResponse(
+				(res) =>
+					res.request().method() === 'PATCH' &&
+					res.url().includes('/api/v1/pages/') &&
+					res.ok()
+			),
+			page.locator('.visibility-picker .option:has-text("Private")').click()
+		]);
 		await expect(page.locator('.visibility-btn')).toContainText('Private');
 
 		const noteUrl = page.url();

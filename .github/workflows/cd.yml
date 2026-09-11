@@ -13,50 +13,8 @@ permissions:
   contents: read
 
 jobs:
-  build-and-push:
-    if: github.repository == 'imaustink/glyph'
-    # Self-hosted, arm64 — matches the production cluster's nodes. Building on
-    # ubuntu-latest (amd64) produces images that fail with "exec format error"
-    # when the kubelet tries to run them.
-    runs-on: arc-runner-set
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Docker login
-        run: |
-          echo "$REGISTRY_PASSWORD" | docker login registry.kurpuis.com:5000 \
-            -u "$REGISTRY_USERNAME" --password-stdin
-        env:
-          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
-          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
-
-      # Images are tagged with both :latest (convenience) and the immutable
-      # commit SHA — the SHA tag is what the deploy job actually deploys, so
-      # a given release always refers to a specific, attestable build rather
-      # than whatever ":latest" happens to point to at pull time (which can
-      # differ between nodes, and gives no way to tell what commit is live).
-      - name: Build & push frontend
-        run: |
-          docker build \
-            --build-arg VITE_STORAGE_MODE=api \
-            --build-arg VITE_API_URL= \
-            -t registry.kurpuis.com:5000/glyph-frontend:latest \
-            -t registry.kurpuis.com:5000/glyph-frontend:${{ github.sha }} \
-            -f Dockerfile .
-          docker push registry.kurpuis.com:5000/glyph-frontend:latest
-          docker push registry.kurpuis.com:5000/glyph-frontend:${{ github.sha }}
-
-      - name: Build & push API
-        run: |
-          docker build \
-            -t registry.kurpuis.com:5000/glyph-api:latest \
-            -t registry.kurpuis.com:5000/glyph-api:${{ github.sha }} \
-            -f api/Dockerfile api/
-          docker push registry.kurpuis.com:5000/glyph-api:latest
-          docker push registry.kurpuis.com:5000/glyph-api:${{ github.sha }}
-
   deploy:
-    needs: [build-and-push]
+    if: github.repository == 'imaustink/glyph'
     runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
@@ -91,12 +49,23 @@ jobs:
           rm -rf helm/glyph/migrations
           cp -r api/migrations helm/glyph/migrations
 
+      # The image for this commit's content was already built and pushed by
+      # ci.yml's build-and-push job when it ran on the PR that got merged —
+      # tagged by git tree hash rather than commit SHA, since the PR branch's
+      # commit SHA and this merge commit's SHA differ (unless every merge is
+      # a fast-forward), but the tree hash is identical on both as long as
+      # the file contents are unchanged. So deploy just references that tag;
+      # it never rebuilds the image.
+      - name: Resolve image tag
+        id: image
+        run: echo "tag=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
+
       - name: Helm upgrade
         run: |
           helm upgrade glyph helm/glyph \
             -f homelab/kubernetes/helm/deployments/glyph/values-production.yaml \
-            --set frontend.image.tag=${{ github.sha }} \
-            --set api.image.tag=${{ github.sha }} \
+            --set frontend.image.tag=${{ steps.image.outputs.tag }} \
+            --set api.image.tag=${{ steps.image.outputs.tag }} \
             -n glyph --timeout 5m
 
       - name: Rollout restart
