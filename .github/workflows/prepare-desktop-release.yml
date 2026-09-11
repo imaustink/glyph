@@ -1,0 +1,65 @@
+name: Prepare Desktop Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New desktop app version (e.g. 0.1.2)"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Validate version format
+        run: |
+          echo "${{ inputs.version }}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "Version must be in the form X.Y.Z (got '${{ inputs.version }}')" >&2
+            exit 1
+          }
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Bump tauri.conf.json
+        run: |
+          jq --arg v "${{ inputs.version }}" '.version = $v' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp
+          mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
+
+      - name: Bump Cargo.toml
+        run: |
+          sed -i "0,/^version = /s//version = \"${{ inputs.version }}\"/" src-tauri/Cargo.toml
+
+      - name: Update Cargo.lock
+        working-directory: src-tauri
+        run: cargo check
+
+      - name: Create branch and commit
+        id: branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          branch="desktop-version-bump/${{ inputs.version }}"
+          git checkout -b "$branch"
+          git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+          git commit -m "chore: bump desktop app version to ${{ inputs.version }}"
+          git push origin "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --title "chore: bump desktop app version to ${{ inputs.version }}" \
+            --body "Automated version bump for the desktop app. Merging this PR will automatically tag \`desktop-v${{ inputs.version }}\` and trigger the desktop release build (see \`.github/workflows/tag-desktop-release.yml\`)." \
+            --base main \
+            --head "${{ steps.branch.outputs.branch }}"

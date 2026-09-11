@@ -1,0 +1,46 @@
+name: Tag Desktop Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  tag:
+    if: >
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'desktop-version-bump/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Read version
+        id: version
+        run: echo "version=$(jq -r .version src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        id: tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          tag="desktop-v${{ steps.version.outputs.version }}"
+          git tag -a "$tag" -m "Desktop app release ${{ steps.version.outputs.version }}"
+          git push origin "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      # A tag pushed with the default GITHUB_TOKEN deliberately does not
+      # trigger other workflows' `push: tags:` events (anti-recursion
+      # protection), so dispatch the release build explicitly instead.
+      - name: Trigger desktop release build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run release-desktop.yml \
+            --ref main \
+            -f tag="${{ steps.tag.outputs.tag }}"
