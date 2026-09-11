@@ -3,8 +3,11 @@ name: CI
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
+    paths-ignore:
+      - "src-tauri/**"
+      - ".github/workflows/release-desktop.yml"
+      - ".github/workflows/prepare-desktop-release.yml"
+      - ".github/workflows/tag-desktop-release.yml"
 
 permissions:
   contents: read
@@ -228,46 +231,3 @@ jobs:
           name: playwright-results-api
           path: test-results/
           retention-days: 7
-
-  build-and-push:
-    needs: [frontend, api, e2e-local, e2e-api]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'imaustink/glyph'
-    # Self-hosted, arm64 — matches the production cluster's nodes. Building on
-    # ubuntu-latest (amd64) produces images that fail with "exec format error"
-    # when the kubelet tries to run them.
-    runs-on: arc-runner-set
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Docker login
-        run: |
-          echo "$REGISTRY_PASSWORD" | docker login registry.kurpuis.com:5000 \
-            -u "$REGISTRY_USERNAME" --password-stdin
-        env:
-          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
-          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
-
-      # Images are tagged with both :latest (convenience) and the immutable
-      # commit SHA — the SHA tag is what the deploy workflow actually deploys,
-      # so a given release always refers to a specific, attestable build rather
-      # than whatever ":latest" happens to point to at pull time (which can
-      # differ between nodes, and gives no way to tell what commit is live).
-      - name: Build & push frontend
-        run: |
-          docker build \
-            --build-arg VITE_STORAGE_MODE=api \
-            --build-arg VITE_API_URL= \
-            -t registry.kurpuis.com:5000/glyph-frontend:latest \
-            -t registry.kurpuis.com:5000/glyph-frontend:${{ github.sha }} \
-            -f Dockerfile .
-          docker push registry.kurpuis.com:5000/glyph-frontend:latest
-          docker push registry.kurpuis.com:5000/glyph-frontend:${{ github.sha }}
-
-      - name: Build & push API
-        run: |
-          docker build \
-            -t registry.kurpuis.com:5000/glyph-api:latest \
-            -t registry.kurpuis.com:5000/glyph-api:${{ github.sha }} \
-            -f api/Dockerfile api/
-          docker push registry.kurpuis.com:5000/glyph-api:latest
-          docker push registry.kurpuis.com:5000/glyph-api:${{ github.sha }}
