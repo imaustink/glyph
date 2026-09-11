@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Glyph",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "com.k5s.glyph",
   "build": {
     "frontendDist": "./shell"
@@ -15,7 +15,12 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "appimage", "dmg", "app"],
+    "targets": [
+      "deb",
+      "appimage",
+      "dmg",
+      "app"
+    ],
     "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
