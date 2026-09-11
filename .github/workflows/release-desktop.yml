@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - "desktop-v*"
+  # tag-desktop-release.yml pushes the tag using the default GITHUB_TOKEN,
+  # which GitHub deliberately excludes from triggering the `push` event above
+  # (anti-recursion protection) — so it dispatches this workflow explicitly
+  # instead, passing the tag it just created.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. desktop-v0.1.2)"
+        required: true
 
 permissions:
   contents: write
@@ -23,6 +32,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - uses: actions/setup-node@v4
         with:
@@ -59,8 +70,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Glyph Desktop ${{ github.ref_name }}"
+          tagName: ${{ inputs.tag || github.ref_name }}
+          releaseName: "Glyph Desktop ${{ inputs.tag || github.ref_name }}"
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
