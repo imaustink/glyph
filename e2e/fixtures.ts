@@ -78,6 +78,10 @@ export const test = base.extend<GlyphFixtures>({
 			await page.waitForURL((url) => url.pathname !== '/', { timeout: 15_000 }).catch(() => {});
 		}
 
+		// Don't hand control to the test until the editor (if the landing page
+		// has one) has finished its initial content load — see waitForEditorReady.
+		await waitForEditorReady(page);
+
 		await use(page);
 	}
 });
@@ -107,6 +111,7 @@ export async function createNewPage(page: import('@playwright/test').Page) {
 	// New pages open in title-editing mode (input.title-edit) so .page-title
 	// may not exist yet. Wait for either element.
 	await page.locator('.page-title, input.title-edit').first().waitFor({ timeout: 15_000 });
+	await waitForEditorReady(page);
 }
 
 /** Click the "New folder" button in the sidebar. */
@@ -114,8 +119,21 @@ export async function createNewFolder(page: import('@playwright/test').Page) {
 	await page.locator('.section-actions button[title="New folder"]').click();
 }
 
+/**
+ * Wait for the editor's initial content load to finish. Editor.svelte disables
+ * the editor until its initial loadContent() resolves — interacting with it
+ * before that (e.g. a raw `.tiptap-editor` click + type) can race the
+ * setContent() call, silently discarding keystrokes or corrupting the text.
+ */
+export async function waitForEditorReady(page: import('@playwright/test').Page) {
+	const wrapper = page.locator('.editor-wrapper');
+	if ((await wrapper.count()) === 0) return;
+	await expect(wrapper).toHaveAttribute('data-content-loaded', 'true', { timeout: 15_000 });
+}
+
 /** Type into the TipTap editor. */
 export async function typeInEditor(page: import('@playwright/test').Page, text: string) {
+	await waitForEditorReady(page);
 	const editor = page.locator('main .tiptap-editor');
 	await editor.click();
 	await editor.pressSequentially(text, { delay: 30 });
@@ -131,6 +149,7 @@ export async function navigateToPage(page: import('@playwright/test').Page, titl
 	await page.locator(`.node-label:has-text("${title}")`).click();
 	// Wait for the editor to mount on the new page.
 	await page.waitForSelector('main .tiptap-editor', { timeout: 15_000 });
+	await waitForEditorReady(page);
 }
 
 /** Navigate to the task board. */
