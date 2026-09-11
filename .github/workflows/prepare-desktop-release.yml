@@ -26,6 +26,21 @@ jobs:
             exit 1
           }
 
+      # Makes re-dispatching for the same version safe/idempotent instead of
+      # failing confusingly at the push step with "fetch first" once a prior
+      # run's branch/PR already exists.
+      - name: Check for an existing bump PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch="desktop-version-bump/${{ inputs.version }}"
+          existing=$(gh pr list --repo "${{ github.repository }}" --head "$branch" --state open --json url --jq '.[0].url')
+          if [ -n "$existing" ]; then
+            echo "A bump PR for ${{ inputs.version }} already exists: $existing"
+            echo "Merge it (or close it first to start over) instead of re-dispatching."
+            exit 1
+          fi
+
       - name: Bump tauri.conf.json
         run: |
           jq --arg v "${{ inputs.version }}" '.version = $v' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp
