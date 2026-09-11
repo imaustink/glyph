@@ -59,6 +59,41 @@ In full-stack mode, the app is also available at `https://localhost` (self-signe
 | localStorage | Clear browser storage (DevTools → Application → Local Storage → Clear all) |
 | Postgres | `docker compose … down -v` then `up` again (drops the volume; migrations re-run on next start) |
 
+## Desktop app
+
+Glyph also ships as a native desktop app for macOS and Linux (`src-tauri/`) — a thin window that connects to your self-hosted Glyph server, with automatic updates.
+
+### Installing on macOS
+
+Download the `.dmg` from the [latest release](https://github.com/imaustink/glyph/releases). The app isn't notarized by Apple (notarization requires a paid Apple Developer account), so the first launch of a browser-downloaded copy is blocked by Gatekeeper with:
+
+> "Glyph" is damaged and can't be opened. You should move it to the Trash.
+
+This is not actual corruption — Gatekeeper shows this message for any unnotarized app that was downloaded through a browser. Clear the quarantine flag once, after installing to `/Applications`:
+
+```bash
+xattr -cr /Applications/Glyph.app
+```
+
+Then open the app normally. This is a one-time step: **updates applied from inside the app are downloaded directly and are never quarantined**, so future versions install without hitting this warning again.
+
+### Installing on Linux
+
+Download the `.deb` or `.AppImage` from the [latest release](https://github.com/imaustink/glyph/releases).
+
+```bash
+# Debian/Ubuntu
+sudo apt install ./Glyph_*.deb
+
+# AppImage
+chmod +x Glyph_*.AppImage
+./Glyph_*.AppImage
+```
+
+### First launch
+
+On first launch, Glyph asks for the URL of your self-hosted server. It's remembered after that; change it any time from the app menu (**Glyph → Change Server URL…**).
+
 ## Scripts
 
 ```bash
