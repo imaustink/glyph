@@ -3,8 +3,18 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "src-tauri/**"
+      - ".github/workflows/release-desktop.yml"
+      - ".github/workflows/prepare-desktop-release.yml"
+      - ".github/workflows/tag-desktop-release.yml"
   push:
     branches: [main]
+    paths-ignore:
+      - "src-tauri/**"
+      - ".github/workflows/release-desktop.yml"
+      - ".github/workflows/prepare-desktop-release.yml"
+      - ".github/workflows/tag-desktop-release.yml"
 
 permissions:
   contents: read
