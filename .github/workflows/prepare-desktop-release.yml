@@ -36,7 +36,7 @@ jobs:
 
       - name: Bump Cargo.toml
         run: |
-          sed -i "0,/^version = /s//version = \"${{ inputs.version }}\"/" src-tauri/Cargo.toml
+          sed -i "0,/^version = \".*\"/s//version = \"${{ inputs.version }}\"/" src-tauri/Cargo.toml
 
       - name: Update Cargo.lock
         working-directory: src-tauri
