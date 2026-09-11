@@ -26,9 +26,6 @@ jobs:
             exit 1
           }
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
       - name: Bump tauri.conf.json
         run: |
           jq --arg v "${{ inputs.version }}" '.version = $v' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp
@@ -38,9 +35,20 @@ jobs:
         run: |
           sed -i "0,/^version = \".*\"/s//version = \"${{ inputs.version }}\"/" src-tauri/Cargo.toml
 
+      # Patches only the "app" package's own version entry in Cargo.lock — not
+      # a full `cargo check`/`cargo generate-lockfile`, which would need Linux
+      # system deps (GTK/glib dev headers) just to resolve the dependency
+      # graph, and `generate-lockfile` additionally re-resolves every
+      # transitive dependency to its latest compatible version, which is far
+      # more than a version bump should touch.
       - name: Update Cargo.lock
-        working-directory: src-tauri
-        run: cargo check
+        run: |
+          before=$(md5sum src-tauri/Cargo.lock)
+          sed -i '/^name = "app"$/{n;s/^version = ".*"$/version = "${{ inputs.version }}"/}' src-tauri/Cargo.lock
+          if [ "$before" = "$(md5sum src-tauri/Cargo.lock)" ]; then
+            echo "Cargo.lock's app package entry was not found/updated" >&2
+            exit 1
+          fi
 
       - name: Create branch and commit
         id: branch
