@@ -86,6 +86,12 @@ func (h *PageHandler) CreatePage(c *gin.Context) {
 	if body.Tags == nil {
 		body.Tags = []string{}
 	}
+	// Default the node type, as UpsertPage already does. Without this an
+	// omitted type reached Postgres as '' and tripped pages_type_check,
+	// surfacing a client mistake as a 500.
+	if body.Type == "" {
+		body.Type = model.NodeTypePage
+	}
 	// Default new pages to private so they are not visible to org members
 	// until the owner explicitly shares them.
 	body.IsPrivate = true

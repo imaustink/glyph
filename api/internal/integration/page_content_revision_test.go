@@ -12,7 +12,7 @@ import (
 
 func createPage(t *testing.T, h *Harness, userID uuid.UUID, title string) model.Page {
 	t.Helper()
-	w := h.Do(t, "POST", "/api/v1/pages", map[string]interface{}{"title": title}, userID)
+	w := h.Do(t, "POST", "/api/v1/pages", map[string]interface{}{"title": title, "type": "page"}, userID)
 	require.Equal(t, http.StatusCreated, w.Code)
 	return Decode[model.Page](t, w)
 }
@@ -158,7 +158,7 @@ func TestPageParentValidation(t *testing.T) {
 			victim := createPage(t, h, h.UserA.ID, "Alice's folder")
 
 			w := h.Do(t, "POST", "/api/v1/pages",
-				map[string]interface{}{"title": "graft", "parentId": victim.ID.String()},
+				map[string]interface{}{"title": "graft", "type": "page", "parentId": victim.ID.String()},
 				h.UserB.ID)
 			assert.NotEqual(t, http.StatusCreated, w.Code,
 				"user B must not parent a page under user A's page")
@@ -170,7 +170,7 @@ func TestPageParentValidation(t *testing.T) {
 			own := createPage(t, h, h.UserB.ID, "Bob's page")
 
 			w := h.Do(t, "PUT", "/api/v1/pages/"+own.ID.String(),
-				map[string]interface{}{"title": "moved", "parentId": victim.ID.String()},
+				map[string]interface{}{"title": "moved", "type": "page", "parentId": victim.ID.String()},
 				h.UserB.ID)
 			assert.NotEqual(t, http.StatusOK, w.Code,
 				"user B must not reparent under user A's page via upsert")
@@ -192,7 +192,7 @@ func TestPageParentValidation(t *testing.T) {
 			parent := createPage(t, h, h.UserA.ID, "My folder")
 
 			w := h.Do(t, "POST", "/api/v1/pages",
-				map[string]interface{}{"title": "child", "parentId": parent.ID.String()},
+				map[string]interface{}{"title": "child", "type": "page", "parentId": parent.ID.String()},
 				h.UserA.ID)
 			require.Equal(t, http.StatusCreated, w.Code)
 			child := Decode[model.Page](t, w)
@@ -203,7 +203,7 @@ func TestPageParentValidation(t *testing.T) {
 		"UnknownParentIsRejected": func(t *testing.T, h *Harness) {
 			h.ResetDB(t)
 			w := h.Do(t, "POST", "/api/v1/pages",
-				map[string]interface{}{"title": "orphan", "parentId": "11111111-1111-1111-1111-111111111111"},
+				map[string]interface{}{"title": "orphan", "type": "page", "parentId": "11111111-1111-1111-1111-111111111111"},
 				h.UserA.ID)
 			assert.NotEqual(t, http.StatusCreated, w.Code)
 		},
