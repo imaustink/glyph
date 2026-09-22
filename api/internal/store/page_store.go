@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/glyph/api/internal/model"
 	"github.com/google/uuid"
@@ -243,7 +244,7 @@ func (s *pgPageStore) GetContent(ctx context.Context, pageID, userID uuid.UUID) 
 	// the filter manually here so the alias is consistent with the join.
 	// COALESCE handles rows where content was NULL after the TEXT→JSONB migration.
 	const q = `
-		SELECT pc.page_id, COALESCE(pc.content, '{"type":"doc","content":[]}'::jsonb), pc.updated_at, pc.schema_version
+		SELECT pc.page_id, COALESCE(pc.content, '{"type":"doc","content":[]}'::jsonb), pc.updated_at, pc.schema_version, pc.revision
 		FROM page_contents pc
 		JOIN pages p ON p.id = pc.page_id
 		WHERE pc.page_id = $2 AND (
@@ -254,7 +255,10 @@ func (s *pgPageStore) GetContent(ctx context.Context, pageID, userID uuid.UUID) 
 			           WHERE resource_type = 'page' AND resource_id = p.id AND shared_with_id = $1)
 		)`
 	pc := &model.PageContent{}
-	if err := s.pool.QueryRow(ctx, q, userID, pageID).Scan(&pc.PageID, &pc.Content, &pc.UpdatedAt, &pc.SchemaVersion); err != nil {
+	if err := s.pool.QueryRow(ctx, q, userID, pageID).Scan(&pc.PageID, &pc.Content, &pc.UpdatedAt, &pc.SchemaVersion, &pc.Revision); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("get content: %w", err)
 	}
 	if pc.Content == nil {
@@ -263,36 +267,147 @@ func (s *pgPageStore) GetContent(ctx context.Context, pageID, userID uuid.UUID) 
 	return pc, nil
 }
 
+// contentVersionRetention caps how many superseded revisions are kept per page.
+// Enough to recover from an automated stale-client overwrite storm (the
+// 2026-09-21 incident wrote ~11 revisions in under a minute) without letting
+// history grow without bound.
+const contentVersionRetention = 20
+
 func (s *pgPageStore) UpsertContent(ctx context.Context, pc *model.PageContent, userID uuid.UUID) (*model.PageContent, error) {
-	// Verify the page exists and the user has access (through the page access filter).
-	// The handler already checked write permission before calling this, so we only
-	// confirm the page exists via the standard access filter.
-	// pageAccessFilter uses $1 = userID; we add id = $2 for the specific page.
-	var exists bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pages WHERE `+pageAccessFilter+` AND id = $2)`, userID, pc.PageID).Scan(&exists); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("upsert content — begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Re-check write permission as part of the writing transaction, and take a
+	// row lock on the page. This both closes the check-then-write window and
+	// serialises concurrent content writes for the same page, so the
+	// read-modify-write below cannot interleave.
+	var lockedPageID uuid.UUID
+	err = tx.QueryRow(ctx,
+		`SELECT id FROM pages WHERE id = $2 AND `+PageWriteSQL+` FOR UPDATE`,
+		userID, pc.PageID,
+	).Scan(&lockedPageID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrForbidden
+		}
 		return nil, fmt.Errorf("upsert content — page lookup: %w", err)
 	}
-	if !exists {
-		return nil, fmt.Errorf("upsert content: forbidden")
+
+	// Current content, if any.
+	var (
+		curContent       []byte
+		curRevision      int
+		curSchemaVersion int
+		curUpdatedAt     time.Time
+		hasCurrent       bool
+	)
+	err = tx.QueryRow(ctx,
+		`SELECT content, revision, schema_version, updated_at FROM page_contents WHERE page_id = $1`,
+		pc.PageID,
+	).Scan(&curContent, &curRevision, &curSchemaVersion, &curUpdatedAt)
+	switch {
+	case err == nil:
+		hasCurrent = true
+	case errors.Is(err, pgx.ErrNoRows):
+		hasCurrent = false
+	default:
+		return nil, fmt.Errorf("upsert content — current lookup: %w", err)
+	}
+
+	// Optimistic concurrency. ExpectedRevision == 0 means the client sent no
+	// precondition (legacy client), which is allowed so a rollout doesn't break
+	// existing sessions — but any client that does send one gets protected.
+	if hasCurrent && pc.ExpectedRevision != 0 && pc.ExpectedRevision != curRevision {
+		return nil, fmt.Errorf("%w: content revision %d is stale, current is %d",
+			ErrConflict, pc.ExpectedRevision, curRevision)
 	}
 
 	if pc.Content == nil {
 		pc.Content = json.RawMessage(`{"type":"doc","content":[]}`)
 	}
 
+	// Archive the revision we are about to replace so it stays recoverable.
+	if hasCurrent && curContent != nil {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO page_content_versions (page_id, content, revision, schema_version, replaced_at)
+			 VALUES ($1, $2, $3, $4, $5)`,
+			pc.PageID, curContent, curRevision, curSchemaVersion, curUpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("upsert content — archive: %w", err)
+		}
+	}
+
 	const q = `
-		INSERT INTO page_contents (page_id, content, schema_version, updated_at)
-		VALUES ($1, $2, $3, NOW())
+		INSERT INTO page_contents (page_id, content, schema_version, updated_at, revision)
+		VALUES ($1, $2, $3, NOW(), 1)
 		ON CONFLICT (page_id) DO UPDATE
 		  SET content = EXCLUDED.content,
 		      schema_version = EXCLUDED.schema_version,
-		      updated_at = NOW()
-		RETURNING page_id, content, updated_at, schema_version`
+		      updated_at = NOW(),
+		      revision = page_contents.revision + 1
+		RETURNING page_id, content, updated_at, schema_version, revision`
 	out := &model.PageContent{}
-	if err := s.pool.QueryRow(ctx, q, pc.PageID, pc.Content, pc.SchemaVersion).Scan(
-		&out.PageID, &out.Content, &out.UpdatedAt, &out.SchemaVersion,
+	if err := tx.QueryRow(ctx, q, pc.PageID, pc.Content, pc.SchemaVersion).Scan(
+		&out.PageID, &out.Content, &out.UpdatedAt, &out.SchemaVersion, &out.Revision,
 	); err != nil {
 		return nil, fmt.Errorf("upsert content: %w", err)
+	}
+
+	// Trim history to the retention window.
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM page_content_versions
+		 WHERE page_id = $1 AND id NOT IN (
+		     SELECT id FROM page_content_versions
+		     WHERE page_id = $1 ORDER BY replaced_at DESC, id DESC LIMIT $2
+		 )`,
+		pc.PageID, contentVersionRetention,
+	); err != nil {
+		return nil, fmt.Errorf("upsert content — prune history: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("upsert content — commit: %w", err)
+	}
+	return out, nil
+}
+
+// ListContentVersions returns superseded revisions for a page, newest first.
+// Access is gated by the same read filter used by GetContent.
+func (s *pgPageStore) ListContentVersions(ctx context.Context, pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error) {
+	if limit <= 0 || limit > contentVersionRetention {
+		limit = contentVersionRetention
+	}
+	const q = `
+		SELECT v.id, v.page_id, v.content, v.revision, v.schema_version, v.replaced_at
+		FROM page_content_versions v
+		JOIN pages p ON p.id = v.page_id
+		WHERE v.page_id = $2 AND (
+			p.user_id = $1
+			OR (p.org_id IS NOT NULL AND p.is_private = false
+			    AND p.org_id IN (SELECT org_id FROM org_members WHERE user_id = $1))
+			OR EXISTS (SELECT 1 FROM shares
+			           WHERE resource_type = 'page' AND resource_id = p.id AND shared_with_id = $1)
+		)
+		ORDER BY v.replaced_at DESC, v.id DESC
+		LIMIT $3`
+	rows, err := s.pool.Query(ctx, q, userID, pageID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list content versions: %w", err)
+	}
+	defer rows.Close()
+	out := []model.PageContentVersion{}
+	for rows.Next() {
+		var v model.PageContentVersion
+		if err := rows.Scan(&v.ID, &v.PageID, &v.Content, &v.Revision, &v.SchemaVersion, &v.ReplacedAt); err != nil {
+			return nil, fmt.Errorf("list content versions — scan: %w", err)
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list content versions — rows: %w", err)
 	}
 	return out, nil
 }

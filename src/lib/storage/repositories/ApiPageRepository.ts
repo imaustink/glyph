@@ -35,8 +35,8 @@ export class ApiPageRepository {
 		return api.getOrNull<PageContent>(`/api/v1/pages/${pageId}/content`);
 	}
 
-	async saveContent(content: PageContent): Promise<void> {
-		await api.put(`/api/v1/pages/${content.pageId}/content`, content);
+	async saveContent(content: PageContent): Promise<PageContent> {
+		return api.put<PageContent>(`/api/v1/pages/${content.pageId}/content`, content);
 	}
 
 	async deleteContent(_pageId: string): Promise<void> {

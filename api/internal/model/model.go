@@ -142,6 +142,26 @@ type PageContent struct {
 	// content can be migrated when extensions change. 0/absent = pre-versioning
 	// era (treated as v1 by clients).
 	SchemaVersion int `json:"schemaVersion"`
+	// Revision increments on every successful content write. Clients echo the
+	// revision they last read back as ExpectedRevision so a write derived from
+	// a stale read is rejected rather than silently overwriting newer content.
+	Revision int `json:"revision"`
+	// ExpectedRevision is request-only: the revision the client believes it is
+	// updating. Zero means "no precondition" (legacy client) and skips the
+	// check. Never serialised in responses.
+	ExpectedRevision int `json:"expectedRevision,omitempty"`
+}
+
+// PageContentVersion is a superseded revision of a page's content, retained so
+// an unintended overwrite can be recovered in-product rather than via a
+// database point-in-time restore.
+type PageContentVersion struct {
+	ID            int64           `json:"id"`
+	PageID        uuid.UUID       `json:"pageId"`
+	Content       json.RawMessage `json:"content"`
+	Revision      int             `json:"revision"`
+	SchemaVersion int             `json:"schemaVersion"`
+	ReplacedAt    time.Time       `json:"replacedAt"`
 }
 
 // ─── Tasks ────────────────────────────────────────────────────────────────────

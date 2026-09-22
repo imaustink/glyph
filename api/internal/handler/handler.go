@@ -97,6 +97,7 @@ func internalError(c *gin.Context, err error) {
 // notFoundOrError handles store errors by mapping them to appropriate HTTP responses.
 // - ErrNotFound → 404
 // - ErrForbidden → 403
+// - ErrConflict → 409
 // - Other errors → 500 (logged, generic message returned)
 func notFoundOrError(c *gin.Context, err error) {
 	if err == nil {
@@ -108,6 +109,10 @@ func notFoundOrError(c *gin.Context, err error) {
 	}
 	if errors.Is(err, store.ErrForbidden) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	if errors.Is(err, store.ErrConflict) {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
 	// For any other error, treat as not found to avoid leaking info.

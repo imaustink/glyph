@@ -1070,6 +1070,7 @@ type mockPageStore struct {
 	createFn              func(ctx context.Context, p *model.Page) (*model.Page, error)
 	getByIDFn             func(id, userID uuid.UUID) (*model.Page, error)
 	upsertContentFn       func(pc *model.PageContent, userID uuid.UUID) (*model.PageContent, error)
+	listContentVersionsFn func(pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error)
 	getContentFn          func(pageID, userID uuid.UUID) (*model.PageContent, error)
 	updateFn              func(p *model.Page) (*model.Page, error)
 	deleteFn              func(id, userID uuid.UUID) error
@@ -1136,6 +1137,12 @@ func (m *mockPageStore) UpsertContent(_ context.Context, pc *model.PageContent, 
 		return m.upsertContentFn(pc, userID)
 	}
 	return pc, nil
+}
+func (m *mockPageStore) ListContentVersions(_ context.Context, pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error) {
+	if m.listContentVersionsFn != nil {
+		return m.listContentVersionsFn(pageID, userID, limit)
+	}
+	return []model.PageContentVersion{}, nil
 }
 func (m *mockPageStore) IsAncestor(_ context.Context, candidateAncestorID, nodeID uuid.UUID) (bool, error) {
 	if m.isAncestorFn != nil {

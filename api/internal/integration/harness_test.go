@@ -108,6 +108,7 @@ func NewHarness(t *testing.T, b Backend) *Harness {
 		api.DELETE("/pages/:id", pageH.DeletePage)
 		api.GET("/pages/:id/content", pageH.GetPageContent)
 		api.PUT("/pages/:id/content", pageH.UpsertPageContent)
+		api.GET("/pages/:id/content/versions", pageH.ListPageContentVersions)
 
 		api.GET("/tasks", taskH.ListTasks)
 		api.POST("/tasks", taskH.CreateTask)

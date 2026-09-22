@@ -26,7 +26,12 @@ export interface IRepository<T extends { id: string }> {
 
 export interface IPageRepository extends IRepository<TreeNode> {
   getContent(pageId: string): Promise<PageContent | null>;
-  saveContent(content: PageContent): Promise<void>;
+  /**
+   * Persist page content. Returns the stored record (including the new
+   * `revision`) so callers can hold an up-to-date optimistic-concurrency
+   * precondition for the next write.
+   */
+  saveContent(content: PageContent): Promise<PageContent | void>;
   deleteContent(pageId: string): Promise<void>;
   deleteWithContent(id: string): Promise<boolean>;
   deleteSubtree(id: string, descendantIds: string[]): Promise<void>;

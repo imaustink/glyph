@@ -69,6 +69,21 @@ const FolderWriteSQL = `(
 	           WHERE resource_type = 'folder' AND resource_id = pages.id AND shared_with_id = $1 AND permission = 'editor')
 )`
 
+// PageWriteSQL is the write-access twin of the page read filter: owner, org
+// editor/owner, or an editor share. $1 = userID.
+//
+// Handlers check write permission before calling the store, but that check and
+// the write itself were separate round-trips — a share downgraded or revoked in
+// between still let the stale writer through. Applying this predicate in the
+// same statement (and under the same row lock) as the write closes that window.
+const PageWriteSQL = `(
+	user_id = $1
+	OR (org_id IS NOT NULL AND is_private = false
+	    AND org_id IN (SELECT org_id FROM org_members WHERE user_id = $1 AND role IN ('owner','editor')))
+	OR EXISTS (SELECT 1 FROM shares
+	           WHERE resource_type = 'page' AND resource_id = pages.id AND shared_with_id = $1 AND permission = 'editor')
+)`
+
 // FolderDescendantsCTE is a SQL CTE fragment that recursively collects all
 // descendant page IDs (pages and sub-folders) for a given folder.
 // The caller must supply $1 = folderID. The CTE name is "descendants".

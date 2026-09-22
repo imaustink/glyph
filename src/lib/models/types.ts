@@ -85,6 +85,15 @@ export interface PageContent {
    * in a way that requires migrating existing documents.
    */
   schemaVersion?: number;
+  /**
+   * Server-assigned revision, incremented on every successful content write.
+   * Read from a GET and echoed back as `expectedRevision` on the next write so
+   * the server can reject a save derived from a stale read (HTTP 409) instead
+   * of silently overwriting newer content.
+   */
+  revision?: number;
+  /** Request-only precondition; never present on responses. */
+  expectedRevision?: number;
   /** Set to true when an automatic schema migration fails. UI should show a warning. */
   migrationFailed?: boolean;
 }

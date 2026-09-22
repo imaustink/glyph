@@ -189,6 +189,42 @@ func (pc *PermissionChecker) CanUseOrg(c *gin.Context, orgID *uuid.UUID, request
 	return true
 }
 
+// CanUseParent verifies the requester may attach a node underneath parentID.
+// A nil parentID (root-level node) always passes.
+//
+// Without this, parent_id was copied straight from the request onto the row
+// with no validation at all. Because pages.parent_id is ON DELETE CASCADE, a
+// node grafted under a page the requester has no relationship with is silently
+// destroyed — along with its whole subtree and content — whenever that page is
+// deleted. Requiring *write* access (not merely read) keeps the cascade blast
+// radius inside the requester's own authority.
+func (pc *PermissionChecker) CanUseParent(c *gin.Context, pages store.PageStore, parentID *uuid.UUID, requesterID uuid.UUID) bool {
+	if parentID == nil {
+		return true
+	}
+	parent, err := pages.GetByID(c.Request.Context(), *parentID, requesterID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "parent not found"})
+			return false
+		}
+		slog.Error("permission check failed (parent lookup)",
+			"parent_id", parentID,
+			"requester_id", requesterID,
+			"err", err,
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return false
+	}
+	// Folders and pages share the pages table but are shared under different
+	// resource types, so a folder-editor share must be checked as a folder.
+	resourceType := model.ShareResourcePage
+	if parent.Type == model.NodeTypeFolder {
+		resourceType = model.ShareResourceFolder
+	}
+	return pc.CanWriteResource(c, parent.UserID, parent.OrgID, resourceType, parent.ID, requesterID)
+}
+
 // CanReadResource is the read-side twin of CanWriteResource's scope check —
 // called after a store's own GetByID access filter already confirmed the
 // requester can read the resource, to additionally enforce that a bearer

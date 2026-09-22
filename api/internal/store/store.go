@@ -50,6 +50,7 @@ type PageStore interface {
 
 	GetContent(ctx context.Context, pageID, userID uuid.UUID) (*model.PageContent, error)
 	UpsertContent(ctx context.Context, pc *model.PageContent, userID uuid.UUID) (*model.PageContent, error)
+	ListContentVersions(ctx context.Context, pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error)
 
 	// IsAncestor reports whether candidateAncestorID is an ancestor of nodeID in
 	// the page tree. Returns false when either ID does not exist. Used to prevent

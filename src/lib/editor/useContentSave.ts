@@ -4,6 +4,7 @@ import { uiStore } from '$lib/stores/ui.svelte';
 import { notificationsStore } from '$lib/stores/notifications.svelte';
 import { flushAllTaskTitleUpdates } from '$lib/editor/useTaskTitleDebounce';
 import { DEBOUNCE } from '$lib/models/constants';
+import { ApiError } from '$lib/storage/apiClient';
 
 export interface ContentSaveHandle {
 	/** Schedule a debounced content save for the current editor state. */
@@ -16,7 +17,17 @@ export interface ContentSaveHandle {
 	destroy(): void;
 }
 
-export function useContentSave(onchange?: () => void): ContentSaveHandle {
+/**
+ * Called when the server rejects a save because the document was derived from a
+ * stale read (HTTP 409). The caller is expected to reload the page's content —
+ * retrying the same write would reintroduce the overwrite this guards against.
+ */
+export type ContentConflictHandler = (pageId: string) => void;
+
+export function useContentSave(
+	onchange?: () => void,
+	onConflict?: ContentConflictHandler
+): ContentSaveHandle {
 	let saveTimer: ReturnType<typeof setTimeout> | null = null;
 	let pendingContentJson: Record<string, unknown> | null = null;
 	let pendingContentPageId: string | null = null;
@@ -35,6 +46,18 @@ export function useContentSave(onchange?: () => void): ContentSaveHandle {
 				uiStore.markSaved();
 			} catch (err) {
 				uiStore.markSaved();
+				if (err instanceof ApiError && err.status === 409) {
+					// Someone else (or another client of ours) wrote newer content.
+					// Do not retry: reload so the user sees the current document
+					// instead of silently overwriting it with our stale copy.
+					pagesStore.forgetRevision(pid);
+					notificationsStore.error(
+						'This note changed elsewhere. Reloading the latest version — your unsaved edits were not applied.'
+					);
+					console.warn('[Editor] Content save conflict for page', pid);
+					onConflict?.(pid);
+					return;
+				}
 				const message = err instanceof Error ? err.message : 'Failed to save note.';
 				notificationsStore.error(message);
 				console.error('[Editor] Content save failed:', err);

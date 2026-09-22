@@ -31,8 +31,9 @@ type Registry struct {
 	usersByID  map[uuid.UUID]*model.User
 	usersBySub map[string]*model.User
 
-	pages    map[uuid.UUID]*model.Page
-	contents map[uuid.UUID]*model.PageContent
+	pages           map[uuid.UUID]*model.Page
+	contents        map[uuid.UUID]*model.PageContent
+	contentVersions map[uuid.UUID][]model.PageContentVersion
 
 	tasks     map[uuid.UUID]*model.Task
 	lanes     map[uuid.UUID]*model.Lane
@@ -54,6 +55,7 @@ func (r *Registry) init() {
 	r.usersBySub = make(map[string]*model.User)
 	r.pages = make(map[uuid.UUID]*model.Page)
 	r.contents = make(map[uuid.UUID]*model.PageContent)
+	r.contentVersions = make(map[uuid.UUID][]model.PageContentVersion)
 	r.tasks = make(map[uuid.UUID]*model.Task)
 	r.lanes = make(map[uuid.UUID]*model.Lane)
 	r.templates = make(map[uuid.UUID]*model.Template)
@@ -81,6 +83,28 @@ func (r *Registry) canRead(userID, ownerID uuid.UUID, orgID *uuid.UUID, isPrivat
 	}
 	for _, s := range r.shares {
 		if s.ResourceType == resourceType && s.ResourceID == resourceID && s.SharedWith.ID == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// canWrite mirrors store.PageWriteSQL: owner, org owner/editor, or an editor
+// share. Must be called with lock held.
+func (r *Registry) canWrite(userID, ownerID uuid.UUID, orgID *uuid.UUID, isPrivate bool, resourceType model.ShareResourceType, resourceID uuid.UUID) bool {
+	if userID == ownerID {
+		return true
+	}
+	if orgID != nil && !isPrivate {
+		if m, ok := r.members[orgMemberKey{*orgID, userID}]; ok {
+			if m.Role == model.OrgRoleOwner || m.Role == model.OrgRoleEditor {
+				return true
+			}
+		}
+	}
+	for _, s := range r.shares {
+		if s.ResourceType == resourceType && s.ResourceID == resourceID &&
+			s.SharedWith.ID == userID && s.Permission == model.SharePermissionEditor {
 			return true
 		}
 	}
@@ -453,20 +477,70 @@ func (s *pageStore) UpsertContent(_ context.Context, pc *model.PageContent, user
 	defer s.r.mu.Unlock()
 	p, ok := s.r.pages[pc.PageID]
 	if !ok {
-		return nil, fmt.Errorf("upsert content — page lookup: not found")
+		return nil, store.ErrNotFound
 	}
-	if p.UserID != userID {
-		return nil, fmt.Errorf("upsert content: forbidden")
+	if !s.r.canWrite(userID, p.UserID, p.OrgID, p.IsPrivate, model.ShareResourcePage, p.ID) {
+		return nil, store.ErrForbidden
 	}
+
+	cur, hasCurrent := s.r.contents[pc.PageID]
+	if hasCurrent && pc.ExpectedRevision != 0 && pc.ExpectedRevision != cur.Revision {
+		return nil, fmt.Errorf("%w: content revision %d is stale, current is %d",
+			store.ErrConflict, pc.ExpectedRevision, cur.Revision)
+	}
+
+	nextRevision := 1
+	if hasCurrent {
+		// Archive the revision being replaced.
+		s.r.contentVersions[pc.PageID] = append(s.r.contentVersions[pc.PageID], model.PageContentVersion{
+			ID:            int64(len(s.r.contentVersions[pc.PageID]) + 1),
+			PageID:        pc.PageID,
+			Content:       cur.Content,
+			Revision:      cur.Revision,
+			SchemaVersion: cur.SchemaVersion,
+			ReplacedAt:    cur.UpdatedAt,
+		})
+		if v := s.r.contentVersions[pc.PageID]; len(v) > contentVersionRetention {
+			s.r.contentVersions[pc.PageID] = v[len(v)-contentVersionRetention:]
+		}
+		nextRevision = cur.Revision + 1
+	}
+
 	stored := &model.PageContent{
 		PageID:        pc.PageID,
 		Content:       pc.Content,
 		UpdatedAt:     time.Now(),
 		SchemaVersion: pc.SchemaVersion,
+		Revision:      nextRevision,
 	}
 	s.r.contents[pc.PageID] = stored
 	cp := *stored
 	return &cp, nil
+}
+
+// contentVersionRetention mirrors the Postgres store's retention window.
+const contentVersionRetention = 20
+
+func (s *pageStore) ListContentVersions(_ context.Context, pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error) {
+	s.r.mu.RLock()
+	defer s.r.mu.RUnlock()
+	p, ok := s.r.pages[pageID]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	if !s.r.canRead(userID, p.UserID, p.OrgID, p.IsPrivate, model.ShareResourcePage, p.ID) {
+		return nil, store.ErrForbidden
+	}
+	if limit <= 0 || limit > contentVersionRetention {
+		limit = contentVersionRetention
+	}
+	src := s.r.contentVersions[pageID]
+	out := []model.PageContentVersion{}
+	// Newest first.
+	for i := len(src) - 1; i >= 0 && len(out) < limit; i-- {
+		out = append(out, src[i])
+	}
+	return out, nil
 }
 
 // IsAncestor walks the parent_id chain from nodeID upward and reports whether
@@ -801,7 +875,8 @@ func memstoreMatchesTagRule(tags []string, rule model.FilterRule) bool {
 	}
 }
 
-func memstoreField(t *model.Task, field string) interface{} {	switch field {
+func memstoreField(t *model.Task, field string) interface{} {
+	switch field {
 	case "status":
 		return string(t.Status)
 	case "priority":
