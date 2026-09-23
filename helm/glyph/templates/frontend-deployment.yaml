@@ -48,6 +48,9 @@ spec:
               value: "production"
             - name: ORIGIN
               value: {{ .Values.frontend.origin | quote }}
+            {{- with .Values.frontend.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /

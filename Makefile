@@ -10,6 +10,7 @@
 #   make test-go           – vet, build, go test
 #   make test-e2e-local    – Playwright local-storage project
 #   make test-e2e-api      – Playwright API project (Docker stack)
+#   make test-e2e-k8s      – both Playwright projects on a local K8s cluster
 #   make lint              – all linters
 #   make lint-frontend     – svelte-check + tsc
 #   make lint-go           – go vet + golangci-lint
@@ -72,6 +73,11 @@ test-e2e-api:
 .PHONY: test-e2e
 test-e2e:
 	scripts/test-e2e.sh
+
+## test-e2e-k8s: Both Playwright projects against a local K8s cluster (ferry + helm/glyph)
+.PHONY: test-e2e-k8s
+test-e2e-k8s:
+	scripts/test-e2e-k8s.sh
 
 # ── Combined ──────────────────────────────────────────────────────────────────
 
