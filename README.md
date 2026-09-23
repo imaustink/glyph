@@ -2,6 +2,8 @@
 
 A notes-taking and task-tracking app with a WYSIWYG markdown editor and kanban-style task board.
 
+![Glyph desktop app showing the task board](docs/screenshot.png)
+
 > **Design philosophy:** Task management should never be separate from the thinking that produces it. Glyph treats your notes as the source of truth — write a bullet under a TODO heading and it becomes a trackable task automatically. No context switching, no copy-pasting into a separate tool. If you can write a bullet list, you can run a project.
 
 - **Rich editor** — TipTap / ProseMirror. Typing `#` becomes a heading, `-` becomes a bullet, etc.
