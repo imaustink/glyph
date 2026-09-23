@@ -23,7 +23,7 @@ func pageRowFn(id, userID uuid.UUID) func(dest ...any) error {
 		*dest[5].(*int) = 0
 		*dest[6].(*[]string) = []string{}
 		*dest[7].(*model.Priority) = model.PriorityNone
-		*dest[8].(*[]byte) = nil // todo_trigger
+		*dest[8].(*[]byte) = nil     // todo_trigger
 		*dest[9].(**uuid.UUID) = nil // org_id
 		*dest[10].(*bool) = false
 		*dest[11].(*time.Time) = time.Time{}
@@ -229,10 +229,14 @@ func TestPageStore_GetContent_ScanError(t *testing.T) {
 
 // ─── UpsertContent ───────────────────────────────────────────────────────────
 
-func TestPageStore_UpsertContent_ExistsCheckError(t *testing.T) {
+func TestPageStore_UpsertContent_WriteAccessCheckError(t *testing.T) {
 	pool := &mockPool{
-		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-			return &mockRow{scanFn: func(dest ...any) error { return errors.New("db error") }}
+		beginFn: func(ctx context.Context) (pgx.Tx, error) {
+			return &mockTx{
+				queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+					return &mockRow{scanFn: func(dest ...any) error { return errors.New("db error") }}
+				},
+			}, nil
 		},
 	}
 	s := NewPageStore(pool)
@@ -242,40 +246,87 @@ func TestPageStore_UpsertContent_ExistsCheckError(t *testing.T) {
 	}
 }
 
-func TestPageStore_UpsertContent_NotExists(t *testing.T) {
+func TestPageStore_UpsertContent_NoWriteAccess_ReturnsForbidden(t *testing.T) {
 	pool := &mockPool{
-		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-			return &mockRow{scanFn: func(dest ...any) error {
-				*dest[0].(*bool) = false
-				return nil
-			}}
+		beginFn: func(ctx context.Context) (pgx.Tx, error) {
+			return &mockTx{
+				queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+					// The write-access lookup matches no row.
+					return &mockRow{scanFn: func(dest ...any) error { return pgx.ErrNoRows }}
+				},
+			}, nil
 		},
 	}
 	s := NewPageStore(pool)
 	_, err := s.UpsertContent(context.Background(), &model.PageContent{PageID: uuid.New()}, uuid.New())
-	if err == nil {
-		t.Error("expected forbidden error")
+	if !errors.Is(err, ErrForbidden) {
+		t.Errorf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestPageStore_UpsertContent_StaleRevision_ReturnsConflict(t *testing.T) {
+	pageID := uuid.New()
+	call := 0
+	pool := &mockPool{
+		beginFn: func(ctx context.Context) (pgx.Tx, error) {
+			return &mockTx{
+				queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+					call++
+					switch call {
+					case 1: // write-access lookup
+						return &mockRow{scanFn: func(dest ...any) error {
+							*dest[0].(*uuid.UUID) = pageID
+							return nil
+						}}
+					default: // current content: revision 5
+						return &mockRow{scanFn: func(dest ...any) error {
+							*dest[0].(*[]byte) = []byte(`{"type":"doc"}`)
+							*dest[1].(*int) = 5
+							*dest[2].(*int) = 1
+							*dest[3].(*time.Time) = time.Time{}
+							return nil
+						}}
+					}
+				},
+			}, nil
+		},
+	}
+	s := NewPageStore(pool)
+	_, err := s.UpsertContent(context.Background(), &model.PageContent{
+		PageID:           pageID,
+		Content:          json.RawMessage(`{"type":"doc"}`),
+		ExpectedRevision: 3, // stale
+	}, uuid.New())
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected ErrConflict, got %v", err)
 	}
 }
 
 func TestPageStore_UpsertContent_UpsertError(t *testing.T) {
-	callCount := 0
+	pageID := uuid.New()
+	call := 0
 	pool := &mockPool{
-		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-			callCount++
-			if callCount == 1 {
-				// EXISTS check
-				return &mockRow{scanFn: func(dest ...any) error {
-					*dest[0].(*bool) = true
-					return nil
-				}}
-			}
-			// upsert query
-			return &mockRow{scanFn: func(dest ...any) error { return errors.New("upsert error") }}
+		beginFn: func(ctx context.Context) (pgx.Tx, error) {
+			return &mockTx{
+				queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+					call++
+					switch call {
+					case 1: // write-access lookup
+						return &mockRow{scanFn: func(dest ...any) error {
+							*dest[0].(*uuid.UUID) = pageID
+							return nil
+						}}
+					case 2: // no existing content row
+						return &mockRow{scanFn: func(dest ...any) error { return pgx.ErrNoRows }}
+					default: // the upsert itself fails
+						return &mockRow{scanFn: func(dest ...any) error { return errors.New("upsert error") }}
+					}
+				},
+			}, nil
 		},
 	}
 	s := NewPageStore(pool)
-	_, err := s.UpsertContent(context.Background(), &model.PageContent{PageID: uuid.New()}, uuid.New())
+	_, err := s.UpsertContent(context.Background(), &model.PageContent{PageID: pageID}, uuid.New())
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -364,347 +415,357 @@ func TestMarshalNullableJSON_MarshalError(t *testing.T) {
 // ─── GetByID ──────────────────────────────────────────────────────────────────
 
 func TestPageStore_GetByID_ScanError(t *testing.T) {
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: func(dest ...any) error { return errors.New("scan error") }}
-},
-}
-s := NewPageStore(pool)
-_, err := s.GetByID(context.Background(), uuid.New(), uuid.New())
-if err == nil {
-t.Error("expected error")
-}
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: func(dest ...any) error { return errors.New("scan error") }}
+		},
+	}
+	s := NewPageStore(pool)
+	_, err := s.GetByID(context.Background(), uuid.New(), uuid.New())
+	if err == nil {
+		t.Error("expected error")
+	}
 }
 
 func TestPageStore_GetByID_NotFound(t *testing.T) {
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: func(dest ...any) error { return pgx.ErrNoRows }}
-},
-}
-s := NewPageStore(pool)
-_, err := s.GetByID(context.Background(), uuid.New(), uuid.New())
-if err != ErrNotFound {
-t.Errorf("want ErrNotFound, got %v", err)
-}
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: func(dest ...any) error { return pgx.ErrNoRows }}
+		},
+	}
+	s := NewPageStore(pool)
+	_, err := s.GetByID(context.Background(), uuid.New(), uuid.New())
+	if err != ErrNotFound {
+		t.Errorf("want ErrNotFound, got %v", err)
+	}
 }
 
 // ─── Upsert ───────────────────────────────────────────────────────────────────
 
 func TestPageStore_Upsert_ScanError(t *testing.T) {
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: func(dest ...any) error { return errors.New("scan error") }}
-},
-}
-s := NewPageStore(pool)
-_, err := s.Upsert(context.Background(), &model.Page{UserID: uuid.New(), Type: model.NodeTypePage})
-if err == nil {
-t.Error("expected error")
-}
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: func(dest ...any) error { return errors.New("scan error") }}
+		},
+	}
+	s := NewPageStore(pool)
+	_, err := s.Upsert(context.Background(), &model.Page{UserID: uuid.New(), Type: model.NodeTypePage})
+	if err == nil {
+		t.Error("expected error")
+	}
 }
 
 // ─── Create ───────────────────────────────────────────────────────────────────
 
 func TestPageStore_Create_ScanError(t *testing.T) {
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: func(dest ...any) error { return errors.New("scan error") }}
-},
-}
-s := NewPageStore(pool)
-_, err := s.Create(context.Background(), &model.Page{UserID: uuid.New(), Type: model.NodeTypePage})
-if err == nil {
-t.Error("expected error")
-}
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: func(dest ...any) error { return errors.New("scan error") }}
+		},
+	}
+	s := NewPageStore(pool)
+	_, err := s.Create(context.Background(), &model.Page{UserID: uuid.New(), Type: model.NodeTypePage})
+	if err == nil {
+		t.Error("expected error")
+	}
 }
 
 // ─── Update ───────────────────────────────────────────────────────────────────
 
 func TestPageStore_Update_ScanError(t *testing.T) {
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: func(dest ...any) error { return errors.New("scan error") }}
-},
-}
-s := NewPageStore(pool)
-_, err := s.Update(context.Background(), &model.Page{ID: uuid.New(), UserID: uuid.New(), Type: model.NodeTypePage})
-if err == nil {
-t.Error("expected error")
-}
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: func(dest ...any) error { return errors.New("scan error") }}
+		},
+	}
+	s := NewPageStore(pool)
+	_, err := s.Update(context.Background(), &model.Page{ID: uuid.New(), UserID: uuid.New(), Type: model.NodeTypePage})
+	if err == nil {
+		t.Error("expected error")
+	}
 }
 
 // ─── GetContent ───────────────────────────────────────────────────────────────
 
 func TestPageStore_GetContent_NoRows(t *testing.T) {
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: func(dest ...any) error { return pgx.ErrNoRows }}
-},
-}
-s := NewPageStore(pool)
-_, err := s.GetContent(context.Background(), uuid.New(), uuid.New())
-if err == nil {
-t.Error("expected error")
-}
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: func(dest ...any) error { return pgx.ErrNoRows }}
+		},
+	}
+	s := NewPageStore(pool)
+	_, err := s.GetContent(context.Background(), uuid.New(), uuid.New())
+	if err == nil {
+		t.Error("expected error")
+	}
 }
 
 // ─── IsAncestor ───────────────────────────────────────────────────────────────
 
 func TestPageStore_IsAncestor_ScanErr(t *testing.T) {
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: func(dest ...any) error { return pgx.ErrNoRows }}
-},
-}
-s := NewPageStore(pool)
-_, err := s.IsAncestor(context.Background(), uuid.New(), uuid.New())
-if err == nil {
-t.Error("expected error")
-}
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: func(dest ...any) error { return pgx.ErrNoRows }}
+		},
+	}
+	s := NewPageStore(pool)
+	_, err := s.IsAncestor(context.Background(), uuid.New(), uuid.New())
+	if err == nil {
+		t.Error("expected error")
+	}
 }
 
 // ─── GetContent happy path ────────────────────────────────────────────────────
 
 func TestPageStore_GetContent_Success(t *testing.T) {
-pageID := uuid.New()
-now := time.Now()
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: func(dest ...any) error {
-for i, d := range dest {
-switch p := d.(type) {
-case *uuid.UUID:
-*p = pageID
-case *json.RawMessage:
-*p = json.RawMessage(`{"type":"doc"}`)
-case *time.Time:
-*p = now
-case *int:
-*p = 1
-}
-_ = i
-}
-return nil
-}}
-},
-}
-s := NewPageStore(pool)
-pc, err := s.GetContent(context.Background(), pageID, uuid.New())
-if err != nil {
-t.Errorf("unexpected error: %v", err)
-}
-if pc == nil {
-t.Error("expected non-nil content")
-}
+	pageID := uuid.New()
+	now := time.Now()
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: func(dest ...any) error {
+				for i, d := range dest {
+					switch p := d.(type) {
+					case *uuid.UUID:
+						*p = pageID
+					case *json.RawMessage:
+						*p = json.RawMessage(`{"type":"doc"}`)
+					case *time.Time:
+						*p = now
+					case *int:
+						*p = 1
+					}
+					_ = i
+				}
+				return nil
+			}}
+		},
+	}
+	s := NewPageStore(pool)
+	pc, err := s.GetContent(context.Background(), pageID, uuid.New())
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if pc == nil {
+		t.Error("expected non-nil content")
+	}
 }
 
 // ─── ListByUserPaginated ScanError ───────────────────────────────────────────
 
 func TestPageStore_ListByUserPaginated_ScanError(t *testing.T) {
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: func(dest ...any) error {
-*dest[0].(*int) = 0
-return nil
-}}
-},
-queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-return &mockRows{
-rows: []func(dest ...any) error{
-func(dest ...any) error { return errors.New("scan err") },
-},
-}, nil
-},
-}
-s := NewPageStore(pool)
-_, _, err := s.ListByUserPaginated(context.Background(), uuid.New(), Pagination{Limit: 10, Offset: 0})
-if err == nil {
-t.Error("expected error")
-}
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: func(dest ...any) error {
+				*dest[0].(*int) = 0
+				return nil
+			}}
+		},
+		queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+			return &mockRows{
+				rows: []func(dest ...any) error{
+					func(dest ...any) error { return errors.New("scan err") },
+				},
+			}, nil
+		},
+	}
+	s := NewPageStore(pool)
+	_, _, err := s.ListByUserPaginated(context.Background(), uuid.New(), Pagination{Limit: 10, Offset: 0})
+	if err == nil {
+		t.Error("expected error")
+	}
 }
 
 // ─── Success paths ────────────────────────────────────────────────────────────
 
 func TestScanPage_Success(t *testing.T) {
-id, uid := uuid.New(), uuid.New()
-row := &mockRow{scanFn: pageRowFn(id, uid)}
-p, err := scanPage(row)
-if err != nil || p.ID != id {
-t.Fatalf("scanPage success: err=%v", err)
-}
+	id, uid := uuid.New(), uuid.New()
+	row := &mockRow{scanFn: pageRowFn(id, uid)}
+	p, err := scanPage(row)
+	if err != nil || p.ID != id {
+		t.Fatalf("scanPage success: err=%v", err)
+	}
 }
 
 func TestPageStore_ListByUser_Success(t *testing.T) {
-id, uid := uuid.New(), uuid.New()
-pool := &mockPool{
-queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-return &mockRows{rows: []func(...any) error{pageRowFn(id, uid)}}, nil
-},
-}
-s := NewPageStore(pool)
-got, err := s.ListByUser(context.Background(), uid)
-if err != nil || len(got) != 1 || got[0].ID != id {
-t.Fatalf("ListByUser_Success: err=%v", err)
-}
+	id, uid := uuid.New(), uuid.New()
+	pool := &mockPool{
+		queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+			return &mockRows{rows: []func(...any) error{pageRowFn(id, uid)}}, nil
+		},
+	}
+	s := NewPageStore(pool)
+	got, err := s.ListByUser(context.Background(), uid)
+	if err != nil || len(got) != 1 || got[0].ID != id {
+		t.Fatalf("ListByUser_Success: err=%v", err)
+	}
 }
 
 func TestPageStore_ListByUserPaginated_Success(t *testing.T) {
-id, uid := uuid.New(), uuid.New()
-callCount := 0
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-callCount++
-return &mockRow{scanFn: func(dest ...any) error {
-*dest[0].(*int) = 1
-return nil
-}}
-},
-queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-return &mockRows{rows: []func(...any) error{pageRowFn(id, uid)}}, nil
-},
-}
-s := NewPageStore(pool)
-got, total, err := s.ListByUserPaginated(context.Background(), uid, Pagination{Limit: 10})
-if err != nil || len(got) != 1 || total != 1 {
-t.Fatalf("ListByUserPaginated_Success: err=%v got=%v total=%d", err, got, total)
-}
+	id, uid := uuid.New(), uuid.New()
+	callCount := 0
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			callCount++
+			return &mockRow{scanFn: func(dest ...any) error {
+				*dest[0].(*int) = 1
+				return nil
+			}}
+		},
+		queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+			return &mockRows{rows: []func(...any) error{pageRowFn(id, uid)}}, nil
+		},
+	}
+	s := NewPageStore(pool)
+	got, total, err := s.ListByUserPaginated(context.Background(), uid, Pagination{Limit: 10})
+	if err != nil || len(got) != 1 || total != 1 {
+		t.Fatalf("ListByUserPaginated_Success: err=%v got=%v total=%d", err, got, total)
+	}
 }
 
 func TestPageStore_GetByID_Success(t *testing.T) {
-id, uid := uuid.New(), uuid.New()
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: pageRowFn(id, uid)}
-},
-}
-s := NewPageStore(pool)
-got, err := s.GetByID(context.Background(), id, uid)
-if err != nil || got.ID != id {
-t.Fatalf("GetByID_Success: err=%v", err)
-}
+	id, uid := uuid.New(), uuid.New()
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: pageRowFn(id, uid)}
+		},
+	}
+	s := NewPageStore(pool)
+	got, err := s.GetByID(context.Background(), id, uid)
+	if err != nil || got.ID != id {
+		t.Fatalf("GetByID_Success: err=%v", err)
+	}
 }
 
 func TestPageStore_Upsert_Success(t *testing.T) {
-id, uid := uuid.New(), uuid.New()
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: pageRowFn(id, uid)}
-},
-}
-s := NewPageStore(pool)
-got, err := s.Upsert(context.Background(), &model.Page{ID: id, UserID: uid, Type: model.NodeTypePage})
-if err != nil || got.ID != id {
-t.Fatalf("Upsert_Success: err=%v", err)
-}
+	id, uid := uuid.New(), uuid.New()
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: pageRowFn(id, uid)}
+		},
+	}
+	s := NewPageStore(pool)
+	got, err := s.Upsert(context.Background(), &model.Page{ID: id, UserID: uid, Type: model.NodeTypePage})
+	if err != nil || got.ID != id {
+		t.Fatalf("Upsert_Success: err=%v", err)
+	}
 }
 
 func TestPageStore_Create_Success(t *testing.T) {
-id, uid := uuid.New(), uuid.New()
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: pageRowFn(id, uid)}
-},
-}
-s := NewPageStore(pool)
-got, err := s.Create(context.Background(), &model.Page{UserID: uid, Type: model.NodeTypePage})
-if err != nil || got.ID != id {
-t.Fatalf("Create_Success: err=%v", err)
-}
+	id, uid := uuid.New(), uuid.New()
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: pageRowFn(id, uid)}
+		},
+	}
+	s := NewPageStore(pool)
+	got, err := s.Create(context.Background(), &model.Page{UserID: uid, Type: model.NodeTypePage})
+	if err != nil || got.ID != id {
+		t.Fatalf("Create_Success: err=%v", err)
+	}
 }
 
 func TestPageStore_Update_Success(t *testing.T) {
-id, uid := uuid.New(), uuid.New()
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: pageRowFn(id, uid)}
-},
-}
-s := NewPageStore(pool)
-got, err := s.Update(context.Background(), &model.Page{ID: id, UserID: uid, Type: model.NodeTypePage})
-if err != nil || got.ID != id {
-t.Fatalf("Update_Success: err=%v", err)
-}
+	id, uid := uuid.New(), uuid.New()
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: pageRowFn(id, uid)}
+		},
+	}
+	s := NewPageStore(pool)
+	got, err := s.Update(context.Background(), &model.Page{ID: id, UserID: uid, Type: model.NodeTypePage})
+	if err != nil || got.ID != id {
+		t.Fatalf("Update_Success: err=%v", err)
+	}
 }
 
 func TestPageStore_Delete_Success(t *testing.T) {
-pool := &mockPool{
-execFn: func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-return pgconn.NewCommandTag("DELETE 1"), nil
-},
-}
-s := NewPageStore(pool)
-err := s.Delete(context.Background(), uuid.New(), uuid.New())
-if err != nil {
-t.Fatalf("Delete_Success: err=%v", err)
-}
+	pool := &mockPool{
+		execFn: func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+			return pgconn.NewCommandTag("DELETE 1"), nil
+		},
+	}
+	s := NewPageStore(pool)
+	err := s.Delete(context.Background(), uuid.New(), uuid.New())
+	if err != nil {
+		t.Fatalf("Delete_Success: err=%v", err)
+	}
 }
 
 func TestPageStore_IsAncestor_Success(t *testing.T) {
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: func(dest ...any) error {
-*dest[0].(*bool) = true
-return nil
-}}
-},
-}
-s := NewPageStore(pool)
-got, err := s.IsAncestor(context.Background(), uuid.New(), uuid.New())
-if err != nil || !got {
-t.Fatalf("IsAncestor_Success: err=%v got=%v", err, got)
-}
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: func(dest ...any) error {
+				*dest[0].(*bool) = true
+				return nil
+			}}
+		},
+	}
+	s := NewPageStore(pool)
+	got, err := s.IsAncestor(context.Background(), uuid.New(), uuid.New())
+	if err != nil || !got {
+		t.Fatalf("IsAncestor_Success: err=%v got=%v", err, got)
+	}
 }
 
 func TestPageStore_GetContent_NilContent(t *testing.T) {
-pageID := uuid.New()
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: func(dest ...any) error {
-*dest[0].(*uuid.UUID) = pageID
-*dest[1].(*json.RawMessage) = nil
-*dest[2].(*time.Time) = time.Time{}
-*dest[3].(*int) = 0
-return nil
-}}
-},
-}
-s := NewPageStore(pool)
-got, err := s.GetContent(context.Background(), pageID, uuid.New())
-if err != nil || got.Content == nil {
-t.Fatalf("GetContent_NilContent: err=%v content=%v", err, got)
-}
+	pageID := uuid.New()
+	pool := &mockPool{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			return &mockRow{scanFn: func(dest ...any) error {
+				*dest[0].(*uuid.UUID) = pageID
+				*dest[1].(*json.RawMessage) = nil
+				*dest[2].(*time.Time) = time.Time{}
+				*dest[3].(*int) = 0
+				return nil
+			}}
+		},
+	}
+	s := NewPageStore(pool)
+	got, err := s.GetContent(context.Background(), pageID, uuid.New())
+	if err != nil || got.Content == nil {
+		t.Fatalf("GetContent_NilContent: err=%v content=%v", err, got)
+	}
 }
 
 func TestPageStore_UpsertContent_Success(t *testing.T) {
-pageID := uuid.New()
-callCount := 0
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-callCount++
-if callCount == 1 {
-// EXISTS check
-return &mockRow{scanFn: func(dest ...any) error {
-*dest[0].(*bool) = true
-return nil
-}}
-}
-// INSERT RETURNING
-return &mockRow{scanFn: func(dest ...any) error {
-*dest[0].(*uuid.UUID) = pageID
-*dest[1].(*json.RawMessage) = json.RawMessage(`{"type":"doc","content":[]}`)
-*dest[2].(*time.Time) = time.Time{}
-*dest[3].(*int) = 0
-return nil
-}}
-},
-}
-s := NewPageStore(pool)
-got, err := s.UpsertContent(context.Background(), &model.PageContent{
-PageID:  pageID,
-Content: json.RawMessage(`{"type":"doc","content":[]}`),
-}, uuid.New())
-if err != nil || got.PageID != pageID {
-t.Fatalf("UpsertContent_Success: err=%v", err)
-}
+	pageID := uuid.New()
+	call := 0
+	pool := &mockPool{
+		beginFn: func(ctx context.Context) (pgx.Tx, error) {
+			return &mockTx{
+				queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+					call++
+					switch call {
+					case 1: // write-access lookup
+						return &mockRow{scanFn: func(dest ...any) error {
+							*dest[0].(*uuid.UUID) = pageID
+							return nil
+						}}
+					case 2: // no existing content row
+						return &mockRow{scanFn: func(dest ...any) error { return pgx.ErrNoRows }}
+					default: // INSERT ... RETURNING
+						return &mockRow{scanFn: func(dest ...any) error {
+							*dest[0].(*uuid.UUID) = pageID
+							*dest[1].(*json.RawMessage) = json.RawMessage(`{"type":"doc","content":[]}`)
+							*dest[2].(*time.Time) = time.Time{}
+							*dest[3].(*int) = 0
+							*dest[4].(*int) = 1
+							return nil
+						}}
+					}
+				},
+			}, nil
+		},
+	}
+	s := NewPageStore(pool)
+	got, err := s.UpsertContent(context.Background(), &model.PageContent{
+		PageID:  pageID,
+		Content: json.RawMessage(`{"type":"doc","content":[]}`),
+	}, uuid.New())
+	if err != nil || got.PageID != pageID {
+		t.Fatalf("UpsertContent_Success: err=%v", err)
+	}
+	if got.Revision != 1 {
+		t.Errorf("expected revision 1, got %d", got.Revision)
+	}
 }

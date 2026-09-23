@@ -166,12 +166,50 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
     setNodes(nodes.filter((n) => !deletedSet.has(n.id)));
   }
 
+  /**
+   * Last revision observed per page, used as the optimistic-concurrency
+   * precondition on the next write. Populated by getContent and refreshed from
+   * every successful saveContent.
+   */
+  const knownRevisions = new Map<string, number>();
+
   async function getContent(pageId: string): Promise<PageContent | null> {
-    return repo.getContent(pageId);
+    const content = await repo.getContent(pageId);
+    if (content && typeof content.revision === 'number') {
+      knownRevisions.set(pageId, content.revision);
+    }
+    return content;
   }
 
+  /**
+   * Persist page content.
+   *
+   * Sends the revision this client last saw so the server can reject a write
+   * derived from a stale read (409) rather than silently overwriting newer
+   * content. On conflict the local revision is dropped and a ContentConflictError
+   * is thrown so the caller can reload instead of retrying blindly — retrying
+   * without a precondition is exactly the clobber this prevents.
+   */
   async function saveContent(pageId: string, content: Record<string, unknown>): Promise<void> {
-    await repo.saveContent({ pageId, content, updatedAt: now() });
+    const expectedRevision = knownRevisions.get(pageId);
+    const saved = await repo.saveContent({
+      pageId,
+      content,
+      updatedAt: now(),
+      ...(expectedRevision !== undefined ? { expectedRevision } : {})
+    });
+    if (saved && typeof saved.revision === 'number') {
+      knownRevisions.set(pageId, saved.revision);
+    } else {
+      // Unknown new revision — drop the stale precondition rather than reusing
+      // it, so the next write is unconditional instead of guaranteed-conflicting.
+      knownRevisions.delete(pageId);
+    }
+  }
+
+  /** Forget a cached revision (e.g. after a conflict forces a reload). */
+  function forgetRevision(pageId: string): void {
+    knownRevisions.delete(pageId);
   }
 
   async function moveNode(id: string, newParentId: string | null, newOrder: number): Promise<void> {
@@ -217,6 +255,7 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
     deleteNode,
     getContent,
     saveContent,
+    forgetRevision,
     moveNode,
     removeBulletByNodeId
   };

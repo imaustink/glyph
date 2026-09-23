@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -78,9 +79,18 @@ func (h *PageHandler) CreatePage(c *gin.Context) {
 	if !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
 		return
 	}
+	if !h.Perms.CanUseParent(c, h.Pages, body.ParentID, user.ID) {
+		return
+	}
 	body.UserID = user.ID
 	if body.Tags == nil {
 		body.Tags = []string{}
+	}
+	// Default the node type, as UpsertPage already does. Without this an
+	// omitted type reached Postgres as '' and tripped pages_type_check,
+	// surfacing a client mistake as a 500.
+	if body.Type == "" {
+		body.Type = model.NodeTypePage
 	}
 	// Default new pages to private so they are not visible to org members
 	// until the owner explicitly shares them.
@@ -142,6 +152,9 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
 		return
 	}
+	// Remember the pre-update parent so we only re-validate on an actual move.
+	originalParentID := existing.ParentID
+
 	req.ApplyTo(existing)
 
 	// ApplyTo cannot distinguish {"parentId": null} (move to the top level) from
@@ -149,6 +162,13 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 	// the client explicitly sends null, clear the parent so the node moves to root.
 	if raw, present := keys["parentId"]; present && isJSONNull(raw) {
 		existing.ParentID = nil
+	}
+
+	// A reparent must land somewhere the requester can actually write.
+	if existing.ParentID != nil && (originalParentID == nil || *existing.ParentID != *originalParentID) {
+		if !h.Perms.CanUseParent(c, h.Pages, existing.ParentID, user.ID) {
+			return
+		}
 	}
 
 	// Guard against reparenting a node into one of its own descendants (cycle).
@@ -222,6 +242,9 @@ func (h *PageHandler) UpsertPage(c *gin.Context) {
 	// update) would let any user plant a brand-new page inside an org they
 	// don't belong to, visible to that org once shared non-privately.
 	if !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
+		return
+	}
+	if !h.Perms.CanUseParent(c, h.Pages, body.ParentID, user.ID) {
 		return
 	}
 	body.ID = id
@@ -303,17 +326,54 @@ func (h *PageHandler) UpsertPageContent(c *gin.Context) {
 		body.Content = sanitized
 	}
 
-	// Pass the actual requester's ID — write permission for a non-owner was
-	// already checked above via CanWritePage; passing page.UserID here
-	// instead used to make the store's own access-filter check tautological
-	// (user_id = page.UserID is always true), providing no real defense in
-	// depth. A legitimate non-owner editor still has read access to the
-	// page, so this doesn't change who succeeds — it just makes the check
-	// mean something.
+	// The store re-checks write permission inside the writing transaction (and
+	// under a row lock), so a permission revoked between the check above and
+	// the write is caught. It also enforces the optimistic-concurrency
+	// precondition, surfacing a stale write as ErrConflict → 409 rather than
+	// silently overwriting newer content.
 	content, err := h.Pages.UpsertContent(c.Request.Context(), &body, user.ID)
 	if err != nil {
-		internalError(c, err)
+		// Map the store's sentinels explicitly and keep 500 for anything
+		// unexpected — notFoundOrError's catch-all 404 would disguise a real
+		// database failure as a missing page on a write endpoint.
+		switch {
+		case errors.Is(err, store.ErrConflict):
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		case errors.Is(err, store.ErrForbidden):
+			c.JSON(http.StatusForbidden, gin.H{"error": "write access denied"})
+		case errors.Is(err, store.ErrNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		default:
+			internalError(c, err)
+		}
 		return
 	}
 	c.JSON(http.StatusOK, content)
+}
+
+// GET /pages/:id/content/versions
+//
+// Superseded revisions of a page's content, newest first. Exists so an
+// unintended overwrite is recoverable in-product instead of requiring a
+// database point-in-time restore.
+func (h *PageHandler) ListPageContentVersions(c *gin.Context) {
+	user := auth.CurrentUser(c)
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	page, err := h.Pages.GetByID(c.Request.Context(), id, user.ID)
+	if err != nil {
+		notFoundOrError(c, err)
+		return
+	}
+	if !h.Perms.CanReadResource(c, page.OrgID, model.ShareResourcePage) {
+		return
+	}
+	versions, err := h.Pages.ListContentVersions(c.Request.Context(), id, user.ID, 0)
+	if err != nil {
+		notFoundOrError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, versions)
 }

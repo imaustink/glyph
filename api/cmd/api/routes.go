@@ -65,6 +65,7 @@ func registerRoutes(apiGroup *gin.RouterGroup, h *handlers) {
 	apiGroup.DELETE("/pages/:id", h.pages.DeletePage)
 	apiGroup.GET("/pages/:id/content", h.pages.GetPageContent)
 	apiGroup.PUT("/pages/:id/content", h.pages.UpsertPageContent)
+	apiGroup.GET("/pages/:id/content/versions", h.pages.ListPageContentVersions)
 
 	// Tasks
 	apiGroup.GET("/tasks", h.tasks.ListTasks)

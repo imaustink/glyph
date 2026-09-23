@@ -44,7 +44,14 @@
 
   // ─── Composables ────────────────────────────────────────────────────────────
 
-  const contentSave = useContentSave(() => onchange?.());
+  const contentSave = useContentSave(
+    () => onchange?.(),
+    // On a save conflict the server has newer content than we based our edit
+    // on. Reload it rather than retrying, which would overwrite the newer copy.
+    (conflictedPageId) => {
+      if (conflictedPageId === loadedPageId) void loadContent();
+    }
+  );
 
   const taskCreation = useTaskCreation(
     () => editor,
