@@ -49,16 +49,56 @@ jobs:
           rm -rf helm/glyph/migrations
           cp -r api/migrations helm/glyph/migrations
 
-      # The image for this commit's content was already built and pushed by
+      # The image for this commit's content was usually built and pushed by
       # ci.yml's build-and-push job when it ran on the PR that got merged —
       # tagged by git tree hash rather than commit SHA, since the PR branch's
       # commit SHA and this merge commit's SHA differ (unless every merge is
       # a fast-forward), but the tree hash is identical on both as long as
-      # the file contents are unchanged. So deploy just references that tag;
-      # it never rebuilds the image.
+      # the file contents are unchanged. So deploy just references that tag.
       - name: Resolve image tag
         id: image
         run: echo "tag=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
+
+      - name: Docker login
+        run: |
+          echo "$REGISTRY_PASSWORD" | docker login registry.kurpuis.com:5000 \
+            -u "$REGISTRY_USERNAME" --password-stdin
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+
+      # ...but not always: a PR from a fork gets no secrets on `pull_request`,
+      # so ci.yml skips build-and-push there and the tag is missing. Build it
+      # here instead. Fork code only ever reaches a registry credential after
+      # a maintainer has reviewed and merged it. Build args must stay in sync
+      # with ci.yml's build-and-push so both paths produce the same image.
+      - name: Build & push missing images
+        run: |
+          tag=${{ steps.image.outputs.tag }}
+
+          if docker manifest inspect \
+            registry.kurpuis.com:5000/glyph-frontend:"$tag" >/dev/null 2>&1; then
+            echo "frontend:$tag already in registry"
+          else
+            echo "frontend:$tag missing — building"
+            docker build \
+              --build-arg VITE_STORAGE_MODE=api \
+              --build-arg VITE_API_URL= \
+              -t registry.kurpuis.com:5000/glyph-frontend:"$tag" \
+              -f Dockerfile .
+            docker push registry.kurpuis.com:5000/glyph-frontend:"$tag"
+          fi
+
+          if docker manifest inspect \
+            registry.kurpuis.com:5000/glyph-api:"$tag" >/dev/null 2>&1; then
+            echo "api:$tag already in registry"
+          else
+            echo "api:$tag missing — building"
+            docker build \
+              -t registry.kurpuis.com:5000/glyph-api:"$tag" \
+              -f api/Dockerfile api/
+            docker push registry.kurpuis.com:5000/glyph-api:"$tag"
+          fi
 
       - name: Helm upgrade
         run: |
