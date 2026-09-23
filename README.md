@@ -115,6 +115,7 @@ make test-frontend  # type-check, build, vitest
 make test-go        # go vet, build, unit tests
 make test-e2e-local # Playwright local-storage project (no backend needed)
 make test-e2e-api   # Playwright API project via isolated Docker stack
+make test-e2e-k8s   # both Playwright projects on a local Kubernetes cluster
 make lint           # all linters (svelte-check + golangci-lint + go vet)
 ```
 
@@ -139,6 +140,31 @@ docker compose -f docker-compose.test.yml down -v
 ```
 
 This starts an ephemeral Postgres (port 5433) and Go API (port 8083) in their own Docker project (`glyph-test`), then tears everything down after the run.
+
+### Playwright E2E — local Kubernetes cluster
+
+`make test-e2e-k8s` runs the same specs against `helm/glyph` on a real cluster, so the chart itself is under test alongside the app — the CNPG database, the migration Job, the SvelteKit proxy, and the images built from `Dockerfile` / `api/Dockerfile`.
+
+The cluster is [ferry](https://github.com/imaustink/ferry), which runs the Kubernetes control plane natively on macOS and each pod in its own VM:
+
+```bash
+curl -sfL https://get.ferry.kurpuis.com | FERRY_VERSION=v0.5.0 sh -
+brew install buildkit    # `ferry image build` runs the builder; buildctl is the client
+make test-e2e-k8s
+```
+
+The script builds three images straight into the node's image store (no registry, no Docker), installs the CloudNativePG operator the chart depends on, deploys into the `glyph-e2e` namespace, forwards the Services to loopback ports, and tears the namespace down afterwards.
+
+| Variable | Effect |
+|---|---|
+| `SKIP_BUILD=1` | Reuse the `:e2e` images already in the image store |
+| `KEEP=1` | Leave the namespace running after the tests |
+| `NAMESPACE=…` | Deploy somewhere other than `glyph-e2e` |
+| `FERRY=0` | Skip the ferry-specific steps and use whatever `KUBECONFIG` points at |
+
+`FERRY=0` is the escape hatch for kind, k3d, Docker Desktop, or a remote cluster — build and load the three `:e2e` images however that cluster expects (e.g. `kind load docker-image`), and the rest of the script is plain Kubernetes.
+
+The deployment differs from production in three deliberate ways, all in `e2e/k8s/values.e2e.yaml`: `api.devAuth` is on (it's what exposes `/test/reset`, which the fixtures call before every test), the frontend proxies `/api` and `/test` in-process instead of through an Ingress, and everything runs a single replica. The `local` Playwright project needs a frontend built with `VITE_STORAGE_MODE=local`, which the chart has no concept of, so it gets its own Deployment in `e2e/k8s/frontend-local.yaml`.
 
 ## Project structure
 

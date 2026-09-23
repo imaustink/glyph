@@ -19,6 +19,12 @@ frontend:
   # ORIGIN used by SvelteKit for CSRF protection — must match the public URL
   origin: "https://glyph.example.com"
 
+  # -- Extra environment variables for the frontend container, in full
+  # `name`/`value` (or `valueFrom`) form. Mainly for deployments that serve
+  # the API through the SvelteKit process rather than via the Ingress rules
+  # (e.g. API_PROXY_TARGET / E2E_RESET_ENABLED — see src/hooks.server.ts).
+  extraEnv: []
+
   service:
     type: ClusterIP
     port: 3000
@@ -52,7 +58,9 @@ api:
   cookieDomain: "glyph.example.com"
   cookieSecure: "true"
 
-  # Session secret. Required — the API fatals on boot if this and
+  # Session secret, hex-encoded — `openssl rand -hex 32`. The API hex-decodes
+  # this and fatals on anything else, so a plain passphrase will not boot.
+  # Required — the API fatals on boot if this and
   # existingSecret are both empty. (It is never auto-generated in this
   # chart: GIN_MODE=release is always set below, and the API refuses to
   # generate a random per-process secret in release mode, since that would
@@ -83,6 +91,10 @@ api:
     redirectUrl: ""
     # Use an existing secret instead of creating one (key: client-secret)
     existingSecret: ""
+
+  # -- Extra environment variables for the API container, in full
+  # `name`/`value` (or `valueFrom`) form.
+  extraEnv: []
 
   service:
     type: ClusterIP

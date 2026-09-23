@@ -1,0 +1,110 @@
+# Helm values for running Glyph's Playwright E2E suite against a local
+# Kubernetes cluster (ferry). Applied by scripts/test-e2e-k8s.sh.
+#
+# Differences from a real deployment:
+#   * Images are the locally built `:e2e` tags in the node's image store, so
+#     pullPolicy must be Never — there is no registry to fetch them from.
+#   * api.devAuth disables authentication and exposes /test/reset +
+#     /test/become, which e2e/fixtures.ts calls before every test.
+#   * Everything is scaled to one replica and sized for a laptop.
+#
+# frontend.origin and api.frontendUrl are overridden with --set by the script,
+# since the host port the suite runs on is allocated per invocation.
+
+frontend:
+  replicaCount: 1
+
+  image:
+    repository: glyph-frontend-api
+    tag: e2e
+    pullPolicy: Never
+
+  # Overridden by the script with the actual forwarded port.
+  origin: "http://localhost:5174"
+
+  # The Playwright fixtures talk to the API through the frontend origin
+  # (`${baseURL}/test/reset`, `/api/...`), so the SvelteKit process has to
+  # proxy those paths — the Ingress that normally does this routing is not
+  # in play here. E2E_RESET_ENABLED is what lets /test/* through the proxy
+  # (see src/hooks.server.ts).
+  extraEnv:
+    - name: API_PROXY_TARGET
+      value: "http://glyph-api:8080"
+    - name: E2E_RESET_ENABLED
+      value: "true"
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+api:
+  replicaCount: 1
+
+  image:
+    repository: glyph-api
+    tag: e2e
+    pullPolicy: Never
+
+  # No OIDC in tests: dev-auth mode authenticates every request as the fixed
+  # "Dev User" and registers /test/reset + /test/become. The chart always sets
+  # GIN_MODE=release, which is exactly the case the API refuses to start in
+  # without this explicit opt-in (api/cmd/api/auth.go).
+  devAuth: true
+
+  # Must be hex (the API hex-decodes it and fatals otherwise). Fixed and
+  # obviously fake — dev-auth mode never validates a signed session.
+  sessionSecret: "e2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee"
+
+  # Overridden by the script with the actual forwarded port.
+  frontendUrl: "http://localhost:5174"
+  # Plain http on localhost: a Secure cookie would never be stored, and a
+  # cookie Domain would not match `localhost`. /test/become sets dev_user_id
+  # this way, and the user-switching specs depend on it coming back.
+  cookieDomain: ""
+  cookieSecure: "false"
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+cnpg:
+  # Single instance — no replicas to fail over to, and one less pod VM.
+  instances: 1
+
+  storage:
+    size: 2Gi
+
+  parameters:
+    shared_buffers: "64MB"
+    max_connections: "100"
+    # ferry backs `emptyDir: {medium: Memory}` — which is what CNPG mounts over
+    # /dev/shm — with an ext4 disk image rather than a tmpfs. Ordinary writes to
+    # it succeed, but shm_open(3) returns EROFS, and that is the exact call
+    # PostgreSQL's POSIX dynamic-shared-memory backend makes, so the primary
+    # never finishes bootstrapping:
+    #   FATAL: could not open shared memory segment "/PostgreSQL.NNNNNNNNNN":
+    #          Read-only file system
+    # SysV segments do not go through /dev/shm. initdb independently probes and
+    # picks sysv on this kernel, so this only overrides the posix default that
+    # CNPG writes into its own postgresql.conf afterwards.
+    dynamic_shared_memory_type: "sysv"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# Ingress stays off: the suite reaches the services over kubectl port-forward.
+ingress:
+  enabled: false

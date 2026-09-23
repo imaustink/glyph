@@ -109,6 +109,9 @@ spec:
               value: {{ .Values.api.cookieDomain | quote }}
             - name: COOKIE_SECURE
               value: {{ .Values.api.cookieSecure | quote }}
+            {{- with .Values.api.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health
