@@ -8,9 +8,44 @@ on:
       - ".github/workflows/release-desktop.yml"
       - ".github/workflows/prepare-desktop-release.yml"
       - ".github/workflows/tag-desktop-release.yml"
+  # Redeploy the current tip of main without needing an empty commit — for
+  # when a deploy has to be repeated after fixing something outside this repo.
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+# Deploys must not overlap. One run starts per push, so merging a batch of PRs
+# back-to-back starts a run per merge, and they race: each resolves its own
+# image tag, then whichever reaches `helm upgrade` last wins regardless of
+# which commit is newer.
+#
+# That is not hypothetical. On 2026-09-23 three runs overlapped and applied in
+# this order:
+#
+#   04:46:12  #35  db667069
+#   04:46:16  #37  c8b66bcf   <- tip of main
+#   04:49:47  #34  1ae3b3da   <- oldest of the three, landed last
+#
+# #34 was last because it had to build its images first (its merge-commit tree
+# had no prebuilt tag), which took ~7 minutes while the other two sailed past.
+# Production ended up on #34's tree, and because #35 had already applied
+# migration 17, the API's `run-migrations` init container went into a
+# permanent CrashLoopBackOff — its ConfigMap stopped at 16:
+#
+#   error: no migration found for version 17
+#
+# Migrations only roll forward, so that state does not recover on retry.
+# Serialising deploys keeps them in merge order, which keeps the schema and
+# the binary moving in the same direction.
+#
+# `cancel-in-progress: false` queues rather than cancels: killing a run midway
+# through `helm upgrade` is how releases get stranded in pending-upgrade. Only
+# one run is ever queued — GitHub drops an older pending run when a newer one
+# arrives — so intermediate commits are skipped and the tip of main ships.
+concurrency:
+  group: cd-deploy
+  cancel-in-progress: false
 
 jobs:
   deploy:
