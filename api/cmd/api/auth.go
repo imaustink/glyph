@@ -17,7 +17,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 )
 
 // setupAuth configures the authentication layer and returns the API router group
@@ -48,7 +47,7 @@ func setupAuth(ctx context.Context, r *gin.Engine, pool *pgxpool.Pool, s *stores
 	warnPartialOIDC(oidcReady, oidcIssuer, oidcClientID, oidcClientSecret)
 
 	if oidcReady {
-		return setupOIDCAuth(r, s, oidcIssuer, oidcClientID, oidcClientSecret, sessionSecret, cookieDomain, cookieSecure, frontendURL)
+		return setupOIDCAuth(ctx, r, s, oidcIssuer, oidcClientID, oidcClientSecret, sessionSecret, cookieDomain, cookieSecure, frontendURL)
 	}
 
 	// Dev-auth mode disables authentication entirely: every request is
@@ -86,7 +85,7 @@ func getOrGenerateConsentSecret() []byte {
 	return b
 }
 
-func setupOIDCAuth(r *gin.Engine, s *stores, issuer, clientID, clientSecret string, sessionSecret []byte, cookieDomain string, cookieSecure bool, frontendURL string) *gin.RouterGroup {
+func setupOIDCAuth(ctx context.Context, r *gin.Engine, s *stores, issuer, clientID, clientSecret string, sessionSecret []byte, cookieDomain string, cookieSecure bool, frontendURL string) *gin.RouterGroup {
 	users := s.users
 	callbackURL := os.Getenv("OIDC_REDIRECT_URL")
 	if callbackURL == "" {
@@ -97,15 +96,34 @@ func setupOIDCAuth(r *gin.Engine, s *stores, issuer, clientID, clientSecret stri
 		callbackURL = "http://localhost:" + port + "/auth/callback"
 	}
 
+	// Resolve the authorize and token endpoints from the provider's discovery
+	// document, so OIDC_ISSUER_URL on its own describes the provider — the
+	// same value callbackHandler enforces on the ID token's iss claim.
+	//
+	// Use the canonical issuer discovery returns (the provider's own `issuer`
+	// value) for IssuerURL, not the raw env var: jwt.WithIssuer does an
+	// exact-string match against the ID token's iss claim, so a trailing-slash
+	// or scheme difference in OIDC_ISSUER_URL would otherwise pass discovery yet
+	// fail every token with an opaque "invalid_id_token".
+	//
+	// Fatal on failure rather than falling back to a compiled-in provider: a
+	// fallback yields a server that validates tokens against the configured
+	// issuer while sending users somewhere else to authenticate, which cannot
+	// succeed and reports itself far from the cause.
+	endpoint, canonicalIssuer, err := auth.DiscoverEndpoint(ctx, issuer)
+	if err != nil {
+		log.Fatalf("OIDC discovery failed for issuer %q: %v", issuer, err)
+	}
+
 	sessionCfg := auth.SessionConfig{
 		OAuth2: oauth2.Config{
 			ClientID:     clientID,
 			ClientSecret: clientSecret,
-			Endpoint:     google.Endpoint,
+			Endpoint:     endpoint,
 			RedirectURL:  callbackURL,
 			Scopes:       []string{"openid", "email", "profile"},
 		},
-		IssuerURL:     issuer,
+		IssuerURL:     canonicalIssuer,
 		SessionSecret: sessionSecret,
 		CookieDomain:  cookieDomain,
 		CookieSecure:  cookieSecure,
