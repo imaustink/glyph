@@ -17,6 +17,24 @@ func createPage(t *testing.T, h *Harness, userID uuid.UUID, title string) model.
 	return Decode[model.Page](t, w)
 }
 
+func createFolder(t *testing.T, h *Harness, userID uuid.UUID, title string) model.Page {
+	t.Helper()
+	w := h.Do(t, "POST", "/api/v1/pages", map[string]interface{}{"title": title, "type": "folder"}, userID)
+	require.Equal(t, http.StatusCreated, w.Code)
+	return Decode[model.Page](t, w)
+}
+
+func shareFolder(t *testing.T, h *Harness, folderID string, ownerID, withID uuid.UUID, permission string) {
+	t.Helper()
+	w := h.Do(t, "POST", "/api/v1/shares", map[string]interface{}{
+		"resourceType": "folder",
+		"resourceId":   folderID,
+		"sharedWithId": withID.String(),
+		"permission":   permission,
+	}, ownerID)
+	require.Equal(t, http.StatusCreated, w.Code)
+}
+
 func putContent(t *testing.T, h *Harness, pageID string, userID uuid.UUID, body map[string]interface{}) (int, model.PageContent) {
 	t.Helper()
 	w := h.Do(t, "PUT", "/api/v1/pages/"+pageID+"/content", body, userID)
@@ -206,6 +224,50 @@ func TestPageParentValidation(t *testing.T) {
 				map[string]interface{}{"title": "orphan", "type": "page", "parentId": "11111111-1111-1111-1111-111111111111"},
 				h.UserA.ID)
 			assert.NotEqual(t, http.StatusCreated, w.Code)
+		},
+
+		// A folder editor-share is a resource_type = 'folder' share, invisible to
+		// the page read filter. CanUseParent must fall back to the folder access
+		// filter so a legitimate folder collaborator can parent into it — both on
+		// create and on reparent — rather than being told "parent not found".
+		"FolderEditorShareCanNestAndReparentUnderSharedFolder": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			folder := createFolder(t, h, h.UserA.ID, "Alice's shared folder")
+			shareFolder(t, h, folder.ID.String(), h.UserA.ID, h.UserB.ID, "editor")
+
+			// Create directly under the shared folder.
+			w := h.Do(t, "POST", "/api/v1/pages",
+				map[string]interface{}{"title": "Bob's child", "type": "page", "parentId": folder.ID.String()},
+				h.UserB.ID)
+			require.Equal(t, http.StatusCreated, w.Code,
+				"folder editor must be able to create a page under the shared folder")
+			child := Decode[model.Page](t, w)
+			require.NotNil(t, child.ParentID)
+			assert.Equal(t, folder.ID, *child.ParentID)
+
+			// Reparent one of Bob's own pages under the shared folder.
+			own := createPage(t, h, h.UserB.ID, "Bob's loose page")
+			w = h.Do(t, "PATCH", "/api/v1/pages/"+own.ID.String(),
+				map[string]interface{}{"parentId": folder.ID.String()}, h.UserB.ID)
+			require.Equal(t, http.StatusOK, w.Code,
+				"folder editor must be able to reparent a page under the shared folder")
+			moved := Decode[model.Page](t, w)
+			require.NotNil(t, moved.ParentID)
+			assert.Equal(t, folder.ID, *moved.ParentID)
+		},
+
+		// A folder *read*-share grants no write access, so it must not satisfy the
+		// write predicate CanUseParent enforces.
+		"FolderReadShareCannotNestUnderSharedFolder": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			folder := createFolder(t, h, h.UserA.ID, "Alice's read-only folder")
+			shareFolder(t, h, folder.ID.String(), h.UserA.ID, h.UserB.ID, "viewer")
+
+			w := h.Do(t, "POST", "/api/v1/pages",
+				map[string]interface{}{"title": "graft", "type": "page", "parentId": folder.ID.String()},
+				h.UserB.ID)
+			assert.NotEqual(t, http.StatusCreated, w.Code,
+				"a folder read-share must not permit parenting into the folder")
 		},
 	})
 }

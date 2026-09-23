@@ -379,7 +379,10 @@ func (s *pageStore) GetByID(_ context.Context, id, userID uuid.UUID) (*model.Pag
 	defer s.r.mu.RUnlock()
 	p, ok := s.r.pages[id]
 	if !ok || !s.r.canRead(userID, p.UserID, p.OrgID, p.IsPrivate, model.ShareResourcePage, p.ID) {
-		return nil, fmt.Errorf("pages get: not found")
+		// Return the shared sentinel (like the Postgres store) so callers such
+		// as CanUseParent can distinguish "not accessible" from a real failure
+		// via errors.Is(err, store.ErrNotFound).
+		return nil, store.ErrNotFound
 	}
 	return clonePage(p), nil
 }
@@ -389,7 +392,7 @@ func (s *pageStore) GetFolderByID(_ context.Context, id, userID uuid.UUID) (*mod
 	defer s.r.mu.RUnlock()
 	p, ok := s.r.pages[id]
 	if !ok || !s.r.canRead(userID, p.UserID, p.OrgID, p.IsPrivate, model.ShareResourceFolder, p.ID) {
-		return nil, fmt.Errorf("pages get folder: not found")
+		return nil, store.ErrNotFound
 	}
 	return clonePage(p), nil
 }

@@ -202,7 +202,17 @@ func (pc *PermissionChecker) CanUseParent(c *gin.Context, pages store.PageStore,
 	if parentID == nil {
 		return true
 	}
-	parent, err := pages.GetByID(c.Request.Context(), *parentID, requesterID)
+	ctx := c.Request.Context()
+	parent, err := pages.GetByID(ctx, *parentID, requesterID)
+	if errors.Is(err, store.ErrNotFound) {
+		// GetByID applies the page read filter (resource_type = 'page' shares),
+		// so a folder reachable only through a resource_type = 'folder'
+		// editor-share misses here. Fall back to the folder access filter before
+		// concluding the parent is unusable — otherwise a legitimate folder
+		// collaborator is wrongly told "parent not found" and can never parent
+		// into the folder shared with them.
+		parent, err = pages.GetFolderByID(ctx, *parentID, requesterID)
+	}
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "parent not found"})

@@ -95,4 +95,52 @@ describe('useContentSave conflict handling', () => {
 		expect(onConflict).not.toHaveBeenCalled();
 		expect(notifyError).not.toHaveBeenCalled();
 	});
+
+	// A slow save must not overlap a second flush. saveContent reads the known
+	// revision at call time, so two concurrent PUTs would send the same
+	// (post-commit stale) expectedRevision and the second would take a spurious
+	// 409 — reloading away the user's newest edits. Saves must serialise, and the
+	// newest pending content must still be persisted.
+	it('serialises overlapping saves and persists the newest content without a spurious conflict', async () => {
+		let releaseFirst!: () => void;
+		const firstGate = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		let active = 0;
+		let maxActive = 0;
+		saveContent.mockImplementation(async (_pid: string, content: { text: string }) => {
+			active++;
+			maxActive = Math.max(maxActive, active);
+			if (content.text === 'v1') await firstGate;
+			active--;
+		});
+
+		const onConflict = vi.fn();
+		const handle = useContentSave(undefined, onConflict);
+
+		// First save starts and blocks mid-flight.
+		handle.scheduleSave(fakeEditor('v1'), 'page-A');
+		const first = handle.flushContentSave();
+		await Promise.resolve();
+		expect(saveContent).toHaveBeenCalledTimes(1);
+
+		// A newer edit is flushed while the first save is still outstanding.
+		handle.scheduleSave(fakeEditor('v2'), 'page-A');
+		const second = handle.flushContentSave();
+		await Promise.resolve();
+		// The second save must not have started while the first is in flight.
+		expect(saveContent).toHaveBeenCalledTimes(1);
+
+		releaseFirst();
+		await Promise.all([first, second]);
+
+		// Never ran concurrently, both persisted, newest content last.
+		expect(maxActive).toBe(1);
+		expect(saveContent).toHaveBeenCalledTimes(2);
+		expect(saveContent).toHaveBeenNthCalledWith(1, 'page-A', { type: 'doc', text: 'v1' });
+		expect(saveContent).toHaveBeenNthCalledWith(2, 'page-A', { type: 'doc', text: 'v2' });
+		// No stale-precondition self-conflict, so no reload of the user's own edits.
+		expect(onConflict).not.toHaveBeenCalled();
+		expect(notifyError).not.toHaveBeenCalled();
+	});
 });
