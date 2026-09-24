@@ -1147,6 +1147,9 @@ func (m *mockPageStore) UpsertContent(_ context.Context, pc *model.PageContent, 
 	}
 	return pc, nil
 }
+func (m *mockPageStore) SearchContent(_ context.Context, _ uuid.UUID, _ []uuid.UUID, _ string, _ int) ([]store.PageTextMatch, error) {
+	return []store.PageTextMatch{}, nil
+}
 func (m *mockPageStore) ListContentVersions(_ context.Context, pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error) {
 	if m.listContentVersionsFn != nil {
 		return m.listContentVersionsFn(pageID, userID, limit)

@@ -25,10 +25,17 @@ import (
 // either way.
 func RegisterOAuthRoutes(r *gin.Engine, cfg Config, optionalSessionMw gin.HandlerFunc) {
 	tokenLimiter := handler.NewRateLimiter(20, time.Minute)
+	registerLimiter := newRegistrationLimiter()
 
 	oauthGroup := r.Group("/oauth")
 	{
-		oauthGroup.POST("/token", tokenEndpointRateLimit(tokenLimiter), TokenHandler(cfg))
+		// publicCORS on /token and /register lets browser-based MCP clients
+		// complete the flow; /revoke is left same-origin because it also
+		// honors a session cookie.
+		oauthGroup.POST("/token", publicCORS, tokenEndpointRateLimit(tokenLimiter), TokenHandler(cfg))
+		oauthGroup.OPTIONS("/token", publicCORS)
+		oauthGroup.POST("/register", publicCORS, registrationRateLimit(registerLimiter), RegisterHandler(cfg))
+		oauthGroup.OPTIONS("/register", publicCORS)
 		revokeMiddlewares := []gin.HandlerFunc{tokenEndpointRateLimit(tokenLimiter)}
 		if optionalSessionMw != nil {
 			revokeMiddlewares = append(revokeMiddlewares, optionalSessionMw)
@@ -48,6 +55,8 @@ func RegisterOAuthRoutes(r *gin.Engine, cfg Config, optionalSessionMw gin.Handle
 func RegisterConsentRoutes(apiGroup *gin.RouterGroup, cfg Config) {
 	apiGroup.GET("/oauth/consent", AuthorizeInfoHandler(cfg))
 	apiGroup.POST("/oauth/consent/decision", AuthorizeDecisionHandler(cfg))
+	apiGroup.GET("/oauth/connections", ListConnectionsHandler(cfg))
+	apiGroup.DELETE("/oauth/connections/:id", RevokeConnectionHandler(cfg))
 }
 
 // RevokeHandler implements RFC 7009 token revocation. Accepts either client

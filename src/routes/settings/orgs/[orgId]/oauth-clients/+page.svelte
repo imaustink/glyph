@@ -2,25 +2,26 @@
   import { page } from '$app/state';
   import { orgsStore } from '$lib/stores/orgs.svelte';
   import { oauthClientsStore } from '$lib/stores/oauthClients.svelte';
+  import { scopeReadable } from '$lib/utils/oauthScopes';
   import type { OAuthClient, OAuthClientWithSecret, OAuthScope } from '$lib/models/types';
 
   const orgId = $derived(page.params.orgId!);
   const org = $derived(orgsStore.orgs.find((o) => o.id === orgId) ?? null);
   const isOwner = $derived(org?.role === 'owner');
 
-  type ResourceRow = { key: 'page' | 'task' | 'template' | 'org'; label: string };
+  // `writable: false` rows have only a :read scope (no Editor checkbox).
+  type ResourceRow = {
+    key: 'page' | 'task' | 'template' | 'lane' | 'org';
+    label: string;
+    writable: boolean;
+  };
   const RESOURCE_ROWS: ResourceRow[] = [
-    { key: 'page', label: 'Pages' },
-    { key: 'task', label: 'Tasks' },
-    { key: 'template', label: 'Templates' },
-    { key: 'org', label: 'Org info' }
+    { key: 'page', label: 'Pages', writable: true },
+    { key: 'task', label: 'Tasks', writable: true },
+    { key: 'template', label: 'Templates', writable: true },
+    { key: 'lane', label: 'Board lanes', writable: false },
+    { key: 'org', label: 'Org info', writable: false }
   ];
-
-  function scopeReadable(scope: OAuthScope): string {
-    const [resource, perm] = scope.split(':');
-    const label = RESOURCE_ROWS.find((r) => r.key === resource)?.label ?? resource;
-    return `${perm === 'write' ? 'Edit' : 'View'} ${label.toLowerCase()}`;
-  }
 
   // Create form
   let newClientName = $state('');
@@ -354,11 +355,13 @@
                       />
                     </td>
                     <td>
-                      <input
-                        type="checkbox"
-                        checked={isChecked(row.key, 'write')}
-                        onchange={() => toggleScope(row.key, 'write')}
-                      />
+                      {#if row.writable}
+                        <input
+                          type="checkbox"
+                          checked={isChecked(row.key, 'write')}
+                          onchange={() => toggleScope(row.key, 'write')}
+                        />
+                      {/if}
                     </td>
                   </tr>
                 {/each}

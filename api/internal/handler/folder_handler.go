@@ -23,15 +23,17 @@ type FolderHandler struct {
 
 func (h *FolderHandler) ListFolderLanes(c *gin.Context) {
 	user := auth.CurrentUser(c)
-	if !requireSessionAuth(c) {
-		return
-	}
 	folderID, ok := parseUUID(c, "id")
 	if !ok {
 		return
 	}
 	folder := h.Perms.CanReadFolder(c, h.Pages, folderID, user.ID)
 	if folder == nil {
+		return
+	}
+	// Checked after the folder lookup because the grant depends on the
+	// folder's org; CanReadFolder has already hidden folders the user can't see.
+	if !requireLaneReadScope(c, folder.OrgID) {
 		return
 	}
 	lanes, err := h.Lanes.ListByFolder(c.Request.Context(), folderID, user.ID)

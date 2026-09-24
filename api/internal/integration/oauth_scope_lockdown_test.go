@@ -85,10 +85,19 @@ func TestOAuthBearerTokenScopeLockdown(t *testing.T) {
 			jsonVal: map[string]interface{}{"title": "A Folder", "type": "folder"},
 		}))
 		folderID := folder["id"].(string)
+		// Put the folder in the org, visible to members, so the token's acting
+		// user can see it: what's under test is the scope check, not visibility.
+		w := s.doJSON(t, "PATCH", "/api/v1/pages/"+folderID, reqOpts{
+			userID:  &alice.ID,
+			jsonVal: map[string]interface{}{"orgId": orgID, "isPrivate": false},
+		})
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
-		w := s.doJSON(t, "GET", "/api/v1/folders/"+folderID, reqOpts{bearer: accessToken})
+		w = s.doJSON(t, "GET", "/api/v1/folders/"+folderID, reqOpts{bearer: accessToken})
 		assert.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
 
+		// Folder lanes are readable only with lane:read, which this client
+		// (created with every other scope) doesn't have.
 		w = s.doJSON(t, "GET", "/api/v1/folders/"+folderID+"/lanes", reqOpts{bearer: accessToken})
 		assert.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
 	})

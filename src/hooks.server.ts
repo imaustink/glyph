@@ -16,9 +16,35 @@ const TEST_PROXY_ENABLED = env.E2E_RESET_ENABLED === 'true';
 const COLLAB_PROXY_TARGET = env.COLLAB_PROXY_TARGET;
 
 /**
+ * OAuth discovery metadata (RFC 8414 / RFC 9728) served by the Go API. Each is
+ * matched as a prefix so the path-suffixed variants (e.g.
+ * /.well-known/oauth-protected-resource/mcp) are covered too. /.well-known/
+ * is deliberately NOT proxied wholesale — anything else under it stays
+ * SvelteKit's (or static/'s) to serve.
+ */
+const WELL_KNOWN_OAUTH_PREFIXES = [
+	'/.well-known/oauth-authorization-server',
+	'/.well-known/oauth-protected-resource'
+];
+
+function isWellKnownOAuthPath(pathname: string): boolean {
+	return WELL_KNOWN_OAUTH_PREFIXES.some(
+		(prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+	);
+}
+
+/**
  * When API_PROXY_TARGET is set (e.g. in E2E CI builds), proxy /api, /auth,
- * /oauth/token, /oauth/revoke, and /health requests to the Go backend, plus
- * /test (only when TEST_PROXY_ENABLED is also set — see above).
+ * /oauth/token, /oauth/revoke, /oauth/register, /mcp, the OAuth
+ * /.well-known/ metadata documents, and /health requests to the Go backend,
+ * plus /test (only when TEST_PROXY_ENABLED is also set — see above).
+ *
+ * /mcp is the MCP Streamable HTTP endpoint and /oauth/register is RFC 7591
+ * dynamic client registration; together with the discovery metadata they are
+ * what lets an MCP client connect with just the public origin's /mcp URL.
+ * Request headers (including Authorization — /mcp is bearer-authenticated)
+ * and bodies are forwarded as-is, and the response body is streamed back
+ * unbuffered with its original headers (so an SSE content-type survives).
  *
  * /oauth/authorize is deliberately NOT proxied — it's the SvelteKit consent
  * page's own route (src/routes/oauth/authorize); that page's own API calls
@@ -45,6 +71,9 @@ export const handle: Handle = async ({ event, resolve }) => {
 			event.url.pathname.startsWith('/auth') ||
 			event.url.pathname === '/oauth/token' ||
 			event.url.pathname === '/oauth/revoke' ||
+			event.url.pathname === '/oauth/register' ||
+			event.url.pathname === '/mcp' ||
+			isWellKnownOAuthPath(event.url.pathname) ||
 			event.url.pathname.startsWith('/health') ||
 			(TEST_PROXY_ENABLED && event.url.pathname.startsWith('/test')))
 	) {

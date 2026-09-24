@@ -23,6 +23,21 @@ export default defineConfig(({ mode }) => {
 						// already covers.
 						'/oauth/token': env.API_PROXY_TARGET,
 						'/oauth/revoke': env.API_PROXY_TARGET,
+						// RFC 7591 dynamic client registration and the MCP Streamable
+						// HTTP endpoint — what lets an MCP client connect with just
+						// the /mcp URL. Anchored regexes (tested against the path plus
+						// query string) so only these exact paths match — Vite's plain
+						// string keys are prefix matches, and '/mcp' would otherwise
+						// swallow any future /mcp-* frontend route.
+						'^/oauth/register(\\?|$)': env.API_PROXY_TARGET,
+						'^/mcp(\\?|$)': env.API_PROXY_TARGET,
+						// OAuth discovery metadata (RFC 8414 / RFC 9728), including
+						// path-suffixed variants like
+						// /.well-known/oauth-protected-resource/mcp. /.well-known/ is
+						// deliberately NOT proxied wholesale — anything else under it
+						// stays SvelteKit's.
+						'^/\\.well-known/oauth-(authorization-server|protected-resource)(/|\\?|$)':
+							env.API_PROXY_TARGET,
 						'/health': env.API_PROXY_TARGET,
 						// /test (which includes /test/reset — a full table TRUNCATE) is
 						// gated on E2E_RESET_ENABLED separately, mirroring the Go API's

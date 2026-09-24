@@ -22,13 +22,17 @@ import (
 // itself, so it cannot smuggle in a different value.
 type consentClaims struct {
 	jwt.RegisteredClaims
-	ClientID            string   `json:"client_id"`
-	RedirectURI         string   `json:"redirect_uri"`
-	Scopes              []string `json:"scopes"`
-	OrgID               string   `json:"org_id"`
-	State               string   `json:"state"`
-	CodeChallenge       string   `json:"code_challenge"`
-	CodeChallengeMethod string   `json:"code_challenge_method"`
+	ClientID    string   `json:"client_id"`
+	RedirectURI string   `json:"redirect_uri"`
+	Scopes      []string `json:"scopes"`
+	OrgID       string   `json:"org_id"`
+	// Selectable is set for dynamically registered clients, which belong to
+	// no org: the user picks the workspaces (personal and/or any of their
+	// orgs) in the decision request instead of OrgID fixing one.
+	Selectable          bool   `json:"selectable,omitempty"`
+	State               string `json:"state"`
+	CodeChallenge       string `json:"code_challenge"`
+	CodeChallengeMethod string `json:"code_challenge_method"`
 }
 
 // consentTokenTracker enforces single-use consent tokens: once a token's jti
@@ -150,6 +154,51 @@ func AuthorizeInfoHandler(cfg Config) gin.HandlerFunc {
 			return
 		}
 
+		scopes := intersectScopes(parseScopeParam(c.Query("scope")), client.Scopes)
+		clientInfo := gin.H{
+			"name":         client.Name,
+			"description":  client.Description,
+			"dynamic":      client.IsDynamic,
+			"redirectHost": RedirectHost(redirectURI),
+		}
+
+		if client.IsDynamic {
+			// A self-registered client has no org of its own (org_id, if sent,
+			// is ignored): offer the user's personal workspace and every org
+			// they belong to, and let them choose at decision time.
+			orgs, err := cfg.Orgs.ListForUser(c.Request.Context(), user.ID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
+				return
+			}
+			workspaces := []gin.H{{"id": personalWorkspaceID, "name": "Personal workspace", "kind": "personal"}}
+			for _, o := range orgs {
+				workspaces = append(workspaces, gin.H{"id": o.ID.String(), "name": o.Name, "kind": "org"})
+			}
+			token, err := signConsentToken(cfg, consentClaims{
+				ClientID:            clientID,
+				RedirectURI:         redirectURI,
+				Scopes:              scopesToStringSlice(scopes),
+				Selectable:          true,
+				State:               state,
+				CodeChallenge:       codeChallenge,
+				CodeChallengeMethod: codeChallengeMethod,
+			})
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"client":             clientInfo,
+				"orgName":            nil,
+				"scopes":             scopesToStringSlice(scopes),
+				"consentToken":       token,
+				"workspaceSelection": true,
+				"workspaces":         workspaces,
+			})
+			return
+		}
+
 		orgID, err := uuid.Parse(orgIDStr)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "error_description": "org_id is required and must be a valid UUID"})
@@ -177,8 +226,6 @@ func AuthorizeInfoHandler(cfg Config) gin.HandlerFunc {
 			return
 		}
 
-		scopes := intersectScopes(parseScopeParam(c.Query("scope")), client.Scopes)
-
 		token, err := signConsentToken(cfg, consentClaims{
 			ClientID:            clientID,
 			RedirectURI:         redirectURI,
@@ -194,13 +241,12 @@ func AuthorizeInfoHandler(cfg Config) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"client": gin.H{
-				"name":        client.Name,
-				"description": client.Description,
-			},
-			"orgName":      org.Name,
-			"scopes":       scopesToStringSlice(scopes),
-			"consentToken": token,
+			"client":             clientInfo,
+			"orgName":            org.Name,
+			"scopes":             scopesToStringSlice(scopes),
+			"consentToken":       token,
+			"workspaceSelection": false,
+			"workspaces":         []gin.H{},
 		})
 	}
 }
@@ -222,6 +268,10 @@ func AuthorizeDecisionHandler(cfg Config) gin.HandlerFunc {
 		var body struct {
 			ConsentToken string `json:"consentToken"`
 			Approve      bool   `json:"approve"`
+			// Personal and OrgIDs are the user's workspace selection; only
+			// read when the consent token is Selectable.
+			Personal bool     `json:"personal"`
+			OrgIDs   []string `json:"orgIds"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil || body.ConsentToken == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
@@ -260,15 +310,44 @@ func AuthorizeDecisionHandler(cfg Config) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "error_description": "redirect_uri is no longer registered for this client"})
 			return
 		}
-		orgID, err := uuid.Parse(claims.OrgID)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
-			return
+		var grantedOrgs []uuid.UUID
+		includePersonal := false
+		if claims.Selectable {
+			if !client.IsDynamic {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+				return
+			}
+			includePersonal = body.Personal
+			seen := map[uuid.UUID]bool{}
+			for _, raw := range body.OrgIDs {
+				id, err := uuid.Parse(raw)
+				if err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "error_description": "invalid org id"})
+					return
+				}
+				if !seen[id] {
+					seen[id] = true
+					grantedOrgs = append(grantedOrgs, id)
+				}
+			}
+			if !includePersonal && len(grantedOrgs) == 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "error_description": "select at least one workspace"})
+				return
+			}
+		} else {
+			orgID, err := uuid.Parse(claims.OrgID)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+				return
+			}
+			grantedOrgs = []uuid.UUID{orgID}
 		}
 		// Re-verify membership at decision time (not just at GET time).
-		if _, err := cfg.Orgs.GetMember(c.Request.Context(), orgID, user.ID); err != nil {
-			c.JSON(http.StatusForbidden, gin.H{"error": "invalid_grant", "error_description": "you are not a member of this org"})
-			return
+		for _, orgID := range grantedOrgs {
+			if _, err := cfg.Orgs.GetMember(c.Request.Context(), orgID, user.ID); err != nil {
+				c.JSON(http.StatusForbidden, gin.H{"error": "invalid_grant", "error_description": "you are not a member of this org"})
+				return
+			}
 		}
 
 		code, codeHash, err := GenerateAuthCode()
@@ -285,7 +364,8 @@ func AuthorizeDecisionHandler(cfg Config) gin.HandlerFunc {
 			UserID:              user.ID,
 			RedirectURI:         claims.RedirectURI,
 			Scopes:              scopes,
-			OrgIDs:              []uuid.UUID{orgID},
+			OrgIDs:              grantedOrgs,
+			IncludePersonal:     includePersonal,
 			CodeChallenge:       claims.CodeChallenge,
 			CodeChallengeMethod: claims.CodeChallengeMethod,
 			ExpiresAt:           time.Now().Add(authCodeTTL),
@@ -301,6 +381,10 @@ func AuthorizeDecisionHandler(cfg Config) gin.HandlerFunc {
 		})})
 	}
 }
+
+// personalWorkspaceID is the id the consent screen uses for the user's
+// personal (non-org) workspace in its workspace list.
+const personalWorkspaceID = "personal"
 
 // requireInteractiveUser rejects requests authenticated via an OAuth bearer
 // token — consent must come from an actual logged-in human session, not an

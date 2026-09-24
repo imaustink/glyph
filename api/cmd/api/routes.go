@@ -18,6 +18,7 @@ type handlers struct {
 	shares       *handler.ShareHandler
 	oauthClients *handler.OAuthClientHandler
 	collab       *handler.CollabHandler
+	search       *handler.SearchHandler
 }
 
 // newHandlers creates all handler instances from their stores.
@@ -33,7 +34,7 @@ func newHandlers(stores *stores, collab collabConfig) *handlers {
 			ServiceToken: collab.serviceToken,
 		},
 		tasks: &handler.TaskHandler{Tasks: stores.tasks, Perms: perms},
-		lanes: &handler.LaneHandler{Lanes: stores.lanes},
+		lanes: &handler.LaneHandler{Lanes: stores.lanes, Pages: stores.pages},
 		folders: &handler.FolderHandler{
 			Pages: stores.pages,
 			Lanes: stores.lanes,
@@ -55,6 +56,7 @@ func newHandlers(stores *stores, collab collabConfig) *handlers {
 			Tokens:  stores.oauthTokens,
 			Orgs:    stores.orgs,
 		},
+		search: &handler.SearchHandler{Pages: stores.pages, Tasks: stores.tasks},
 	}
 }
 
@@ -84,6 +86,9 @@ func registerRoutes(apiGroup *gin.RouterGroup, h *handlers) {
 	apiGroup.PATCH("/tasks/:id", h.tasks.UpdateTask)
 	apiGroup.PUT("/tasks/:id", h.tasks.UpsertTask)
 	apiGroup.DELETE("/tasks/:id", h.tasks.DeleteTask)
+
+	// Search (pages + tasks)
+	apiGroup.GET("/search", h.search.Search)
 
 	// Utilities
 	apiGroup.POST("/unfurl", handler.RateLimitMiddleware(unfurlLimiter), handler.UnfurlURL)

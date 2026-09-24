@@ -64,6 +64,10 @@ type PageStore interface {
 	// not behind the last one accepted). Service-authenticated; no user.
 	WriteCollabSnapshot(ctx context.Context, snap *model.CollabSnapshot) (*model.PageContent, error)
 
+	// SearchContent returns pages among pageIDs readable by userID whose
+	// content text contains query (case-insensitive), most recent first.
+	SearchContent(ctx context.Context, userID uuid.UUID, pageIDs []uuid.UUID, query string, limit int) ([]PageTextMatch, error)
+
 	// IsAncestor reports whether candidateAncestorID is an ancestor of nodeID in
 	// the page tree. Returns false when either ID does not exist. Used to prevent
 	// reparenting operations that would create a cycle.
@@ -216,4 +220,7 @@ type OAuthTokenStore interface {
 	// ListActiveForClient returns non-revoked tokens for a client, with the
 	// acting user's email hydrated, for the admin audit view.
 	ListActiveForClient(ctx context.Context, clientID uuid.UUID) ([]*model.OAuthToken, error)
+	// ListActiveForUser returns the non-revoked, not-fully-expired grants
+	// acting as userID, newest first, for the "connected apps" settings page.
+	ListActiveForUser(ctx context.Context, userID uuid.UUID) ([]*model.OAuthToken, error)
 }

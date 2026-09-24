@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/glyph/api/internal/auth"
 	"github.com/glyph/api/internal/handler"
+	"github.com/glyph/api/internal/mcp"
 	glyphoauth "github.com/glyph/api/internal/oauth"
 	"github.com/glyph/api/internal/store"
 	"github.com/google/uuid"
@@ -144,12 +145,14 @@ func setupOIDCAuth(ctx context.Context, r *gin.Engine, s *stores, issuer, client
 		Users:         s.users,
 		Orgs:          s.orgs,
 		ConsentSecret: getOrGenerateConsentSecret(),
+		IssuerURL:     publicURL(),
 	}
 	glyphoauth.RegisterOAuthRoutes(r, oauthCfg, auth.OptionalSessionMiddleware(sessionCfg, users))
 	bearerMw := glyphoauth.BearerTokenMiddleware(s.oauthTokens, s.users)
 
 	apiGroup := r.Group("/api/v1", glyphoauth.DualAuthMiddleware(sessionMw, bearerMw), handler.CSRFMiddleware())
 	glyphoauth.RegisterConsentRoutes(apiGroup, oauthCfg)
+	registerMCP(r, s, oauthCfg, bearerMw)
 	return apiGroup
 }
 
@@ -174,6 +177,7 @@ func setupDevAuth(ctx context.Context, r *gin.Engine, pool *pgxpool.Pool, s *sto
 		Users:         s.users,
 		Orgs:          s.orgs,
 		ConsentSecret: getOrGenerateConsentSecret(),
+		IssuerURL:     publicURL(),
 	}
 	// Dev mode has no real session concept to attach here (its "session" is
 	// the unsigned dev_user_id cookie in makeDevAuthMiddleware, not a signed
@@ -190,7 +194,37 @@ func setupDevAuth(ctx context.Context, r *gin.Engine, pool *pgxpool.Pool, s *sto
 
 	apiGroup := r.Group("/api/v1", glyphoauth.DualAuthMiddleware(devAuthMiddleware, bearerMw), handler.CSRFMiddleware())
 	glyphoauth.RegisterConsentRoutes(apiGroup, oauthCfg)
+	registerMCP(r, s, oauthCfg, bearerMw)
 	return apiGroup
+}
+
+// publicURL is the origin users and agents reach Glyph at. The API is served
+// same-origin with the frontend (the frontend proxies /api, /oauth/token,
+// /mcp, …), so this is FRONTEND_URL.
+func publicURL() string {
+	if u := os.Getenv("FRONTEND_URL"); u != "" {
+		return strings.TrimRight(u, "/")
+	}
+	return "http://localhost:5173"
+}
+
+// registerMCP mounts the OAuth discovery documents and the MCP endpoint.
+// /mcp authenticates with bearer tokens only (see mcp.RequireBearer) and
+// executes tool calls against r itself, so they pass through the same
+// /api/v1 middleware and handlers as any other API request.
+func registerMCP(r *gin.Engine, s *stores, oauthCfg glyphoauth.Config, bearerMw gin.HandlerFunc) {
+	glyphoauth.RegisterMetadataRoutes(r, oauthCfg)
+
+	version := os.Getenv("GLYPH_VERSION")
+	if version == "" {
+		version = "dev"
+	}
+	srv := &mcp.Server{API: r, Orgs: s.orgs, Version: version, PublicURL: oauthCfg.IssuerURL}
+	chain := append([]gin.HandlerFunc{glyphoauth.PublicCORS()}, mcp.RequireBearer(bearerMw, oauthCfg.ResourceMetadataURL())...)
+	r.POST(glyphoauth.MCPResourcePath, append(chain, srv.Handle)...)
+	r.GET(glyphoauth.MCPResourcePath, glyphoauth.PublicCORS(), mcp.MethodNotAllowed)
+	r.DELETE(glyphoauth.MCPResourcePath, glyphoauth.PublicCORS(), mcp.MethodNotAllowed)
+	r.OPTIONS(glyphoauth.MCPResourcePath, glyphoauth.PublicCORS())
 }
 
 func registerTestEndpoints(r *gin.Engine, pool *pgxpool.Pool, users store.UserStore) {
