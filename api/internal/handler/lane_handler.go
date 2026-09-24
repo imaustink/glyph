@@ -7,11 +7,15 @@ import (
 	"github.com/glyph/api/internal/auth"
 	"github.com/glyph/api/internal/model"
 	"github.com/glyph/api/internal/store"
+	"github.com/google/uuid"
 )
 
 // LaneHandler handles lane CRUD operations.
 type LaneHandler struct {
 	Lanes store.LaneStore
+	// Pages resolves a folder-board lane's workspace (its folder's org) so the
+	// bearer-token scope check in GetLane can be applied against the right org.
+	Pages store.PageStore
 }
 
 // ─── Lanes ────────────────────────────────────────────────────────────────────
@@ -103,9 +107,6 @@ func (h *LaneHandler) BatchCreateLanes(c *gin.Context) {
 // GET /lanes/:id
 func (h *LaneHandler) GetLane(c *gin.Context) {
 	user := auth.CurrentUser(c)
-	if !requireLaneReadScope(c, nil) {
-		return
-	}
 	id, ok := parseUUID(c, "id")
 	if !ok {
 		return
@@ -113,6 +114,22 @@ func (h *LaneHandler) GetLane(c *gin.Context) {
 	lane, err := h.Lanes.GetByID(c.Request.Context(), id, user.ID)
 	if err != nil {
 		notFoundOrError(c, err)
+		return
+	}
+	// Resolve the lane's workspace before the scope check: a folder-board lane
+	// lives in its folder's org, so a personal-only bearer token must not read
+	// it. GetByID already restricts to lanes the acting user can access, so we
+	// can safely look up the folder to read its org.
+	var orgID *uuid.UUID
+	if lane.FolderID != nil {
+		folder, err := h.Pages.GetFolderByID(c.Request.Context(), *lane.FolderID, user.ID)
+		if err != nil {
+			notFoundOrError(c, err)
+			return
+		}
+		orgID = folder.OrgID
+	}
+	if !requireLaneReadScope(c, orgID) {
 		return
 	}
 	c.JSON(http.StatusOK, lane)

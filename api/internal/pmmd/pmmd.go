@@ -160,6 +160,12 @@ func PreserveTaskLinks(prev, next json.RawMessage) (json.RawMessage, error) {
 		}
 		if l.hasStat {
 			attrs["taskStatus"] = l.status
+			// Keep `checked` consistent with the restored status so the stored
+			// node can't contradict itself (e.g. taskStatus:"done" with
+			// checked:false) after a reverted markdown checkbox edit.
+			if s, ok := l.status.(string); ok {
+				attrs["checked"] = s == "done" || s == "cancelled"
+			}
 		}
 	})
 	return json.Marshal(nextDoc)

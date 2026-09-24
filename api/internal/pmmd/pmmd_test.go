@@ -673,6 +673,54 @@ func TestPreserveTaskLinks(t *testing.T) {
 	}
 }
 
+// TestPreserveTaskLinksChecked verifies that restoring taskStatus also keeps
+// `checked` consistent: unchecking a done/cancelled linked bullet in markdown
+// must not leave a self-contradictory node (checked:false + taskStatus:"done"),
+// which render.go would draw as [x].
+func TestPreserveTaskLinksChecked(t *testing.T) {
+	prev := `{"type":"doc","content":[{"type":"bulletList","content":[
+		{"type":"listItem","attrs":{"nodeId":"node-a","taskId":"` + taskA + `","taskStatus":"done","checked":true},"content":[` + p(txt("a")) + `]}
+	]}]}`
+	// Agent reverts the checkbox to unchecked in markdown.
+	next := fromMD(t, "- [ ] a <!-- task:"+taskA+" -->\n")
+
+	got, err := pmmd.PreserveTaskLinks(json.RawMessage(prev), next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertValid(t, got)
+
+	var found map[string]any
+	var walk func(v any)
+	walk = func(v any) {
+		if n, ok := v.(map[string]any); ok {
+			if n["type"] == "listItem" {
+				if a, _ := n["attrs"].(map[string]any); a != nil {
+					if id, _ := a["taskId"].(string); id == taskA {
+						found = a
+					}
+				}
+			}
+			if c, ok := n["content"].([]any); ok {
+				for _, x := range c {
+					walk(x)
+				}
+			}
+		}
+	}
+	walk(decode(t, got))
+
+	if found == nil {
+		t.Fatal("task A item not found")
+	}
+	if found["taskStatus"] != "done" {
+		t.Fatalf("taskStatus should be restored to done: %v", found["taskStatus"])
+	}
+	if found["checked"] != true {
+		t.Fatalf("checked must follow the restored status (true for done): %v", found["checked"])
+	}
+}
+
 // ---- AppendMarkdown ----
 
 func TestAppendMarkdown(t *testing.T) {

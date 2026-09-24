@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glyph/api/internal/auth"
@@ -700,6 +701,41 @@ func TestMCPWorkspaceIsolation(t *testing.T) {
 	assert.True(t, isErr)
 }
 
+// TestGetLaneWorkspaceScope proves GET /lanes/:id resolves the lane's workspace
+// before the bearer-token scope check: a personal-only token with lane:read can
+// read a personal lane but is refused an org folder-board lane, which lives in
+// an org the token was never granted.
+func TestGetLaneWorkspaceScope(t *testing.T) {
+	e := newMCPEnv(t)
+
+	// A personal lane (no folder scope).
+	personalLane := e.session(e.alice, "POST", "/api/v1/lanes", map[string]interface{}{
+		"title": "Personal", "order": 0,
+	}, http.StatusCreated)
+	personalLaneID := personalLane["id"].(string)
+
+	// An org folder-board lane: an org folder page, then a lane inside it.
+	folder := e.session(e.alice, "POST", "/api/v1/pages", map[string]interface{}{
+		"title": "Org Board", "type": "folder", "orgId": e.orgID.String(),
+	}, http.StatusCreated)
+	folderID := folder["id"].(string)
+	orgLane := e.session(e.alice, "POST", "/api/v1/folders/"+folderID+"/lanes", map[string]interface{}{
+		"title": "Org Lane", "order": 0,
+	}, http.StatusCreated)
+	orgLaneID := orgLane["id"].(string)
+
+	// A personal-only token carrying lane:read.
+	tok := e.connect(e.alice, true, nil, "lane:read").access
+
+	get := func(id string) int {
+		req := httptest.NewRequest("GET", "/api/v1/lanes/"+id, nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		return e.do(req).Code
+	}
+	assert.Equal(t, http.StatusOK, get(personalLaneID), "personal lane is within the personal grant")
+	assert.Equal(t, http.StatusForbidden, get(orgLaneID), "org folder-board lane is outside a personal-only grant")
+}
+
 func TestMCPScopesLimitTools(t *testing.T) {
 	e := newMCPEnv(t)
 	tok := e.connect(e.alice, true, nil, "page:read").access
@@ -736,14 +772,27 @@ func TestConnectedAppsAndRefresh(t *testing.T) {
 	g := e.connect(e.alice, true, []uuid.UUID{e.orgID}, "page:read task:read")
 	e.callOK(g.access, "list_pages", map[string]interface{}{})
 
-	req := httptest.NewRequest("GET", "/api/v1/oauth/connections", nil)
-	req.Header.Set("X-Test-User-ID", e.alice.ID.String())
-	w := e.do(req)
-	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	var conns []map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &conns))
-	require.Len(t, conns, 1)
-	c := conns[0]
+	// BearerTokenMiddleware records last-used in a background goroutine, so
+	// poll the connections list until it reports lastUsedAt rather than racing
+	// the async update.
+	var c map[string]interface{}
+	require.Eventually(t, func() bool {
+		req := httptest.NewRequest("GET", "/api/v1/oauth/connections", nil)
+		req.Header.Set("X-Test-User-ID", e.alice.ID.String())
+		w := e.do(req)
+		if w.Code != http.StatusOK {
+			return false
+		}
+		var conns []map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &conns); err != nil || len(conns) != 1 {
+			return false
+		}
+		if conns[0]["lastUsedAt"] == nil {
+			return false
+		}
+		c = conns[0]
+		return true
+	}, 2*time.Second, 10*time.Millisecond)
 	assert.Equal(t, "Test Agent", c["clientName"])
 	assert.Equal(t, true, c["dynamic"])
 	assert.Equal(t, true, c["personal"])
@@ -751,7 +800,7 @@ func TestConnectedAppsAndRefresh(t *testing.T) {
 	assert.NotNil(t, c["lastUsedAt"])
 
 	// Connections are session-only.
-	req = httptest.NewRequest("GET", "/api/v1/oauth/connections", nil)
+	req := httptest.NewRequest("GET", "/api/v1/oauth/connections", nil)
 	req.Header.Set("Authorization", "Bearer "+g.access)
 	assert.Equal(t, http.StatusForbidden, e.do(req).Code)
 
@@ -768,7 +817,7 @@ func TestConnectedAppsAndRefresh(t *testing.T) {
 	// Bob can't revoke Alice's grant; Alice can.
 	e.session(e.bob, "DELETE", "/api/v1/oauth/connections/"+c["id"].(string), nil, http.StatusNotFound)
 	e.session(e.alice, "DELETE", "/api/v1/oauth/connections/"+c["id"].(string), nil, http.StatusNoContent)
-	w = e.rpcRaw(newAccess, map[string]interface{}{"jsonrpc": "2.0", "id": 1, "method": "ping"})
+	w := e.rpcRaw(newAccess, map[string]interface{}{"jsonrpc": "2.0", "id": 1, "method": "ping"})
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 

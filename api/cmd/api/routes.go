@@ -27,7 +27,7 @@ func newHandlers(stores *stores) *handlers {
 	return &handlers{
 		pages: &handler.PageHandler{Pages: stores.pages, Perms: perms},
 		tasks: &handler.TaskHandler{Tasks: stores.tasks, Perms: perms},
-		lanes: &handler.LaneHandler{Lanes: stores.lanes},
+		lanes: &handler.LaneHandler{Lanes: stores.lanes, Pages: stores.pages},
 		folders: &handler.FolderHandler{
 			Pages: stores.pages,
 			Lanes: stores.lanes,
