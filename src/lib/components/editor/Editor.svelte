@@ -258,10 +258,13 @@
           spellcheck: 'true'
         }
       },
-      // Disabled until the page is loaded — otherwise a keystroke landing
-      // before setContent() replaces the whole document gets silently
-      // discarded (or appended to the stale template content).
-      editable: false,
+      // Single-writer: disabled until the page is loaded — otherwise a
+      // keystroke landing before setContent() replaces the whole document
+      // gets silently discarded (or appended to the stale template content).
+      // Collaborative: only created once the content is there, so it starts
+      // in its final state; toggling editable right after creation left
+      // ProseMirror ignoring the first clicks' selection for a moment.
+      editable: s ? s.canEdit : false,
       onSelectionUpdate: ({ editor: ed }) => {
         dismissPendingIfCursorLeft(ed);
       },
@@ -353,7 +356,11 @@
         onState: (st) => {
           if (session !== s) return;
           uiStore.setCollabState(st);
-          editor?.setEditable(s.canEdit);
+          // State events fire on every sync acknowledgement, i.e. per
+          // keystroke. setEditable() re-applies the view state even when the
+          // value is unchanged, which clobbers an in-progress DOM selection
+          // (fast typing then acts on the wrong range) — so only toggle it.
+          if (editor && editor.isEditable !== s.canEdit) editor.setEditable(s.canEdit);
         },
         onReset: (reason) => {
           if (session !== s) return;
@@ -380,7 +387,14 @@
     editor = createEditor(s, target);
     loadedPageId = target;
     taskCreation.clearPrompted();
-    // Other people may have changed this page's tasks since we loaded them.
+    bulletRemoval.snapshot(editor);
+    // Editable as soon as the content is visible — keystrokes landing while it
+    // shows but isn't editable would be silently dropped.
+    editor.setEditable(s.canEdit);
+    contentLoaded = true;
+
+    // Other people may have changed this page's tasks since we loaded them;
+    // refresh, then bring the bullets' status indicators up to date.
     try {
       await tasksStore.refreshForPage(target);
     } catch (err) {
@@ -388,9 +402,6 @@
     }
     if (gen !== openGeneration || session !== s || !editor) return;
     taskSync.syncTaskStatuses(editor, target);
-    bulletRemoval.snapshot(editor);
-    editor.setEditable(s.canEdit);
-    contentLoaded = true;
   }
 
   /** Re-open the page from scratch (a new session with an empty Y.Doc). */

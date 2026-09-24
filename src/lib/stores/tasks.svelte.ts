@@ -99,14 +99,24 @@ export function createTasksStore(injectedRepo?: ITaskRepository) {
   function forgetLocal(ids: Iterable<string>): void {
     const drop = new Set(ids);
     if (drop.size === 0) return;
+    for (const id of drop) _forgotten.add(id);
     setTasks(tasks.filter((t) => !drop.has(t.id)));
   }
+
+  /**
+   * Tasks dropped by forgetLocal. The server only soft-deletes them once it
+   * has saved the document without their bullet, a moment later — a bulk
+   * refresh landing in between would otherwise put them straight back.
+   * Cleared when the bullet returns (refreshTask).
+   */
+  const _forgotten = new Set<string>();
 
   /**
    * Re-read one task from storage into local state (or drop it if it no
    * longer exists). Returns whether the task exists.
    */
   async function refreshTask(id: string): Promise<boolean> {
+    _forgotten.delete(id);
     const fresh = await repo.getById(id);
     if (fresh) {
       setTasks([...tasks.filter((t) => t.id !== id), fresh]);
@@ -118,7 +128,7 @@ export function createTasksStore(injectedRepo?: ITaskRepository) {
 
   /** Re-read every task sourced from a page, replacing local state for it. */
   async function refreshForPage(pageId: string): Promise<void> {
-    const fresh = await repo.getByPageId(pageId);
+    const fresh = (await repo.getByPageId(pageId)).filter((t) => !_forgotten.has(t.id));
     setTasks([...tasks.filter((t) => t.sourcePageId !== pageId), ...fresh]);
   }
 
