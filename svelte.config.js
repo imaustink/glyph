@@ -13,7 +13,8 @@ const config = {
 		adapter: adapter(),
 		// This app has no SvelteKit form actions — all mutations go through
 		// the Go API via fetch (JSON) or, for OAuth machine-to-machine calls,
-		// via hooks.server.ts's proxy to /oauth/token and /oauth/revoke.
+		// via hooks.server.ts's proxy to /oauth/token, /oauth/revoke,
+		// /oauth/register, and /mcp.
 		// SvelteKit's built-in CSRF check runs on every form-encoded/
 		// multipart/text-plain POST BEFORE our custom `handle` hook even
 		// executes, rejecting any request whose Origin header doesn't match

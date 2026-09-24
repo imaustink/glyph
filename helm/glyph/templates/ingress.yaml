@@ -63,6 +63,43 @@ spec:
                 name: {{ include "glyph.fullname" $ }}-api
                 port:
                   name: http
+          # /oauth/register (RFC 7591 dynamic client registration) and /mcp
+          # (the MCP Streamable HTTP endpoint) — together with the discovery
+          # metadata below, what lets an MCP client connect with just the
+          # public /mcp URL.
+          - path: /oauth/register
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "glyph.fullname" $ }}-api
+                port:
+                  name: http
+          - path: /mcp
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "glyph.fullname" $ }}-api
+                port:
+                  name: http
+          # OAuth discovery metadata (RFC 8414 / RFC 9728). Prefix so the
+          # path-suffixed variants (e.g. /.well-known/oauth-protected-resource/mcp)
+          # match too — Prefix matches whole path elements, so these don't
+          # capture anything else under /.well-known/, which is deliberately
+          # NOT routed to the API wholesale.
+          - path: /.well-known/oauth-authorization-server
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "glyph.fullname" $ }}-api
+                port:
+                  name: http
+          - path: /.well-known/oauth-protected-resource
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "glyph.fullname" $ }}-api
+                port:
+                  name: http
           - path: /
             pathType: Prefix
             backend:

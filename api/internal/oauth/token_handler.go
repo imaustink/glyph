@@ -27,6 +27,10 @@ type Config struct {
 	Users         store.UserStore
 	Orgs          store.OrgStore
 	ConsentSecret []byte
+	// IssuerURL is the public origin (e.g. https://glyph.example.com) that
+	// the discovery metadata advertises as the issuer and endpoint base. The
+	// API is served same-origin with the frontend, so this is FRONTEND_URL.
+	IssuerURL string
 }
 
 // tokenError writes an RFC 6749 §5.2 JSON error response.
@@ -341,6 +345,7 @@ func handleAuthorizationCode(c *gin.Context, cfg Config) {
 		GrantType:             model.GrantAuthorizationCode,
 		Scopes:                authCode.Scopes,
 		OrgIDs:                authCode.OrgIDs,
+		IncludePersonal:       authCode.IncludePersonal,
 		AccessTokenExpiresAt:  now.Add(accessTokenTTL),
 		RefreshTokenExpiresAt: &refreshExp,
 	}

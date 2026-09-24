@@ -327,6 +327,7 @@ export type OAuthScope =
   | 'task:write'
   | 'template:read'
   | 'template:write'
+  | 'lane:read'
   | 'org:read';
 
 export interface OAuthClient {
@@ -357,11 +358,51 @@ export interface OAuthToken {
   revokedAt?: string | null;
 }
 
+export interface OAuthConsentWorkspace {
+  /** Org id, or the literal "personal" for the user's own (non-org) workspace. */
+  id: string;
+  name: string;
+  kind: 'personal' | 'org';
+}
+
 export interface OAuthConsentInfo {
-  client: { name: string; description?: string | null };
+  client: {
+    name: string;
+    description?: string | null;
+    /** Self-registered via RFC 7591 dynamic client registration (unverified). */
+    dynamic: boolean;
+    /** Host of the redirect_uri the user will be sent back to. */
+    redirectHost: string;
+  };
   scopes: OAuthScope[];
-  orgName: string;
   consentToken: string;
+  /**
+   * Fixed mode (pre-registered org client, org_id in the query):
+   * workspaceSelection=false and orgName is set.
+   */
+  orgName: string | null;
+  /** Selection mode (dynamic clients): the user picks one or more workspaces. */
+  workspaceSelection: boolean;
+  /** Choosable workspaces in selection mode; empty in fixed mode. */
+  workspaces: OAuthConsentWorkspace[];
+}
+
+/** The user's workspace choice submitted with an approval in selection mode. */
+export interface OAuthConsentSelection {
+  personal: boolean;
+  orgIds: string[];
+}
+
+/** An app the current user has granted access to their account. */
+export interface OAuthConnection {
+  id: string;
+  clientName: string;
+  dynamic: boolean;
+  scopes: OAuthScope[];
+  personal: boolean;
+  orgs: { id: string; name: string }[];
+  createdAt: string;
+  lastUsedAt: string | null;
 }
 
 export interface UserSearchResult {

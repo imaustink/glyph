@@ -72,7 +72,7 @@ func NewHarness(t *testing.T, b Backend) *Harness {
 
 	pageH := &handler.PageHandler{Pages: pages, Perms: perms}
 	taskH := &handler.TaskHandler{Tasks: tasks, Perms: perms}
-	laneH := &handler.LaneHandler{Lanes: lanes}
+	laneH := &handler.LaneHandler{Lanes: lanes, Pages: pages}
 	tmplH := &handler.TemplateHandler{Templates: templates, Perms: perms}
 	folderH := &handler.FolderHandler{Pages: pages, Lanes: lanes, Tasks: tasks, Perms: perms}
 	orgH := &handler.OrgHandler{Orgs: orgs, Users: users}

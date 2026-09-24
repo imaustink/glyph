@@ -76,6 +76,28 @@ func requireSessionAuth(c *gin.Context) bool {
 	return true
 }
 
+// requireLaneReadScope allows a cookie-session request through
+// unconditionally and a bearer-token request only if it carries
+// model.ScopeLaneRead and the lanes' workspace (orgID; nil for personal lanes
+// and for folders outside any org) is within the token's grant. Lanes have no
+// ShareResourceType, so scopeAllows can't express this. Lane writes have no
+// scope at all and stay behind requireSessionAuth.
+func requireLaneReadScope(c *gin.Context, orgID *uuid.UUID) bool {
+	scope := currentTokenScope(c)
+	if scope == nil {
+		return true
+	}
+	if !scope.HasScope(model.ScopeLaneRead) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "token scope does not permit this action"})
+		return false
+	}
+	if !scope.HasWorkspace(orgID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "resource outside token's org scope"})
+		return false
+	}
+	return true
+}
+
 // requireOrgReadScope allows a cookie-session request through unconditionally
 // and a bearer-token request only if it explicitly carries model.ScopeOrgRead.
 // Organizations aren't scoped to another org, so the org-membership check
@@ -96,17 +118,25 @@ func requireOrgReadScope(c *gin.Context) bool {
 }
 
 // scopeAllows is the pure, non-response-writing predicate behind
-// checkTokenScope: the resource's org must be within the token's granted
-// orgs (M2M/delegated tokens cannot reach a user's personal, non-org
-// resources at all), and the token must carry the scope for this resource
-// type + permission level. A nil scope (cookie-session request) always
+// checkTokenScope: the resource's workspace must be within the token's grant
+// — its org must be one of the token's orgs, or, for a personal (non-org)
+// resource, the user must have granted their personal workspace at consent
+// (TokenScope.Personal; never set for client_credentials tokens) — and the
+// token must carry the scope for this resource type + permission level. A nil scope (cookie-session request) always
 // passes — it is unrestricted, governed only by the user's own permissions.
 func scopeAllows(scope *model.TokenScope, orgID *uuid.UUID, resourceType model.ShareResourceType, write bool) bool {
 	if scope == nil {
 		return true
 	}
-	if orgID == nil || !scope.HasOrg(*orgID) {
+	if !scope.HasWorkspace(orgID) {
 		return false
+	}
+	// Folders are nodes in the page tree and are governed by the page scopes;
+	// there is no separate folder scope. (Without this, a token could never
+	// create or move a page into a folder: CanUseParent checks the parent as
+	// a folder.)
+	if resourceType == model.ShareResourceFolder {
+		resourceType = model.ShareResourcePage
 	}
 	for _, s := range scope.Scopes {
 		rt, ok := s.ResourceType()
@@ -131,7 +161,7 @@ func checkTokenScope(c *gin.Context, orgID *uuid.UUID, resourceType model.ShareR
 	if scopeAllows(scope, orgID, resourceType, write) {
 		return true
 	}
-	if orgID == nil || !scope.HasOrg(*orgID) {
+	if !scope.HasWorkspace(orgID) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "resource outside token's org scope"})
 		return false
 	}

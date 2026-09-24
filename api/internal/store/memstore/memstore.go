@@ -475,6 +475,34 @@ func (s *pageStore) GetContent(_ context.Context, pageID, userID uuid.UUID) (*mo
 	return &cp, nil
 }
 
+func (s *pageStore) SearchContent(_ context.Context, userID uuid.UUID, pageIDs []uuid.UUID, query string, limit int) ([]store.PageTextMatch, error) {
+	s.r.mu.RLock()
+	defer s.r.mu.RUnlock()
+	out := make([]store.PageTextMatch, 0)
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return out, nil
+	}
+	for _, id := range pageIDs {
+		p, ok := s.r.pages[id]
+		if !ok || !s.r.canRead(userID, p.UserID, p.OrgID, p.IsPrivate, model.ShareResourcePage, p.ID) {
+			continue
+		}
+		pc, ok := s.r.contents[id]
+		if !ok {
+			continue
+		}
+		text := store.DocPlainText(pc.Content)
+		if store.ContainsPhrase(text, q) {
+			out = append(out, store.PageTextMatch{PageID: id, Text: text})
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
 func (s *pageStore) UpsertContent(_ context.Context, pc *model.PageContent, userID uuid.UUID) (*model.PageContent, error) {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()

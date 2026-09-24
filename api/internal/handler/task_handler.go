@@ -166,13 +166,23 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 		return
 	}
 	var req UpdateTaskRequest
-	if !bindJSON(c, &req) {
+	keys, ok := bindJSONWithKeys(c, &req)
+	if !ok {
 		return
 	}
 	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
 		return
 	}
 	req.ApplyTo(existing)
+	// ApplyTo can't tell an explicit null from an omitted field; honor
+	// {"dueDate": null} / {"link": null} as "clear it", which is how the web
+	// app removes a due date.
+	if raw, present := keys["dueDate"]; present && isJSONNull(raw) {
+		existing.DueDate = nil
+	}
+	if raw, present := keys["link"]; present && isJSONNull(raw) {
+		existing.Link = nil
+	}
 	task, err := h.Tasks.Update(c.Request.Context(), existing)
 	if err != nil {
 		internalError(c, err)
