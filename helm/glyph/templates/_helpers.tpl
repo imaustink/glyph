@@ -75,6 +75,26 @@ app.kubernetes.io/component: api
 {{- end }}
 
 {{/*
+Collab (realtime collaboration) labels
+*/}}
+{{- define "glyph.collab.labels" -}}
+{{ include "glyph.labels" . }}
+app.kubernetes.io/component: collab
+{{- end }}
+
+{{- define "glyph.collab.selectorLabels" -}}
+{{ include "glyph.selectorLabels" . }}
+app.kubernetes.io/component: collab
+{{- end }}
+
+{{/*
+Secret holding the token the collab service uses on the API's /internal routes.
+*/}}
+{{- define "glyph.collab.secretName" -}}
+{{- .Values.collab.existingSecret | default (printf "%s-collab" (include "glyph.fullname" .)) }}
+{{- end }}
+
+{{/*
 CNPG cluster name
 */}}
 {{- define "glyph.cnpg.clusterName" -}}

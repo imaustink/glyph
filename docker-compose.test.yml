@@ -72,9 +72,34 @@ services:
       OIDC_CLIENT_SECRET: ""
       GIN_MODE: test
       E2E_RESET_ENABLED: "true"
+      # The API suite runs with collaborative editing on, so every editing
+      # test exercises the collaborative path. TEST_COLLAB_ENABLED=false
+      # runs it single-writer instead.
+      COLLAB_ENABLED: ${TEST_COLLAB_ENABLED:-true}
+      COLLAB_SERVICE_TOKEN: e2e-collab-service-token
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 5s
       timeout: 5s
       retries: 12
       start_period: 10s
+
+  # ─── Collab service ────────────────────────────────────────────────────────
+  collab:
+    build:
+      context: .
+      dockerfile: collab/Dockerfile
+    ports:
+      - "127.0.0.1:${TEST_COLLAB_PORT:-1236}:1235"
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-glyph}:${POSTGRES_PASSWORD:-glyph}@postgres:5432/${POSTGRES_DB:-glyph}?sslmode=disable
+      API_URL: http://api:8080
+      COLLAB_SERVICE_TOKEN: e2e-collab-service-token
+      COLLAB_ALLOWED_ORIGINS: http://localhost:${TEST_API_UI_PORT:-5174}
+      # Tests reload quickly after typing; persist promptly.
+      COLLAB_STORE_DEBOUNCE_MS: "300"
+      COLLAB_STORE_MAX_DEBOUNCE_MS: "1000"
+      COLLAB_REAUTH_INTERVAL_MS: "5000"

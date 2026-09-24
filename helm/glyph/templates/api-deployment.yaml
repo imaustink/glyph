@@ -109,6 +109,15 @@ spec:
               value: {{ .Values.api.cookieDomain | quote }}
             - name: COOKIE_SECURE
               value: {{ .Values.api.cookieSecure | quote }}
+            - name: COLLAB_ENABLED
+              value: {{ .Values.collab.enabled | quote }}
+            {{- if .Values.collab.enabled }}
+            - name: COLLAB_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "glyph.collab.secretName" . }}
+                  key: {{ .Values.collab.existingSecretKey | default "service-token" }}
+            {{- end }}
             {{- with .Values.api.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

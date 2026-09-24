@@ -37,12 +37,13 @@ export TEST_PG_PORT="$(free_port)"
 export TEST_API_PORT="$(free_port)"
 export TEST_LOCAL_PORT="$(free_port)"
 export TEST_API_UI_PORT="$(free_port)"
+export TEST_COLLAB_PORT="$(free_port)"
 
 # Unique per run (not just per worktree) so two concurrent invocations in the
 # same worktree also get separate containers/networks/volumes.
 export COMPOSE_PROJECT_NAME="glyph-test-$$-$(date +%s%N 2>/dev/null || date +%s)"
 
-echo "▶ Isolated run: project=$COMPOSE_PROJECT_NAME pg=$TEST_PG_PORT api=$TEST_API_PORT local-ui=$TEST_LOCAL_PORT api-ui=$TEST_API_UI_PORT"
+echo "▶ Isolated run: project=$COMPOSE_PROJECT_NAME pg=$TEST_PG_PORT api=$TEST_API_PORT collab=$TEST_COLLAB_PORT local-ui=$TEST_LOCAL_PORT api-ui=$TEST_API_UI_PORT"
 
 cleanup() {
   echo "▶ Stopping test containers ($COMPOSE_PROJECT_NAME)…"

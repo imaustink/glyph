@@ -12,6 +12,7 @@ A notes-taking and task-tracking app with a WYSIWYG markdown editor and kanban-s
 - **Page tree** — Hierarchical pages and folders, unlimited depth.
 - **Search** — Full-text search via `⌘K` modal or dedicated search page (Fuse.js).
 - **Two storage backends** — LocalStorage (offline, no setup) or Go REST API + PostgreSQL.
+- **Realtime collaboration** — With the API backend, several people can edit a note at once, with live cursors (Yjs + Hocuspocus; see [collab/README.md](collab/README.md)).
 
 ## Tech stack
 
@@ -22,6 +23,7 @@ A notes-taking and task-tracking app with a WYSIWYG markdown editor and kanban-s
 | Styling | Scoped `<style>` + CSS custom properties |
 | Search | Fuse.js 7 |
 | Backend | Go (Gin), PostgreSQL 16, OIDC auth |
+| Collaboration | Node collab service — Hocuspocus 4, Yjs, `@tiptap/extension-collaboration` |
 | Package manager | pnpm |
 
 ## Prerequisites
@@ -53,6 +55,8 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up
 ```
 
 In full-stack mode, the app is also available at `https://localhost` (self-signed cert via Nginx). **Migrations run automatically** — the `migrate` service runs once before the API starts and then exits; no manual steps required.
+
+The full stack includes the **collab service** (realtime collaborative editing), rebuilt on save. Open the same note in two browsers (e.g. a normal and a private window) to see it. Run with `COLLAB_ENABLED=false` to get single-writer editing instead.
 
 ### Resetting local state
 

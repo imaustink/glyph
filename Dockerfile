@@ -6,6 +6,8 @@ RUN corepack enable && corepack prepare pnpm@10 --activate
 WORKDIR /app
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# Workspace member manifests must be present for a frozen-lockfile install.
+COPY collab/package.json collab/
 RUN pnpm install --frozen-lockfile
 
 COPY . .
@@ -29,7 +31,9 @@ WORKDIR /app
 
 COPY --from=builder --chown=nodejs:nodejs /app/build ./build
 COPY --from=builder --chown=nodejs:nodejs /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
-RUN pnpm install --prod --frozen-lockfile
+COPY --from=builder --chown=nodejs:nodejs /app/collab/package.json ./collab/
+# Only the frontend's own production dependencies, not the collab service's.
+RUN pnpm install --prod --frozen-lockfile --filter @k5s/glyph
 
 # Switch to non-root user
 USER nodejs

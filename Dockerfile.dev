@@ -5,6 +5,7 @@ RUN corepack enable && corepack prepare pnpm@10 --activate
 WORKDIR /app
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY collab/package.json collab/
 RUN pnpm install --frozen-lockfile
 
 EXPOSE 5173

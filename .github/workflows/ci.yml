@@ -47,6 +47,53 @@ jobs:
       - name: Audit dependencies
         run: pnpm audit --prod
 
+  collab:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: collab
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm --filter @k5s/glyph-collab check
+
+      # Includes the Postgres-backed persistence tests (seed-once under
+      # concurrency, lossless compaction, epoch checks).
+      - name: Tests
+        run: pnpm --filter @k5s/glyph-collab test
+        env:
+          COLLAB_TEST_DATABASE_URL: postgres://postgres:collab@localhost:5432/postgres
+
+      - name: Build
+        run: pnpm --filter @k5s/glyph-collab build
+
   api:
     runs-on: ubuntu-latest
     steps:
@@ -215,8 +262,15 @@ jobs:
       - name: Run migrations
         run: migrate -path api/migrations -database "postgres://glyph:glyph@localhost:5432/glyph?sslmode=disable" up
 
+      # The api project runs with realtime collaboration on (see
+      # playwright.config.ts), so every editing spec goes through the collab
+      # service. The prebuilt frontend can't proxy WebSockets, so the browser
+      # is pointed at the collab service directly.
+      - name: Build collab service
+        run: pnpm --filter @k5s/glyph-collab build
+
       - name: Build frontend (api mode)
-        run: VITE_STORAGE_MODE=api VITE_API_URL= pnpm build && mv build build-api
+        run: VITE_STORAGE_MODE=api VITE_API_URL= VITE_COLLAB_URL=ws://localhost:1236/collab pnpm build && mv build build-api
 
       - name: E2E tests (api)
         run: pnpm test:e2e:api
@@ -233,7 +287,7 @@ jobs:
           retention-days: 7
 
   build-and-push:
-    needs: [frontend, api, e2e-local, e2e-api]
+    needs: [frontend, collab, api, e2e-local, e2e-api]
     # Fork PRs get no secrets on `pull_request` (public repo — the approval
     # gate controls whether a run starts, not what it can read), so the
     # registry login below would fail with empty credentials. Skip the job
@@ -281,3 +335,11 @@ jobs:
             -t registry.kurpuis.com:5000/glyph-api:"$tag" \
             -f api/Dockerfile api/
           docker push registry.kurpuis.com:5000/glyph-api:"$tag"
+
+      - name: Build & push collab
+        run: |
+          tag=$(git rev-parse HEAD^{tree})
+          docker build \
+            -t registry.kurpuis.com:5000/glyph-collab:"$tag" \
+            -f collab/Dockerfile .
+          docker push registry.kurpuis.com:5000/glyph-collab:"$tag"

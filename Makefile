@@ -57,6 +57,16 @@ test-go:
 	cd api && go build ./...
 	cd api && go test ./... -short -count=1
 
+# ── Collab service ────────────────────────────────────────────────────────────
+
+## test-collab: Type-check, test and build the collab service (mirrors CI "collab" job).
+##   Set COLLAB_TEST_DATABASE_URL to a disposable Postgres to include the persistence tests.
+.PHONY: test-collab
+test-collab:
+	pnpm --filter @k5s/glyph-collab check
+	pnpm --filter @k5s/glyph-collab test
+	pnpm --filter @k5s/glyph-collab build
+
 # ── E2E ───────────────────────────────────────────────────────────────────────
 
 ## test-e2e-local: Playwright local-storage project (no backend; dev server auto-started)
@@ -87,15 +97,15 @@ lint: lint-frontend lint-go
 
 ## test-unit: Fast unit tests only — frontend vitest + Go unit tests (no e2e)
 .PHONY: test-unit
-test-unit: test-frontend test-go
+test-unit: test-frontend test-go test-collab
 
 ## test: Full test suite — unit tests + both E2E projects (matches all CI jobs)
 .PHONY: test
-test: test-frontend test-go test-e2e
+test: test-frontend test-go test-collab test-e2e
 
 ## ci: Everything — lint + full test suite (the single command to rule them all)
 .PHONY: ci
-ci: lint-go test-frontend test-go test-e2e
+ci: lint-go test-frontend test-go test-collab test-e2e
 
 # ── Help ──────────────────────────────────────────────────────────────────────
 

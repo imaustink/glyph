@@ -16,6 +16,7 @@ services:
       - VITE_STORAGE_MODE=api
       - VITE_API_URL=
       - API_PROXY_TARGET=http://api:8080
+      - COLLAB_PROXY_TARGET=http://collab:1235
 
   # ─── Nginx reverse proxy ──────────────────────────────────────────────────
   nginx:
@@ -26,6 +27,7 @@ services:
     depends_on:
       - app
       - api
+      - collab
 
   # ─── Postgres ──────────────────────────────────────────────────────────────
   postgres:
@@ -79,6 +81,39 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-glyph}:${POSTGRES_PASSWORD:-glyph}@postgres:5432/${POSTGRES_DB:-glyph}?sslmode=disable
       PORT: "8080"
+      # Realtime collaborative editing. Set COLLAB_ENABLED=false to fall back
+      # to single-writer editing.
+      COLLAB_ENABLED: ${COLLAB_ENABLED:-true}
+      COLLAB_SERVICE_TOKEN: ${COLLAB_SERVICE_TOKEN:-dev-collab-service-token}
+
+  # ─── Collab service (Hocuspocus), rebuilt on save ──────────────────────────
+  collab:
+    image: node:22-alpine
+    working_dir: /repo
+    volumes:
+      - .:/repo
+      - collab_node_modules:/repo/node_modules
+    # Install, build once, then rebuild on save (esbuild --watch in the
+    # background) and restart the server whenever the bundle changes.
+    command: >
+      sh -c "corepack enable && corepack prepare pnpm@10 --activate &&
+             pnpm install --frozen-lockfile --ignore-scripts &&
+             pnpm --filter @k5s/glyph-collab build &&
+             { pnpm --filter @k5s/glyph-collab dev & } &&
+             exec node --watch-path=collab/dist --enable-source-maps collab/dist/server.js"
+    expose:
+      - "1235"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-glyph}:${POSTGRES_PASSWORD:-glyph}@postgres:5432/${POSTGRES_DB:-glyph}?sslmode=disable
+      API_URL: http://api:8080
+      COLLAB_SERVICE_TOKEN: ${COLLAB_SERVICE_TOKEN:-dev-collab-service-token}
+      PORT: "1235"
 
 volumes:
+  collab_node_modules:
   postgres_data:
