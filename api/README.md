@@ -54,6 +54,8 @@ api/
 | `OIDC_ISSUER_URL` | OIDC provider base URL, e.g. `https://accounts.google.com` |
 | `OIDC_AUDIENCE` | Expected `aud` claim — your OAuth2 client ID |
 | `GIN_MODE` | `debug` or `release` (default: `release`) |
+| `FRONTEND_URL` | Public origin of the app (default: `http://localhost:5173`). Also the OAuth issuer and MCP resource base advertised in `/.well-known/` discovery, so it must be the URL agents reach Glyph at |
+| `GLYPH_VERSION` | Version reported to MCP clients in `serverInfo` (default: `dev`) |
 
 Copy `.env.example` to `.env` and fill in the values for local development.
 

@@ -53,6 +53,7 @@ func BearerTokenMiddleware(tokens store.OAuthTokenStore, users store.UserStore) 
 			ClientID: tok.ClientID,
 			Scopes:   tok.Scopes,
 			OrgIDs:   tok.OrgIDs,
+			Personal: tok.IncludePersonal,
 		})
 		go tokens.TouchLastUsed(context.WithoutCancel(c.Request.Context()), tok.ID) //nolint:errcheck
 		c.Next()

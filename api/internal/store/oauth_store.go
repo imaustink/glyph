@@ -56,9 +56,9 @@ func (s *pgOAuthClientStore) Create(ctx context.Context, c *model.OAuthClient, s
 		c.ID = uuid.New()
 	}
 	const q = `
-		INSERT INTO oauth_clients (id, client_id, client_secret_hash, name, description, created_by_id, grant_types, scopes, redirect_uris, is_confidential)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		RETURNING id, client_id, name, description, created_by_id, grant_types, scopes, redirect_uris, is_confidential, revoked_at, created_at, updated_at`
+		INSERT INTO oauth_clients (id, client_id, client_secret_hash, name, description, created_by_id, grant_types, scopes, redirect_uris, is_confidential, is_dynamic)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING id, client_id, name, description, created_by_id, is_dynamic, grant_types, scopes, redirect_uris, is_confidential, revoked_at, created_at, updated_at`
 
 	redirectURIsIn := c.RedirectURIs
 	if redirectURIsIn == nil {
@@ -69,15 +69,19 @@ func (s *pgOAuthClientStore) Create(ctx context.Context, c *model.OAuthClient, s
 	}
 
 	var grantTypes, scopes, redirectURIs []string
+	var createdBy *uuid.UUID
 	out := &model.OAuthClient{}
 	if err := s.pool.QueryRow(ctx, q,
-		c.ID, c.ClientID, secretHash, c.Name, c.Description, c.CreatedByID,
-		grantTypesToStrings(c.GrantTypes), scopesToStrings(c.Scopes), redirectURIsIn, c.IsConfidential,
+		c.ID, c.ClientID, secretHash, c.Name, c.Description, nullableUUID(c.CreatedByID),
+		grantTypesToStrings(c.GrantTypes), scopesToStrings(c.Scopes), redirectURIsIn, c.IsConfidential, c.IsDynamic,
 	).Scan(
-		&out.ID, &out.ClientID, &out.Name, &out.Description, &out.CreatedByID,
+		&out.ID, &out.ClientID, &out.Name, &out.Description, &createdBy, &out.IsDynamic,
 		&grantTypes, &scopes, &redirectURIs, &out.IsConfidential, &out.RevokedAt, &out.CreatedAt, &out.UpdatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("oauth client create: %w", err)
+	}
+	if createdBy != nil {
+		out.CreatedByID = *createdBy
 	}
 	out.GrantTypes = grantTypesFromStrings(grantTypes)
 	out.Scopes = scopesFromStrings(scopes)
@@ -85,15 +89,28 @@ func (s *pgOAuthClientStore) Create(ctx context.Context, c *model.OAuthClient, s
 	return out, nil
 }
 
+// nullableUUID maps uuid.Nil to SQL NULL (a dynamically registered client
+// has no creator).
+func nullableUUID(id uuid.UUID) *uuid.UUID {
+	if id == uuid.Nil {
+		return nil
+	}
+	return &id
+}
+
 func (s *pgOAuthClientStore) scanClient(row pgx.Row) (*model.OAuthClient, error) {
 	var grantTypes, scopes, redirectURIs, orgIDStrs []string
+	var createdBy *uuid.UUID
 	out := &model.OAuthClient{}
 	if err := row.Scan(
-		&out.ID, &out.ClientID, &out.Name, &out.Description, &out.CreatedByID,
+		&out.ID, &out.ClientID, &out.Name, &out.Description, &createdBy, &out.IsDynamic,
 		&grantTypes, &scopes, &redirectURIs, &out.IsConfidential, &out.RevokedAt, &out.CreatedAt, &out.UpdatedAt,
 		&orgIDStrs,
 	); err != nil {
 		return nil, err
+	}
+	if createdBy != nil {
+		out.CreatedByID = *createdBy
 	}
 	out.GrantTypes = grantTypesFromStrings(grantTypes)
 	out.Scopes = scopesFromStrings(scopes)
@@ -110,7 +127,7 @@ func (s *pgOAuthClientStore) scanClient(row pgx.Row) (*model.OAuthClient, error)
 }
 
 const oauthClientWithOrgsQuery = `
-	SELECT c.id, c.client_id, c.name, c.description, c.created_by_id,
+	SELECT c.id, c.client_id, c.name, c.description, c.created_by_id, c.is_dynamic,
 	       c.grant_types, c.scopes, c.redirect_uris, c.is_confidential, c.revoked_at, c.created_at, c.updated_at,
 	       COALESCE(ARRAY_AGG(co.org_id::text) FILTER (WHERE co.org_id IS NOT NULL), '{}')
 	FROM oauth_clients c
@@ -150,7 +167,7 @@ func (s *pgOAuthClientStore) GetByClientID(ctx context.Context, clientID string)
 
 func (s *pgOAuthClientStore) ListForOrg(ctx context.Context, orgID uuid.UUID) ([]*model.OAuthClient, error) {
 	const q = `
-		SELECT c.id, c.client_id, c.name, c.description, c.created_by_id,
+		SELECT c.id, c.client_id, c.name, c.description, c.created_by_id, c.is_dynamic,
 		       c.grant_types, c.scopes, c.redirect_uris, c.is_confidential, c.revoked_at, c.created_at, c.updated_at,
 		       COALESCE(ARRAY_AGG(DISTINCT co2.org_id::text) FILTER (WHERE co2.org_id IS NOT NULL), '{}')
 		FROM oauth_clients c
@@ -258,15 +275,15 @@ func (s *pgOAuthCodeStore) Create(ctx context.Context, code *model.OAuthAuthoriz
 	}
 	const q = `
 		INSERT INTO oauth_authorization_codes
-			(id, code_hash, client_id, user_id, redirect_uri, scopes, org_ids, code_challenge, code_challenge_method, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+			(id, code_hash, client_id, user_id, redirect_uri, scopes, org_ids, include_personal, code_challenge, code_challenge_method, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 	orgIDs := code.OrgIDs
 	if orgIDs == nil {
 		orgIDs = []uuid.UUID{}
 	}
 	_, err := s.pool.Exec(ctx, q,
 		code.ID, codeHash, code.ClientID, code.UserID, code.RedirectURI,
-		scopesToStrings(code.Scopes), orgIDs, code.CodeChallenge, code.CodeChallengeMethod, code.ExpiresAt,
+		scopesToStrings(code.Scopes), orgIDs, code.IncludePersonal, code.CodeChallenge, code.CodeChallengeMethod, code.ExpiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("oauth code create: %w", err)
@@ -279,11 +296,11 @@ func (s *pgOAuthCodeStore) ConsumeByHash(ctx context.Context, codeHash string) (
 		UPDATE oauth_authorization_codes
 		SET used_at = NOW()
 		WHERE code_hash = $1 AND used_at IS NULL AND expires_at > NOW()
-		RETURNING id, client_id, user_id, redirect_uri, scopes, org_ids, code_challenge, code_challenge_method, expires_at, used_at, created_at`
+		RETURNING id, client_id, user_id, redirect_uri, scopes, org_ids, include_personal, code_challenge, code_challenge_method, expires_at, used_at, created_at`
 	var scopes []string
 	out := &model.OAuthAuthorizationCode{}
 	err := s.pool.QueryRow(ctx, q, codeHash).Scan(
-		&out.ID, &out.ClientID, &out.UserID, &out.RedirectURI, &scopes, &out.OrgIDs,
+		&out.ID, &out.ClientID, &out.UserID, &out.RedirectURI, &scopes, &out.OrgIDs, &out.IncludePersonal,
 		&out.CodeChallenge, &out.CodeChallengeMethod, &out.ExpiresAt, &out.UsedAt, &out.CreatedAt,
 	)
 	if err != nil {
@@ -310,15 +327,15 @@ func (s *pgOAuthTokenStore) Create(ctx context.Context, t *model.OAuthToken, acc
 	}
 	const q = `
 		INSERT INTO oauth_tokens
-			(id, access_token_hash, refresh_token_hash, client_id, acting_user_id, grant_type, scopes, org_ids, access_token_expires_at, refresh_token_expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+			(id, access_token_hash, refresh_token_hash, client_id, acting_user_id, grant_type, scopes, org_ids, include_personal, access_token_expires_at, refresh_token_expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 	orgIDs := t.OrgIDs
 	if orgIDs == nil {
 		orgIDs = []uuid.UUID{}
 	}
 	_, err := s.pool.Exec(ctx, q,
 		t.ID, accessHash, refreshHash, t.ClientID, t.ActingUserID, string(t.GrantType),
-		scopesToStrings(t.Scopes), orgIDs, t.AccessTokenExpiresAt, t.RefreshTokenExpiresAt,
+		scopesToStrings(t.Scopes), orgIDs, t.IncludePersonal, t.AccessTokenExpiresAt, t.RefreshTokenExpiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("oauth token create: %w", err)
@@ -331,7 +348,7 @@ func (s *pgOAuthTokenStore) scanToken(row pgx.Row) (*model.OAuthToken, error) {
 	var scopes []string
 	out := &model.OAuthToken{}
 	if err := row.Scan(
-		&out.ID, &out.ClientID, &out.ActingUserID, &grantType, &scopes, &out.OrgIDs,
+		&out.ID, &out.ClientID, &out.ActingUserID, &grantType, &scopes, &out.OrgIDs, &out.IncludePersonal,
 		&out.AccessTokenExpiresAt, &out.RefreshTokenExpiresAt, &out.RevokedAt, &out.LastUsedAt, &out.CreatedAt,
 	); err != nil {
 		return nil, err
@@ -342,7 +359,7 @@ func (s *pgOAuthTokenStore) scanToken(row pgx.Row) (*model.OAuthToken, error) {
 }
 
 const oauthTokenSelect = `
-	SELECT id, client_id, acting_user_id, grant_type, scopes, org_ids,
+	SELECT id, client_id, acting_user_id, grant_type, scopes, org_ids, include_personal,
 	       access_token_expires_at, refresh_token_expires_at, revoked_at, last_used_at, created_at
 	FROM oauth_tokens`
 
@@ -366,7 +383,7 @@ func (s *pgOAuthTokenStore) RotateRefresh(ctx context.Context, clientID uuid.UUI
 		    last_used_at = NOW()
 		WHERE refresh_token_hash = $5 AND client_id = $6
 		  AND revoked_at IS NULL AND refresh_token_expires_at > NOW()
-		RETURNING ` + `id, client_id, acting_user_id, grant_type, scopes, org_ids, access_token_expires_at, refresh_token_expires_at, revoked_at, last_used_at, created_at`
+		RETURNING ` + `id, client_id, acting_user_id, grant_type, scopes, org_ids, include_personal, access_token_expires_at, refresh_token_expires_at, revoked_at, last_used_at, created_at`
 	out, err := s.scanToken(s.pool.QueryRow(ctx, q, newAccessHash, newRefreshHash, accessExp, refreshExp, oldRefreshHash, clientID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -400,7 +417,7 @@ func (s *pgOAuthTokenStore) RevokeAllForClient(ctx context.Context, clientID uui
 
 func (s *pgOAuthTokenStore) ListActiveForClient(ctx context.Context, clientID uuid.UUID) ([]*model.OAuthToken, error) {
 	const q = `
-		SELECT t.id, t.client_id, t.acting_user_id, t.grant_type, t.scopes, t.org_ids,
+		SELECT t.id, t.client_id, t.acting_user_id, t.grant_type, t.scopes, t.org_ids, t.include_personal,
 		       t.access_token_expires_at, t.refresh_token_expires_at, t.revoked_at, t.last_used_at, t.created_at,
 		       u.email
 		FROM oauth_tokens t
@@ -419,7 +436,7 @@ func (s *pgOAuthTokenStore) ListActiveForClient(ctx context.Context, clientID uu
 		var scopes []string
 		t := &model.OAuthToken{}
 		if err := rows.Scan(
-			&t.ID, &t.ClientID, &t.ActingUserID, &grantType, &scopes, &t.OrgIDs,
+			&t.ID, &t.ClientID, &t.ActingUserID, &grantType, &scopes, &t.OrgIDs, &t.IncludePersonal,
 			&t.AccessTokenExpiresAt, &t.RefreshTokenExpiresAt, &t.RevokedAt, &t.LastUsedAt, &t.CreatedAt,
 			&t.ActingUserEmail,
 		); err != nil {
@@ -427,6 +444,28 @@ func (s *pgOAuthTokenStore) ListActiveForClient(ctx context.Context, clientID uu
 		}
 		t.GrantType = model.OAuthGrantType(grantType)
 		t.Scopes = scopesFromStrings(scopes)
+		tokens = append(tokens, t)
+	}
+	return tokens, rows.Err()
+}
+
+func (s *pgOAuthTokenStore) ListActiveForUser(ctx context.Context, userID uuid.UUID) ([]*model.OAuthToken, error) {
+	q := oauthTokenSelect + `
+		WHERE acting_user_id = $1 AND revoked_at IS NULL
+		  AND (access_token_expires_at > NOW() OR refresh_token_expires_at > NOW())
+		ORDER BY created_at DESC`
+	rows, err := s.pool.Query(ctx, q, userID)
+	if err != nil {
+		return nil, fmt.Errorf("oauth tokens list active for user: %w", err)
+	}
+	defer rows.Close()
+
+	tokens := make([]*model.OAuthToken, 0)
+	for rows.Next() {
+		t, err := s.scanToken(rows)
+		if err != nil {
+			return nil, fmt.Errorf("oauth tokens list active for user scan: %w", err)
+		}
 		tokens = append(tokens, t)
 	}
 	return tokens, rows.Err()

@@ -19,7 +19,9 @@ type LaneHandler struct {
 // GET /lanes
 func (h *LaneHandler) ListLanes(c *gin.Context) {
 	user := auth.CurrentUser(c)
-	if !requireSessionAuth(c) {
+	// Personal board lanes belong to no org: a bearer token needs lane:read
+	// plus a personal-workspace grant.
+	if !requireLaneReadScope(c, nil) {
 		return
 	}
 	lanes, err := h.Lanes.ListByUser(c.Request.Context(), user.ID)
@@ -101,7 +103,7 @@ func (h *LaneHandler) BatchCreateLanes(c *gin.Context) {
 // GET /lanes/:id
 func (h *LaneHandler) GetLane(c *gin.Context) {
 	user := auth.CurrentUser(c)
-	if !requireSessionAuth(c) {
+	if !requireLaneReadScope(c, nil) {
 		return
 	}
 	id, ok := parseUUID(c, "id")

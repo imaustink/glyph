@@ -17,6 +17,7 @@ type handlers struct {
 	orgs         *handler.OrgHandler
 	shares       *handler.ShareHandler
 	oauthClients *handler.OAuthClientHandler
+	search       *handler.SearchHandler
 }
 
 // newHandlers creates all handler instances from their stores.
@@ -48,6 +49,7 @@ func newHandlers(stores *stores) *handlers {
 			Tokens:  stores.oauthTokens,
 			Orgs:    stores.orgs,
 		},
+		search: &handler.SearchHandler{Pages: stores.pages, Tasks: stores.tasks},
 	}
 }
 
@@ -75,6 +77,9 @@ func registerRoutes(apiGroup *gin.RouterGroup, h *handlers) {
 	apiGroup.PATCH("/tasks/:id", h.tasks.UpdateTask)
 	apiGroup.PUT("/tasks/:id", h.tasks.UpsertTask)
 	apiGroup.DELETE("/tasks/:id", h.tasks.DeleteTask)
+
+	// Search (pages + tasks)
+	apiGroup.GET("/search", h.search.Search)
 
 	// Utilities
 	apiGroup.POST("/unfurl", handler.RateLimitMiddleware(unfurlLimiter), handler.UnfurlURL)

@@ -2,6 +2,7 @@ package memstore
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -319,5 +320,26 @@ func (s *oauthTokenStore) ListActiveForClient(ctx context.Context, clientID uuid
 			out = append(out, &cp)
 		}
 	}
+	return out, nil
+}
+
+func (s *oauthTokenStore) ListActiveForUser(_ context.Context, userID uuid.UUID) ([]*model.OAuthToken, error) {
+	s.r.mu.RLock()
+	defer s.r.mu.RUnlock()
+	now := time.Now()
+	out := make([]*model.OAuthToken, 0)
+	for _, e := range s.r.tokens {
+		t := e.token
+		if t.ActingUserID != userID || t.RevokedAt != nil {
+			continue
+		}
+		live := t.AccessTokenExpiresAt.After(now) || (t.RefreshTokenExpiresAt != nil && t.RefreshTokenExpiresAt.After(now))
+		if !live {
+			continue
+		}
+		cp := *t
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
 }
