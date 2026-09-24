@@ -1,3 +1,8 @@
+packages:
+  # Realtime collaboration server (Hocuspocus). Shares the editor schema with
+  # the frontend by importing it from src/lib/editor.
+  - collab
+
 overrides:
   # Svelte devalue: DoS via sparse array deserialization
   # (GHSA-r593-y4mm-cwwr) — pulled in transitively via @sveltejs/kit.
