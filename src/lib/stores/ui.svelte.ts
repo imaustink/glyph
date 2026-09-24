@@ -2,6 +2,14 @@ import type { PendingTaskCreation } from '$lib/models/types';
 
 export type SaveState = 'idle' | 'saving' | 'saved';
 
+export interface CollabIndicatorState {
+  connection: 'connecting' | 'connected' | 'offline';
+  /** Local edits the server hasn't acknowledged yet. */
+  unsynced: boolean;
+  readOnly: boolean;
+  quarantined: boolean;
+}
+
 export function createUiStore() {
   let currentPageId = $state<string | null>(null);
   let sidebarOpen = $state(true);
@@ -132,8 +140,20 @@ export function createUiStore() {
     });
   }
 
+  /**
+   * State of the open page's collaborative session, or null when the page is
+   * edited in single-writer mode. Drives the save indicator.
+   */
+  let collabState = $state<CollabIndicatorState | null>(null);
+
+  function setCollabState(s: CollabIndicatorState | null) {
+    collabState = s;
+  }
+
   return {
     get currentPageId() { return currentPageId; },
+    get collabState() { return collabState; },
+    setCollabState,
     get sidebarOpen() { return sidebarOpen; },
     get searchOpen() { return searchOpen; },
     get createTaskOpen() { return createTaskOpen; },

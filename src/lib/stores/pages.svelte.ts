@@ -4,6 +4,7 @@ import type { TreeNode, PageContent, TodoTriggerConfig, ProseMirrorJSONNode } fr
 import { now, makeTimestamps } from '$lib/utils/time';
 import { nextOrder } from '$lib/utils/order';
 import { uuid } from '$lib/utils/uuid';
+import { collabSupported, getCollabSession, removeListItemCollaboratively } from '$lib/collab/client';
 
 /** Recursively remove a listItem with the given nodeId from a ProseMirror JSON tree. */
 function removeNodeById(node: ProseMirrorJSONNode, nodeId: string): boolean {
@@ -233,6 +234,12 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
    * Returns true if the node was found and removed.
    */
   async function removeBulletByNodeId(pageId: string, nodeId: string): Promise<boolean> {
+    // A collaboratively edited page can't take a whole-document write (the
+    // API refuses it, since it would overwrite collaborators). Have the
+    // collab service remove the bullet from the shared document instead.
+    if (collabSupported && (await getCollabSession(pageId).catch(() => null))) {
+      return removeListItemCollaboratively(pageId, nodeId);
+    }
     const pageContent = await getContent(pageId);
     if (!pageContent?.content) return false;
 

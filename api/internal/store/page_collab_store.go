@@ -60,21 +60,6 @@ func detachCollabLocked(ctx context.Context, tx pgx.Tx, pageID uuid.UUID) error 
 	return err
 }
 
-func (s *pgPageStore) GetCollabState(ctx context.Context, pageID uuid.UUID) (*model.CollabState, error) {
-	st := &model.CollabState{PageID: pageID}
-	err := s.pool.QueryRow(ctx,
-		`SELECT epoch, attached, quarantined_at IS NOT NULL FROM page_collab_docs WHERE page_id = $1`,
-		pageID,
-	).Scan(&st.Epoch, &st.Attached, &st.Quarantined)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return st, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get collab state: %w", err)
-	}
-	return st, nil
-}
-
 // WriteCollabSnapshot persists the collab service's view of a shared document
 // to page_contents. It is refused (ErrStaleSnapshot) unless the page is still
 // attached in the same epoch and the snapshot does not go backwards, so a

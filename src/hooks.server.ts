@@ -12,6 +12,9 @@ const API_PROXY_TARGET = env.API_PROXY_TARGET;
 // gate.
 const TEST_PROXY_ENABLED = env.E2E_RESET_ENABLED === 'true';
 
+// Base URL of the collab service, when this process fronts it (e.g. E2E CI).
+const COLLAB_PROXY_TARGET = env.COLLAB_PROXY_TARGET;
+
 /**
  * When API_PROXY_TARGET is set (e.g. in E2E CI builds), proxy /api, /auth,
  * /oauth/token, /oauth/revoke, and /health requests to the Go backend, plus
@@ -28,6 +31,14 @@ const TEST_PROXY_ENABLED = env.E2E_RESET_ENABLED === 'true';
  * needing the Vite dev server at all.
  */
 export const handle: Handle = async ({ event, resolve }) => {
+	// The collab service's plain-HTTP routes (server-side edits, health).
+	// WebSocket upgrades can't be proxied from here; deployments that serve
+	// the frontend this way point the browser at the collab service directly
+	// with VITE_COLLAB_URL (it checks the Origin itself).
+	if (COLLAB_PROXY_TARGET && event.url.pathname.startsWith('/collab/')) {
+		return proxy(`${COLLAB_PROXY_TARGET}${event.url.pathname}${event.url.search}`, event.request);
+	}
+
 	if (
 		API_PROXY_TARGET &&
 		(event.url.pathname.startsWith('/api') ||
@@ -37,28 +48,27 @@ export const handle: Handle = async ({ event, resolve }) => {
 			event.url.pathname.startsWith('/health') ||
 			(TEST_PROXY_ENABLED && event.url.pathname.startsWith('/test')))
 	) {
-		const targetURL = `${API_PROXY_TARGET}${event.url.pathname}${event.url.search}`;
-
-		const headers = new Headers(event.request.headers);
-		// Remove headers that cause issues when proxying.
-		headers.delete('host');
-
-		const response = await fetch(targetURL, {
-			method: event.request.method,
-			headers,
-			body:
-				event.request.method !== 'GET' && event.request.method !== 'HEAD'
-					? event.request.body
-					: undefined,
-			// @ts-expect-error - Node fetch supports duplex
-			duplex: 'half'
-		});
-
-		return new Response(response.body, {
-			status: response.status,
-			headers: response.headers
-		});
+		return proxy(`${API_PROXY_TARGET}${event.url.pathname}${event.url.search}`, event.request);
 	}
 
 	return resolve(event);
 };
+
+async function proxy(targetURL: string, request: Request): Promise<Response> {
+	const headers = new Headers(request.headers);
+	// Remove headers that cause issues when proxying.
+	headers.delete('host');
+
+	const response = await fetch(targetURL, {
+		method: request.method,
+		headers,
+		body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
+		// @ts-expect-error - Node fetch supports duplex
+		duplex: 'half'
+	});
+
+	return new Response(response.body, {
+		status: response.status,
+		headers: response.headers
+	});
+}

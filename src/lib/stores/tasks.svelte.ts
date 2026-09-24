@@ -1,4 +1,5 @@
 import { repositories } from '$lib/storage/config';
+import { ApiError } from '$lib/storage/apiClient';
 import type { ITaskRepository } from '$lib/storage/interfaces';
 import type { FilterContext } from '$lib/storage/filterUtils';
 import type { Task, FilterSet, Priority, TaskStatus, TreeNode } from '$lib/models/types';
@@ -170,7 +171,13 @@ export function createTasksStore(injectedRepo?: ITaskRepository) {
   }
 
   async function deleteTask(id: string): Promise<void> {
-    await repo.delete(id);
+    try {
+      await repo.delete(id);
+    } catch (err) {
+      // Already gone (e.g. the server removed it with its bullet): the
+      // outcome the caller wanted.
+      if (!(err instanceof ApiError && err.status === 404)) throw err;
+    }
     setTasks(tasks.filter((t) => t.id !== id));
   }
 

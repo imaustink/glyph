@@ -68,16 +68,6 @@ func (r *Registry) sourceTaken(t *model.Task, exceptID uuid.UUID) bool {
 	return id != uuid.Nil && id != exceptID
 }
 
-func (s *pageStore) GetCollabState(_ context.Context, pageID uuid.UUID) (*model.CollabState, error) {
-	s.r.mu.RLock()
-	defer s.r.mu.RUnlock()
-	st := &model.CollabState{PageID: pageID}
-	if d := s.r.collab[pageID]; d != nil {
-		st.Epoch, st.Attached, st.Quarantined = d.epoch, d.attached, d.quarantined
-	}
-	return st, nil
-}
-
 func (s *pageStore) WriteCollabSnapshot(_ context.Context, snap *model.CollabSnapshot) (*model.PageContent, error) {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()

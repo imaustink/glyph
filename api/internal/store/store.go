@@ -59,9 +59,6 @@ type PageStore interface {
 	// the one it replaces) and detaches any collaborative session.
 	RestoreContentVersion(ctx context.Context, pageID uuid.UUID, versionID int64, userID uuid.UUID) (*model.PageContent, error)
 
-	// GetCollabState reports whether the page is attached to a collaborative
-	// session. Access control is the caller's responsibility.
-	GetCollabState(ctx context.Context, pageID uuid.UUID) (*model.CollabState, error)
 	// WriteCollabSnapshot is the collab service's write path to page_contents
 	// (ErrStaleSnapshot unless the snapshot's epoch is current and its seq is
 	// not behind the last one accepted). Service-authenticated; no user.

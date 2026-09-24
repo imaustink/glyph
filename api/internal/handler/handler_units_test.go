@@ -1079,7 +1079,6 @@ type mockPageStore struct {
 	upsertContentFn         func(pc *model.PageContent, userID uuid.UUID) (*model.PageContent, error)
 	listContentVersionsFn   func(pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error)
 	restoreContentVersionFn func(pageID uuid.UUID, versionID int64, userID uuid.UUID) (*model.PageContent, error)
-	getCollabStateFn        func(pageID uuid.UUID) (*model.CollabState, error)
 	writeCollabSnapshotFn   func(snap *model.CollabSnapshot) (*model.PageContent, error)
 	getContentFn            func(pageID, userID uuid.UUID) (*model.PageContent, error)
 	updateFn                func(p *model.Page) (*model.Page, error)
@@ -1159,12 +1158,6 @@ func (m *mockPageStore) RestoreContentVersion(_ context.Context, pageID uuid.UUI
 		return m.restoreContentVersionFn(pageID, versionID, userID)
 	}
 	return nil, store.ErrNotFound
-}
-func (m *mockPageStore) GetCollabState(_ context.Context, pageID uuid.UUID) (*model.CollabState, error) {
-	if m.getCollabStateFn != nil {
-		return m.getCollabStateFn(pageID)
-	}
-	return &model.CollabState{PageID: pageID}, nil
 }
 func (m *mockPageStore) WriteCollabSnapshot(_ context.Context, snap *model.CollabSnapshot) (*model.PageContent, error) {
 	if m.writeCollabSnapshotFn != nil {

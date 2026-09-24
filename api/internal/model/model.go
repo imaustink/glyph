@@ -157,15 +157,6 @@ type PageContent struct {
 	DetachCollab bool `json:"-"`
 }
 
-// CollabState describes whether a page's content is currently owned by a
-// collaborative (Yjs) session.
-type CollabState struct {
-	PageID      uuid.UUID `json:"pageId"`
-	Epoch       int       `json:"epoch"`
-	Attached    bool      `json:"attached"`
-	Quarantined bool      `json:"quarantined"`
-}
-
 // CollabSnapshot is the collab service writing the current state of a shared
 // document back to page_contents.
 type CollabSnapshot struct {

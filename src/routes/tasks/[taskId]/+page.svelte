@@ -194,15 +194,22 @@
     if (!task) return;
     deleting = true;
     try {
+      // Delete the task first, then its bullet. Removing the bullet makes the
+      // server reconcile the page's tasks, which would soft-delete this task
+      // as "bullet removed" (restorable) before the explicit delete landed.
+      // Captured first: `sourcePage` derives from the task, which is gone
+      // from the store once deleted.
+      const { sourcePageId, sourceNodeId } = task;
+      const pageStillExists = !!sourcePage;
+      await tasksStore.deleteTask(task.id);
       // Remove the linked bullet from the note if the page still exists
-      if (task.sourcePageId && task.sourceNodeId && sourcePage) {
+      if (sourcePageId && sourceNodeId && pageStillExists) {
         try {
-          await pagesStore.removeBulletByNodeId(task.sourcePageId, task.sourceNodeId);
+          await pagesStore.removeBulletByNodeId(sourcePageId, sourceNodeId);
         } catch {
           // Page or bullet no longer exists — safe to ignore
         }
       }
-      await tasksStore.deleteTask(task.id);
       goto('/tasks');
     } finally {
       deleting = false;

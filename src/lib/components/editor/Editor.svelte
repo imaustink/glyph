@@ -1,23 +1,32 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { Editor } from '@tiptap/core';
-  import StarterKit from '@tiptap/starter-kit';
+  import { Editor, type AnyExtension } from '@tiptap/core';
   import Placeholder from '@tiptap/extension-placeholder';
+  import Collaboration from '@tiptap/extension-collaboration';
+  import CollaborationCaret from '@tiptap/extension-collaboration-caret';
+  import type { Transaction } from '@tiptap/pm/state';
   import { goto } from '$app/navigation';
-  import { TaskLinkExtension } from '$lib/editor/extensions/TaskLinkExtension';
+  import { documentExtensions, COLLAB_FRAGMENT } from '$lib/editor/schema';
   import { TodoDetectionExtension, type DetectedBullet } from '$lib/editor/extensions/TodoDetectionExtension';
   import { NodeIdMapExtension } from '$lib/editor/plugins/NodeIdMapPlugin';
+  import { CollabNodeIdExtension } from '$lib/editor/plugins/CollabNodeIdExtension';
   import { tasksStore } from '$lib/stores/tasks.svelte';
   import { pagesStore } from '$lib/stores/pages.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
+  import { authStore } from '$lib/stores/auth.svelte';
+  import { notificationsStore } from '$lib/stores/notifications.svelte';
   import { useContentSave } from '$lib/editor/useContentSave';
   import { useTaskCreation, type PendingTaskDetails } from '$lib/editor/useTaskCreation';
   import { useTaskSync } from '$lib/editor/useTaskSync';
   import { useBulletRemoval } from '$lib/editor/useBulletRemoval';
   import { storageMode } from '$lib/storage/config';
+  import { CollabSession } from '$lib/collab/CollabSession';
+  import { collabSupported, collabWebSocketUrl, getCollabSession } from '$lib/collab/client';
+  import { isLocalTransaction } from '$lib/collab/isLocalTransaction';
+  import { collabUserColor } from '$lib/collab/userColor';
+  import { CollabReason, type CollabReasonValue } from '$lib/collab/protocol';
   import TaskCreationPopover from './TaskCreationPopover.svelte';
   import { nanoid } from 'nanoid';
-  import type { TaskStatus } from '$lib/models/types';
 
   let {
     pageId,
@@ -48,9 +57,11 @@
   const contentSave = useContentSave(
     () => onchange?.(),
     // On a save conflict the server has newer content than we based our edit
-    // on. Reload it rather than retrying, which would overwrite the newer copy.
+    // on — or the page is now edited collaboratively. Re-open it rather than
+    // retrying, which would overwrite the newer copy; re-opening also picks
+    // the collaborative editor when that is what the server now expects.
     (conflictedPageId) => {
-      if (conflictedPageId === loadedPageId) void loadContent();
+      if (conflictedPageId === loadedPageId) reopen(conflictedPageId);
     }
   );
 
@@ -65,6 +76,26 @@
   // In API mode the server reconciles tasks with the saved document; the
   // editor only mirrors that locally and never deletes tasks itself.
   const bulletRemoval = useBulletRemoval({ serverReconciles: storageMode === 'api' });
+
+  // ─── Editing mode ───────────────────────────────────────────────────────────
+  //
+  // Each page opens in one of two modes, decided by the API when the page is
+  // opened:
+  //
+  //  - 'rest': single-writer editing. The document is loaded, edited locally
+  //    and saved whole with an optimistic-concurrency revision. The TipTap
+  //    editor is reused across pages (setContent on navigation).
+  //
+  //  - 'collab': realtime collaborative editing. The document lives in a Yjs
+  //    doc synced through the collab service; nothing is saved from here. A
+  //    fresh TipTap editor and CollabSession are created per page, and only
+  //    once the session holds the server's content — so no local transaction
+  //    can write into the shared document before it is populated.
+  let mode: 'rest' | 'collab' | null = null;
+  let session: CollabSession | null = null;
+  /** Discards the continuation of a page open superseded by a newer one. */
+  let openGeneration = 0;
+  let mounted = false;
 
   // ─── Public API ─────────────────────────────────────────────────────────────
 
@@ -172,117 +203,271 @@
 
   // ─── Lifecycle ──────────────────────────────────────────────────────────────
 
-  onMount(async () => {
-    if (!editorEl) return;
-
-    editor = new Editor({
-      element: editorEl,
-      extensions: [
-        StarterKit.configure({
-          listItem: false
-        }),
-        NodeIdMapExtension,
-        TaskLinkExtension.configure({
+  /**
+   * Build a TipTap editor. The schema-defining extensions come from
+   * documentExtensions(), the same list the collab service builds its schema
+   * (and the schema fingerprint it checks) from.
+   *
+   * @param collabPageId set for a collaborative editor: the page it is bound
+   *   to for its whole life. (A single-writer editor follows `pageId`.)
+   */
+  function createEditor(s: CollabSession | null, collabPageId: string | null): Editor {
+    const collab = s !== null;
+    const extensions: AnyExtension[] = [
+      ...documentExtensions({
+        // Local undo history would undo other people's edits; the
+        // Collaboration extension brings a Yjs UndoManager that only undoes
+        // this user's own changes.
+        undoRedo: !collab,
+        taskLink: {
           onStatusCycled: (nodeId: string, taskId: string, currentStatus: string) => {
             taskSync.handleStatusCycled(nodeId, taskId, currentStatus);
           },
           onTaskClicked: (taskId: string) => {
             void goto(`/tasks/${taskId}`);
           }
-        }),
-        Placeholder.configure({
-          placeholder: 'Start writing… Create a heading named TODO to track tasks.'
-        }),
-        TodoDetectionExtension.configure({
-          onTodoBulletsDetected: (bullets: DetectedBullet[]) => {
-            taskCreation.handleTodoBulletsDetected(bullets);
-          },
-          pageId: () => pageId,
-          todoTrigger: () => pagesStore.getById(pageId)?.todoTrigger
-        })
-      ],
+        }
+      }),
+      NodeIdMapExtension,
+      Placeholder.configure({
+        placeholder: 'Start writing… Create a heading named TODO to track tasks.'
+      }),
+      TodoDetectionExtension.configure({
+        onTodoBulletsDetected: (bullets: DetectedBullet[]) => {
+          taskCreation.handleTodoBulletsDetected(bullets);
+        },
+        pageId: collab ? () => collabPageId ?? '' : () => pageId,
+        todoTrigger: () => pagesStore.getById(collab ? (collabPageId ?? '') : pageId)?.todoTrigger,
+        localChangesOnly: collab
+      })
+    ];
+    if (s) {
+      extensions.push(
+        Collaboration.configure({ document: s.doc, field: COLLAB_FRAGMENT }),
+        CollaborationCaret.configure({ provider: s.provider, user: s.user }),
+        CollabNodeIdExtension
+      );
+    }
+
+    return new Editor({
+      element: editorEl!,
+      extensions,
       editorProps: {
         attributes: {
           class: 'tiptap-editor',
           spellcheck: 'true'
         }
       },
-      // Disabled until the initial loadContent() below resolves — otherwise
-      // a keystroke landing before setContent() replaces the whole document
-      // gets silently discarded (or appended to the stale template content).
+      // Disabled until the page is loaded — otherwise a keystroke landing
+      // before setContent() replaces the whole document gets silently
+      // discarded (or appended to the stale template content).
       editable: false,
       onSelectionUpdate: ({ editor: ed }) => {
         dismissPendingIfCursorLeft(ed);
       },
-      onUpdate: ({ editor: ed }) => {
-        taskSync.syncLinkedTaskTitleRealtime(
-          ed,
-          () => pending,
-          (p) => { pending = p; }
-        );
-        dismissPendingIfCursorLeft(ed);
-
-        // Debounce removal detection
-        if (removedBulletTimer) clearTimeout(removedBulletTimer);
-        removedBulletTimer = setTimeout(() => bulletRemoval.detectRemovedTaskBullets(ed), 1000);
-
-        // Debounced content save. Key off loadedPageId — the page the document
-        // in the editor actually came from. Using the reactive `pageId` here
-        // meant any transaction dispatched during navigation (task sync, async
-        // task creation, nodeId migration) persisted the previous page's
-        // document under the new page's id.
-        if (!loadedPageId) return;
-        contentSave.scheduleSave(ed, loadedPageId);
-      }
+      onUpdate: ({ editor: ed, transaction }) => handleUpdate(ed, transaction)
     });
+  }
 
+  function handleUpdate(ed: Editor, transaction: Transaction) {
+    // Pushing a bullet's text to its task is a side effect: only for this
+    // user's own typing, or every collaborator would push the same title.
+    if (isLocalTransaction(transaction)) {
+      taskSync.syncLinkedTaskTitleRealtime(
+        ed,
+        () => pending,
+        (p) => { pending = p; }
+      );
+    }
+    dismissPendingIfCursorLeft(ed);
+
+    // Debounce removal detection. In API mode this only updates the local
+    // task list (the server reconciles tasks), so it runs for remote edits too.
+    if (removedBulletTimer) clearTimeout(removedBulletTimer);
+    removedBulletTimer = setTimeout(() => bulletRemoval.detectRemovedTaskBullets(ed), 1000);
+
+    // Collaborative documents are persisted by the collab service.
+    if (mode !== 'rest') return;
+    // Debounced content save. Key off loadedPageId — the page the document
+    // in the editor actually came from. Using the reactive `pageId` here
+    // meant any transaction dispatched during navigation (task sync, async
+    // task creation, nodeId migration) persisted the previous page's
+    // document under the new page's id.
+    if (!loadedPageId) return;
+    contentSave.scheduleSave(ed, loadedPageId);
+  }
+
+  /** Destroy the current editor and collaborative session, if any. */
+  function teardownEditor() {
+    editor?.destroy();
+    editor = null;
+    session?.destroy();
+    session = null;
+    mode = null;
+    uiStore.setCollabState(null);
+  }
+
+  /**
+   * Open `target` in the mode the API chooses for it. Callers have already
+   * made the editor non-editable and cleared loadedPageId.
+   */
+  async function openPage(target: string) {
+    const gen = ++openGeneration;
+    let collab = false;
+    if (collabSupported) {
+      try {
+        collab = (await getCollabSession(target)) !== null;
+      } catch (err) {
+        // Can't tell; single-writer mode is safe either way (the API refuses a
+        // whole-document write to a collaborative page rather than applying it).
+        console.warn('[Editor] Could not check collaborative mode; editing single-writer', err);
+      }
+    }
+    if (gen !== openGeneration || !mounted) return;
+    if (collab) await openCollaborative(target, gen);
+    else await openSingleWriter();
+  }
+
+  async function openSingleWriter() {
+    const fresh = mode !== 'rest';
+    if (fresh) {
+      teardownEditor();
+      editor = createEditor(null, null);
+      mode = 'rest';
+    }
     await loadContent();
-    scheduleAutoAssignNodeIds();
+    // Legacy documents may have list items without ids; give them ids once,
+    // when an editor first loads a page.
+    if (fresh) scheduleAutoAssignNodeIds();
+    if (!editor) return;
     bulletRemoval.snapshot(editor);
     editor.setEditable(true);
     contentLoaded = true;
+  }
+
+  async function openCollaborative(target: string, gen: number) {
+    teardownEditor();
+    const s = new CollabSession(
+      target,
+      {
+        onState: (st) => {
+          if (session !== s) return;
+          uiStore.setCollabState(st);
+          editor?.setEditable(s.canEdit);
+        },
+        onReset: (reason) => {
+          if (session !== s) return;
+          notifyReset(reason);
+          reopen(target);
+        },
+        onFatal: (reason) => {
+          if (session !== s) return;
+          notifyFatal(reason);
+          editor?.setEditable(false);
+          // Collaboration was switched off: fall back to single-writer editing.
+          if (reason === CollabReason.Disabled) reopen(target);
+        }
+      },
+      { url: collabWebSocketUrl(), user: { name: authStore.name || authStore.email || 'Someone', color: collabUserColor(authStore.userId) } }
+    );
+    session = s;
+    mode = 'collab';
+    uiStore.setCollabState(s.state);
+
+    await s.whenReady();
+    if (gen !== openGeneration || session !== s || !mounted) return;
+
+    editor = createEditor(s, target);
+    loadedPageId = target;
+    taskCreation.clearPrompted();
+    // Other people may have changed this page's tasks since we loaded them.
+    try {
+      await tasksStore.refreshForPage(target);
+    } catch (err) {
+      console.warn('[Editor] Could not refresh tasks for page', err);
+    }
+    if (gen !== openGeneration || session !== s || !editor) return;
+    taskSync.syncTaskStatuses(editor, target);
+    bulletRemoval.snapshot(editor);
+    editor.setEditable(s.canEdit);
+    contentLoaded = true;
+  }
+
+  /** Re-open the page from scratch (a new session with an empty Y.Doc). */
+  function reopen(target: string) {
+    if (pageId !== target) return;
+    contentLoaded = false;
+    loadedPageId = null;
+    pending = null;
+    teardownEditor();
+    void openPage(target);
+  }
+
+  function notifyReset(reason: CollabReasonValue) {
+    if (reason === CollabReason.InvalidUpdate) {
+      notificationsStore.error('Your last change couldn’t be applied, so this note was reloaded.');
+    } else if (reason === CollabReason.Reset) {
+      notificationsStore.info('This note was replaced (for example, a version was restored). Reloading it.');
+    }
+  }
+
+  function notifyFatal(reason: CollabReasonValue) {
+    if (reason === CollabReason.SchemaMismatch) {
+      notificationsStore.error('Glyph has been updated. Reload the page to keep editing this note.');
+    } else if (reason === CollabReason.Forbidden) {
+      notificationsStore.error('You no longer have access to edit this note.');
+    }
+  }
+
+  /** Warn before leaving with collaborative edits the server hasn't acknowledged. */
+  function handleBeforeUnload(e: BeforeUnloadEvent) {
+    if (mode === 'collab' && session?.hasUnsyncedChanges) {
+      e.preventDefault();
+    }
+  }
+
+  onMount(async () => {
+    if (!editorEl) return;
+    mounted = true;
+    prevPageId = pageId;
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    await openPage(pageId);
   });
 
-  // Reload content when pageId changes (but not on initial mount — onMount handles that)
+  // Open the new page when pageId changes (the initial page is opened by onMount).
   let prevPageId: string | null = null;
   $effect(() => {
-    if (editor && pageId) {
-      if (prevPageId === null) {
-        // First run: onMount already loaded content, just record the pageId
-        prevPageId = pageId;
-        return;
-      }
-      if (pageId !== prevPageId) {
-        prevPageId = pageId;
-        // Clear transient UI state that is page-scoped
-        pending = null;
-        if (removedBulletTimer) { clearTimeout(removedBulletTimer); removedBulletTimer = null; }
-        contentLoaded = false;
-        // Mark the editor as holding no known page until loadContent() resolves.
-        // Any transaction dispatched in this window is now a no-op for saving
-        // rather than a write of the old document under the new id.
-        loadedPageId = null;
-        editor.setEditable(false);
-        // Drop per-page task status memory so the next page starts clean and
-        // doesn't dispatch spurious status transactions for unrelated tasks.
-        taskSync.resetStatusMemory();
-        void contentSave.flushAll().then(async () => {
-          taskCreation.clearPrompted();
-          await loadContent();
-          editor?.setEditable(true);
-          contentLoaded = true;
-        });
-      }
-    }
+    const next = pageId;
+    if (!mounted || prevPageId === null || next === prevPageId) return;
+    prevPageId = next;
+    // Clear transient UI state that is page-scoped
+    pending = null;
+    if (removedBulletTimer) { clearTimeout(removedBulletTimer); removedBulletTimer = null; }
+    contentLoaded = false;
+    // Mark the editor as holding no known page until the next one is open.
+    // Any transaction dispatched in this window is now a no-op for saving
+    // rather than a write of the old document under the new id.
+    loadedPageId = null;
+    editor?.setEditable(false);
+    // Drop per-page task status memory so the next page starts clean and
+    // doesn't dispatch spurious status transactions for unrelated tasks.
+    taskSync.resetStatusMemory();
+    void contentSave.flushAll().then(async () => {
+      taskCreation.clearPrompted();
+      await openPage(next);
+    });
   });
 
   onDestroy(() => {
+    mounted = false;
+    openGeneration++;
     const flushPromise = contentSave.flushAll();
     uiStore.registerPendingFlush(flushPromise);
     if (removedBulletTimer) clearTimeout(removedBulletTimer);
+    if (typeof window !== 'undefined') window.removeEventListener('beforeunload', handleBeforeUnload);
     contentSave.destroy();
     bulletRemoval.destroy();
-    editor?.destroy();
+    teardownEditor();
   });
 </script>
 
@@ -331,6 +516,30 @@
 
   /* Prevent the top margin from snapping in when a paragraph converts to a heading */
   :global(.tiptap-editor > :first-child) { margin-top: 0 !important; }
+
+  /* Other people's carets (collaborative mode) */
+  :global(.collaboration-carets__caret) {
+    position: relative;
+    margin-left: -1px;
+    margin-right: -1px;
+    border-left: 1px solid;
+    border-right: 1px solid;
+    word-break: normal;
+    pointer-events: none;
+  }
+  :global(.collaboration-carets__label) {
+    position: absolute;
+    top: -1.4em;
+    left: -1px;
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px 3px 3px 0;
+    color: var(--collab-label-text);
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    line-height: normal;
+    white-space: nowrap;
+    user-select: none;
+  }
 
   :global(.tiptap-editor p) { margin: 0.4em 0; }
   :global(.tiptap-editor p.is-editor-empty:first-child::before) {

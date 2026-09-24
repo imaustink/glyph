@@ -43,6 +43,10 @@
   --status-done: #98c379;
   --status-cancelled: #444444;
 
+  /* Text on a collaborator's caret label. The label colours themselves live
+     in $lib/collab/userColor.ts: the caret extension only accepts #rrggbb. */
+  --collab-label-text: #0f1115;
+
   /* Tags */
   --tag-bg: rgba(47, 184, 160, 0.12);
   --tag-text: #45d5bc;
