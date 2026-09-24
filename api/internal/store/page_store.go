@@ -267,11 +267,40 @@ func (s *pgPageStore) GetContent(ctx context.Context, pageID, userID uuid.UUID) 
 	return pc, nil
 }
 
-// contentVersionRetention caps how many superseded revisions are kept per page.
-// Enough to recover from an automated stale-client overwrite storm (the
-// 2026-09-21 incident wrote ~11 revisions in under a minute) without letting
-// history grow without bound.
-const contentVersionRetention = 20
+// Version history retention. A count cap alone (the previous policy kept the
+// last 20) is useless once content is autosaved every few seconds by a
+// collaborative session: twenty versions span about a minute. Retention is
+// therefore time-bucketed — every superseded revision is kept while it is
+// recent, then thinned to one per bucket as it ages.
+const (
+	// contentVersionKeepRecent versions are always kept regardless of age.
+	contentVersionKeepRecent = 20
+	// maxContentVersionList caps a single ListContentVersions response.
+	maxContentVersionList = 200
+)
+
+// contentVersionPruneSQL deletes every version of page $1 that no retention
+// rule wants: the newest contentVersionKeepRecent, everything from the last
+// hour, the newest per 5 minutes for a day, and the newest per day for 30
+// days.
+const contentVersionPruneSQL = `
+	DELETE FROM page_content_versions
+	WHERE page_id = $1 AND id NOT IN (
+	    SELECT id FROM (
+	        SELECT id, replaced_at,
+	               row_number() OVER (ORDER BY replaced_at DESC, id DESC) AS rn,
+	               row_number() OVER (PARTITION BY date_bin('5 minutes', replaced_at, TIMESTAMPTZ 'epoch')
+	                                  ORDER BY replaced_at DESC, id DESC) AS rn_5m,
+	               row_number() OVER (PARTITION BY date_trunc('day', replaced_at)
+	                                  ORDER BY replaced_at DESC, id DESC) AS rn_day
+	        FROM page_content_versions
+	        WHERE page_id = $1
+	    ) ranked
+	    WHERE rn <= $2
+	       OR replaced_at > NOW() - INTERVAL '1 hour'
+	       OR (replaced_at > NOW() - INTERVAL '24 hours' AND rn_5m = 1)
+	       OR (replaced_at > NOW() - INTERVAL '30 days' AND rn_day = 1)
+	)`
 
 func (s *pgPageStore) UpsertContent(ctx context.Context, pc *model.PageContent, userID uuid.UUID) (*model.PageContent, error) {
 	tx, err := s.pool.Begin(ctx)
@@ -283,7 +312,9 @@ func (s *pgPageStore) UpsertContent(ctx context.Context, pc *model.PageContent, 
 	// Re-check write permission as part of the writing transaction, and take a
 	// row lock on the page. This both closes the check-then-write window and
 	// serialises concurrent content writes for the same page, so the
-	// read-modify-write below cannot interleave.
+	// read-modify-write below cannot interleave. The collab service takes the
+	// same lock before seeding, so a REST write can't slip in between its read
+	// of page_contents and it attaching the page.
 	var lockedPageID uuid.UUID
 	err = tx.QueryRow(ctx,
 		`SELECT id FROM pages WHERE id = $2 AND `+PageWriteSQL+` FOR UPDATE`,
@@ -296,47 +327,96 @@ func (s *pgPageStore) UpsertContent(ctx context.Context, pc *model.PageContent, 
 		return nil, fmt.Errorf("upsert content — page lookup: %w", err)
 	}
 
-	// Current content, if any.
-	var (
-		curContent       []byte
-		curRevision      int
-		curSchemaVersion int
-		curUpdatedAt     time.Time
-		hasCurrent       bool
-	)
-	err = tx.QueryRow(ctx,
-		`SELECT content, revision, schema_version, updated_at FROM page_contents WHERE page_id = $1`,
-		pc.PageID,
-	).Scan(&curContent, &curRevision, &curSchemaVersion, &curUpdatedAt)
-	switch {
-	case err == nil:
-		hasCurrent = true
-	case errors.Is(err, pgx.ErrNoRows):
-		hasCurrent = false
-	default:
+	// While a page is attached to a collaborative session the Yjs log is the
+	// source of truth; a whole-document REST write would be silently
+	// overwritten by the next snapshot (or, worse, clobber collaborators).
+	attached, err := collabAttachedLocked(ctx, tx, pc.PageID)
+	if err != nil {
+		return nil, fmt.Errorf("upsert content — collab lookup: %w", err)
+	}
+	if attached {
+		if !pc.DetachCollab {
+			return nil, ErrCollaborative
+		}
+		if err := detachCollabLocked(ctx, tx, pc.PageID); err != nil {
+			return nil, fmt.Errorf("upsert content — detach: %w", err)
+		}
+	}
+
+	cur, err := currentContentLocked(ctx, tx, pc.PageID)
+	if err != nil {
 		return nil, fmt.Errorf("upsert content — current lookup: %w", err)
 	}
 
-	// Optimistic concurrency. ExpectedRevision == 0 means the client sent no
-	// precondition (legacy client), which is allowed so a rollout doesn't break
-	// existing sessions — but any client that does send one gets protected.
-	if hasCurrent && pc.ExpectedRevision != 0 && pc.ExpectedRevision != curRevision {
-		return nil, fmt.Errorf("%w: content revision %d is stale, current is %d",
-			ErrConflict, pc.ExpectedRevision, curRevision)
+	// Optimistic concurrency. Once content exists every write must say which
+	// revision it was derived from. Treating a missing precondition as
+	// "overwrite unconditionally" let clients that never read the page (or an
+	// old build that predates revisions) clobber it.
+	if cur != nil {
+		if pc.ExpectedRevision == 0 {
+			return nil, fmt.Errorf("%w: expectedRevision is required, current is %d",
+				ErrConflict, cur.revision)
+		}
+		if pc.ExpectedRevision != cur.revision {
+			return nil, fmt.Errorf("%w: content revision %d is stale, current is %d",
+				ErrConflict, pc.ExpectedRevision, cur.revision)
+		}
 	}
 
-	if pc.Content == nil {
-		pc.Content = json.RawMessage(`{"type":"doc","content":[]}`)
+	out, err := writeContentLocked(ctx, tx, pc.PageID, pc.Content, pc.SchemaVersion, cur)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("upsert content — commit: %w", err)
+	}
+	return out, nil
+}
+
+// storedContent is the page_contents row being superseded by a write.
+type storedContent struct {
+	content       []byte
+	revision      int
+	schemaVersion int
+	updatedAt     time.Time
+}
+
+// currentContentLocked returns the page's current content row, or nil if the
+// page has none yet. The caller must hold the page row lock.
+func currentContentLocked(ctx context.Context, tx pgx.Tx, pageID uuid.UUID) (*storedContent, error) {
+	cur := &storedContent{}
+	err := tx.QueryRow(ctx,
+		`SELECT content, revision, schema_version, updated_at FROM page_contents WHERE page_id = $1`,
+		pageID,
+	).Scan(&cur.content, &cur.revision, &cur.schemaVersion, &cur.updatedAt)
+	switch {
+	case err == nil:
+		return cur, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, nil
+	default:
+		return nil, err
+	}
+}
+
+// writeContentLocked is the single write path for page_contents, shared by
+// REST writes, collaborative snapshots and version restores. It archives the
+// superseded revision, writes the new one, applies history retention and
+// reconciles the page's bullet-linked tasks with the new document — all inside
+// the caller's transaction, which must hold the page row lock.
+func writeContentLocked(ctx context.Context, tx pgx.Tx, pageID uuid.UUID, content json.RawMessage, schemaVersion int, cur *storedContent) (*model.PageContent, error) {
+	if content == nil {
+		content = json.RawMessage(`{"type":"doc","content":[]}`)
 	}
 
 	// Archive the revision we are about to replace so it stays recoverable.
-	if hasCurrent && curContent != nil {
+	if cur != nil && cur.content != nil {
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO page_content_versions (page_id, content, revision, schema_version, replaced_at)
 			 VALUES ($1, $2, $3, $4, $5)`,
-			pc.PageID, curContent, curRevision, curSchemaVersion, curUpdatedAt,
+			pageID, cur.content, cur.revision, cur.schemaVersion, cur.updatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("upsert content — archive: %w", err)
+			return nil, fmt.Errorf("write content — archive: %w", err)
 		}
 	}
 
@@ -350,35 +430,62 @@ func (s *pgPageStore) UpsertContent(ctx context.Context, pc *model.PageContent, 
 		      revision = page_contents.revision + 1
 		RETURNING page_id, content, updated_at, schema_version, revision`
 	out := &model.PageContent{}
-	if err := tx.QueryRow(ctx, q, pc.PageID, pc.Content, pc.SchemaVersion).Scan(
+	if err := tx.QueryRow(ctx, q, pageID, content, schemaVersion).Scan(
 		&out.PageID, &out.Content, &out.UpdatedAt, &out.SchemaVersion, &out.Revision,
 	); err != nil {
-		return nil, fmt.Errorf("upsert content: %w", err)
+		return nil, fmt.Errorf("write content: %w", err)
 	}
 
-	// Trim history to the retention window.
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM page_content_versions
-		 WHERE page_id = $1 AND id NOT IN (
-		     SELECT id FROM page_content_versions
-		     WHERE page_id = $1 ORDER BY replaced_at DESC, id DESC LIMIT $2
-		 )`,
-		pc.PageID, contentVersionRetention,
-	); err != nil {
-		return nil, fmt.Errorf("upsert content — prune history: %w", err)
+	if _, err := tx.Exec(ctx, contentVersionPruneSQL, pageID, contentVersionKeepRecent); err != nil {
+		return nil, fmt.Errorf("write content — prune history: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("upsert content — commit: %w", err)
+	if err := reconcileSourceTasksLocked(ctx, tx, pageID, content); err != nil {
+		return nil, fmt.Errorf("write content — reconcile tasks: %w", err)
 	}
 	return out, nil
+}
+
+// reconcileSourceTasksLocked makes the page's bullet-linked tasks agree with
+// the document just written: a live task whose bullet is gone is soft-deleted
+// ('source_removed'), and a task soft-deleted that way whose bullet is back
+// (undo, paste, version restore) is restored with all its fields intact.
+//
+// This used to be done by whichever client noticed a bullet disappear, which
+// with several editors meant every connected client deleting the same task —
+// including for a cut/paste or an undo. The server is now the only actor, it
+// acts on the persisted document, and the operation is idempotent.
+func reconcileSourceTasksLocked(ctx context.Context, tx pgx.Tx, pageID uuid.UUID, content json.RawMessage) error {
+	nodeIDs, err := ListItemNodeIDs(content)
+	if err != nil {
+		// The handler validated this document; failing to walk it here means
+		// we can't know which bullets exist, so change nothing.
+		return nil
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE tasks SET deleted_at = NOW(), deleted_reason = 'source_removed', updated_at = NOW()
+		 WHERE source_page_id = $1 AND source_node_id IS NOT NULL AND deleted_at IS NULL
+		   AND NOT (source_node_id = ANY($2::text[]))`,
+		pageID, nodeIDs,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE tasks SET deleted_at = NULL, deleted_reason = NULL, updated_at = NOW()
+		 WHERE source_page_id = $1 AND deleted_reason = 'source_removed'
+		   AND source_node_id = ANY($2::text[])`,
+		pageID, nodeIDs,
+	); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ListContentVersions returns superseded revisions for a page, newest first.
 // Access is gated by the same read filter used by GetContent.
 func (s *pgPageStore) ListContentVersions(ctx context.Context, pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error) {
-	if limit <= 0 || limit > contentVersionRetention {
-		limit = contentVersionRetention
+	if limit <= 0 || limit > maxContentVersionList {
+		limit = maxContentVersionList
 	}
 	const q = `
 		SELECT v.id, v.page_id, v.content, v.revision, v.schema_version, v.replaced_at

@@ -5,6 +5,7 @@ import (
 
 	"github.com/glyph/api/internal/store"
 	"github.com/glyph/api/internal/store/memstore"
+	"github.com/google/uuid"
 )
 
 func init() {
@@ -45,3 +46,8 @@ func (b *memBackend) Reset(_ *testing.T) {
 }
 
 func (b *memBackend) Teardown() {} // nothing to clean up
+
+// AttachCollab stands in for the collab service seeding a page.
+func (b *memBackend) AttachCollab(_ *testing.T, pageID uuid.UUID) int {
+	return b.pages.(interface{ AttachCollab(uuid.UUID) int }).AttachCollab(pageID)
+}

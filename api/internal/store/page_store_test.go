@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -271,6 +272,9 @@ func TestPageStore_UpsertContent_StaleRevision_ReturnsConflict(t *testing.T) {
 		beginFn: func(ctx context.Context) (pgx.Tx, error) {
 			return &mockTx{
 				queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+					if strings.Contains(sql, "page_collab_docs") { // not collaborative
+						return &mockRow{scanFn: func(dest ...any) error { return pgx.ErrNoRows }}
+					}
 					call++
 					switch call {
 					case 1: // write-access lookup
@@ -309,6 +313,9 @@ func TestPageStore_UpsertContent_UpsertError(t *testing.T) {
 		beginFn: func(ctx context.Context) (pgx.Tx, error) {
 			return &mockTx{
 				queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+					if strings.Contains(sql, "page_collab_docs") { // not collaborative
+						return &mockRow{scanFn: func(dest ...any) error { return pgx.ErrNoRows }}
+					}
 					call++
 					switch call {
 					case 1: // write-access lookup
@@ -734,6 +741,9 @@ func TestPageStore_UpsertContent_Success(t *testing.T) {
 		beginFn: func(ctx context.Context) (pgx.Tx, error) {
 			return &mockTx{
 				queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+					if strings.Contains(sql, "page_collab_docs") { // not collaborative
+						return &mockRow{scanFn: func(dest ...any) error { return pgx.ErrNoRows }}
+					}
 					call++
 					switch call {
 					case 1: // write-access lookup

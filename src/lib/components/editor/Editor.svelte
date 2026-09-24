@@ -14,6 +14,7 @@
   import { useTaskCreation, type PendingTaskDetails } from '$lib/editor/useTaskCreation';
   import { useTaskSync } from '$lib/editor/useTaskSync';
   import { useBulletRemoval } from '$lib/editor/useBulletRemoval';
+  import { storageMode } from '$lib/storage/config';
   import TaskCreationPopover from './TaskCreationPopover.svelte';
   import { nanoid } from 'nanoid';
   import type { TaskStatus } from '$lib/models/types';
@@ -61,7 +62,9 @@
 
   const taskSync = useTaskSync(() => editor, () => pageId);
 
-  const bulletRemoval = useBulletRemoval();
+  // In API mode the server reconciles tasks with the saved document; the
+  // editor only mirrors that locally and never deletes tasks itself.
+  const bulletRemoval = useBulletRemoval({ serverReconciles: storageMode === 'api' });
 
   // ─── Public API ─────────────────────────────────────────────────────────────
 

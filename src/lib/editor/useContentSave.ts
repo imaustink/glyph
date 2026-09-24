@@ -4,7 +4,7 @@ import { uiStore } from '$lib/stores/ui.svelte';
 import { notificationsStore } from '$lib/stores/notifications.svelte';
 import { flushAllTaskTitleUpdates } from '$lib/editor/useTaskTitleDebounce';
 import { DEBOUNCE } from '$lib/models/constants';
-import { ApiError } from '$lib/storage/apiClient';
+import { ApiError, apiErrorCode } from '$lib/storage/apiClient';
 
 export interface ContentSaveHandle {
 	/** Schedule a debounced content save for the current editor state. */
@@ -53,12 +53,16 @@ export function useContentSave(
 		} catch (err) {
 			uiStore.markSaved();
 			if (err instanceof ApiError && err.status === 409) {
-				// Someone else (or another client of ours) wrote newer content.
-				// Do not retry: reload so the user sees the current document
-				// instead of silently overwriting it with our stale copy.
+				// Someone else (or another client of ours) wrote newer content,
+				// or the page is now owned by a collaborative session. Do not
+				// retry: reload so the user sees the current document instead
+				// of silently overwriting it with our stale copy. The reload
+				// also switches to the collaborative editor where applicable.
 				pagesStore.forgetRevision(pid);
 				notificationsStore.error(
-					'This note changed elsewhere. Reloading the latest version — your unsaved edits were not applied.'
+					apiErrorCode(err) === 'collaborative'
+						? 'This note is now being edited collaboratively. Reloading it — your last few seconds of edits were not applied.'
+						: 'This note changed elsewhere. Reloading the latest version — your unsaved edits were not applied.'
 				);
 				console.warn('[Editor] Content save conflict for page', pid);
 				onConflict?.(pid);

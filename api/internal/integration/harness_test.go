@@ -56,6 +56,43 @@ type Harness struct {
 	ShareStore store.ShareStore
 	UserA      *model.User
 	UserB      *model.User
+
+	// Exposed so specs can flip the collaborative-editing kill switch.
+	PageHandler   *handler.PageHandler
+	CollabHandler *handler.CollabHandler
+}
+
+// collabServiceToken authenticates test requests to /internal/collab.
+const collabServiceToken = "test-collab-service-token"
+
+// collabAttacher is implemented by backends that can stand in for the collab
+// service seeding a page (marking it attached under a new epoch).
+type collabAttacher interface {
+	AttachCollab(t *testing.T, pageID uuid.UUID) int
+}
+
+// AttachCollab marks a page as attached to a collaborative session, as the
+// collab service does when it first seeds the shared document, and returns
+// the new epoch.
+func (h *Harness) AttachCollab(t *testing.T, pageID uuid.UUID) int {
+	t.Helper()
+	a, ok := h.Backend.(collabAttacher)
+	require.True(t, ok, "backend %s cannot attach collab sessions", h.Backend.Name())
+	return a.AttachCollab(t, pageID)
+}
+
+// DoService sends a request to an /internal/collab route as the collab
+// service.
+func (h *Harness) DoService(t *testing.T, method, path string, body interface{}) *httptest.ResponseRecorder {
+	t.Helper()
+	b, err := json.Marshal(body)
+	require.NoError(t, err)
+	req := httptest.NewRequest(method, path, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+collabServiceToken)
+	w := httptest.NewRecorder()
+	h.Router.ServeHTTP(w, req)
+	return w
 }
 
 // NewHarness wires up a Gin router with a test auth middleware and all the
@@ -70,7 +107,8 @@ func NewHarness(t *testing.T, b Backend) *Harness {
 
 	perms := &handler.PermissionChecker{Orgs: orgs, Shares: shares}
 
-	pageH := &handler.PageHandler{Pages: pages, Perms: perms}
+	pageH := &handler.PageHandler{Pages: pages, Perms: perms, CollabEnabled: true}
+	collabH := &handler.CollabHandler{Pages: pages, Perms: perms, Enabled: true, ServiceToken: collabServiceToken}
 	taskH := &handler.TaskHandler{Tasks: tasks, Perms: perms}
 	laneH := &handler.LaneHandler{Lanes: lanes}
 	tmplH := &handler.TemplateHandler{Templates: templates, Perms: perms}
@@ -91,12 +129,17 @@ func NewHarness(t *testing.T, b Backend) *Harness {
 	})
 
 	harness := &Harness{
-		Backend:    b,
-		Router:     router,
-		UserStore:  users,
-		OrgStore:   orgs,
-		ShareStore: shares,
+		Backend:       b,
+		Router:        router,
+		UserStore:     users,
+		OrgStore:      orgs,
+		ShareStore:    shares,
+		PageHandler:   pageH,
+		CollabHandler: collabH,
 	}
+
+	internal := router.Group("/internal/collab", collabH.ServiceAuth())
+	internal.PUT("/pages/:id/snapshot", collabH.WriteSnapshot)
 
 	api := router.Group("/api/v1", harness.testAuthMiddleware())
 	{
@@ -109,6 +152,8 @@ func NewHarness(t *testing.T, b Backend) *Harness {
 		api.GET("/pages/:id/content", pageH.GetPageContent)
 		api.PUT("/pages/:id/content", pageH.UpsertPageContent)
 		api.GET("/pages/:id/content/versions", pageH.ListPageContentVersions)
+		api.POST("/pages/:id/content/versions/:versionId/restore", pageH.RestorePageContentVersion)
+		api.GET("/pages/:id/collab", collabH.GetSession)
 
 		api.GET("/tasks", taskH.ListTasks)
 		api.POST("/tasks", taskH.CreateTask)

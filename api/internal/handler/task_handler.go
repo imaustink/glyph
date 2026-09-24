@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -117,12 +118,49 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 	if body.Priority == "" {
 		body.Priority = model.PriorityNone
 	}
+	if body.SourcePageID != nil && body.SourceNodeID != nil {
+		h.createLinkedTask(c, &body)
+		return
+	}
 	task, err := h.Tasks.Create(c.Request.Context(), &body)
 	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": "task already exists"})
+			return
+		}
 		internalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, task)
+}
+
+// createLinkedTask handles POST /tasks for a task tied to a bullet. Creation
+// is idempotent per bullet: when several editors of a page all see the same
+// new TODO bullet, the first request creates the task and the rest get that
+// same task back (200) instead of creating duplicates.
+func (h *TaskHandler) createLinkedTask(c *gin.Context, body *model.Task) {
+	user := auth.CurrentUser(c)
+	task, created, err := h.Tasks.CreateLinked(c.Request.Context(), body)
+	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "source_taken"})
+			return
+		}
+		internalError(c, err)
+		return
+	}
+	if created {
+		c.JSON(http.StatusCreated, task)
+		return
+	}
+	// Someone else's task may not be visible to this caller (it can be
+	// private); in that case only say the bullet is taken.
+	visible, err := h.Tasks.GetByID(c.Request.Context(), task.ID, user.ID)
+	if err != nil || !scopeAllows(currentTokenScope(c), visible.OrgID, model.ShareResourceTask, false) {
+		c.JSON(http.StatusConflict, gin.H{"error": "this bullet is already linked to a task", "code": "source_taken"})
+		return
+	}
+	c.JSON(http.StatusOK, visible)
 }
 
 // GET /tasks/:id
@@ -175,6 +213,10 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	req.ApplyTo(existing)
 	task, err := h.Tasks.Update(c.Request.Context(), existing)
 	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": "that bullet is already linked to another task", "code": "source_taken"})
+			return
+		}
 		internalError(c, err)
 		return
 	}
@@ -237,6 +279,10 @@ func (h *TaskHandler) UpsertTask(c *gin.Context) {
 	}
 	task, err := h.Tasks.Upsert(c.Request.Context(), &body)
 	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": "that bullet is already linked to another task", "code": "source_taken"})
+			return
+		}
 		notFoundOrError(c, err)
 		return
 	}

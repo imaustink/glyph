@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -255,10 +256,33 @@ func (pc *PermissionChecker) CanWriteResource(
 	if !checkTokenScope(c, orgID, resourceType, true) {
 		return false
 	}
-	if requesterID == ownerID {
-		return true
+	allowed, err := pc.WriteAllowed(c.Request.Context(), ownerID, orgID, resourceType, resourceID, requesterID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return false
 	}
-	ctx := c.Request.Context()
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "write access denied"})
+		return false
+	}
+	return true
+}
+
+// WriteAllowed reports whether requesterID may write the resource — owner,
+// org owner/editor, or an editor share — without writing any response. It
+// ignores bearer-token scope; callers that serve bearer tokens must check
+// that separately.
+func (pc *PermissionChecker) WriteAllowed(
+	ctx context.Context,
+	ownerID uuid.UUID,
+	orgID *uuid.UUID,
+	resourceType model.ShareResourceType,
+	resourceID uuid.UUID,
+	requesterID uuid.UUID,
+) (bool, error) {
+	if requesterID == ownerID {
+		return true, nil
+	}
 	// Check org role
 	if orgID != nil && pc.Orgs != nil {
 		m, err := pc.Orgs.GetMember(ctx, *orgID, requesterID)
@@ -269,12 +293,11 @@ func (pc *PermissionChecker) CanWriteResource(
 					"requester_id", requesterID,
 					"err", err,
 				)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-				return false
+				return false, err
 			}
 			// Not found means user is not a member — continue to next check
 		} else if m.Role == model.OrgRoleOwner || m.Role == model.OrgRoleEditor {
-			return true
+			return true, nil
 		}
 	}
 	// Check direct share
@@ -287,14 +310,12 @@ func (pc *PermissionChecker) CanWriteResource(
 					"requester_id", requesterID,
 					"err", err,
 				)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-				return false
+				return false, err
 			}
 			// Not found means no share — fall through to denied
 		} else if s.Permission == model.SharePermissionEditor {
-			return true
+			return true, nil
 		}
 	}
-	c.JSON(http.StatusForbidden, gin.H{"error": "write access denied"})
-	return false
+	return false, nil
 }

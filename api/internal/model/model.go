@@ -147,9 +147,47 @@ type PageContent struct {
 	// a stale read is rejected rather than silently overwriting newer content.
 	Revision int `json:"revision"`
 	// ExpectedRevision is request-only: the revision the client believes it is
-	// updating. Zero means "no precondition" (legacy client) and skips the
-	// check. Never serialised in responses.
+	// updating. Required whenever the page already has content — a write
+	// without it is rejected as a conflict. Never serialised in responses.
 	ExpectedRevision int `json:"expectedRevision,omitempty"`
+	// DetachCollab is server-side only (never bound from JSON). When true, a
+	// write to a page attached to a collaborative session detaches the page
+	// (making page_contents authoritative again) instead of being refused. Set
+	// only when collaborative editing is disabled server-wide.
+	DetachCollab bool `json:"-"`
+}
+
+// CollabState describes whether a page's content is currently owned by a
+// collaborative (Yjs) session.
+type CollabState struct {
+	PageID      uuid.UUID `json:"pageId"`
+	Epoch       int       `json:"epoch"`
+	Attached    bool      `json:"attached"`
+	Quarantined bool      `json:"quarantined"`
+}
+
+// CollabSnapshot is the collab service writing the current state of a shared
+// document back to page_contents.
+type CollabSnapshot struct {
+	PageID uuid.UUID `json:"-"`
+	// Epoch the snapshot was produced in. Rejected unless it is current.
+	Epoch int `json:"epoch" binding:"required,gte=1"`
+	// UpToSeq is the highest update-log seq reflected in Content. Rejected if
+	// lower than the last accepted snapshot, so a lagging replica can't move
+	// content backwards.
+	UpToSeq       int64           `json:"upToSeq" binding:"gte=0"`
+	Content       json.RawMessage `json:"content" binding:"required"`
+	SchemaVersion int             `json:"schemaVersion"`
+}
+
+// CollabSession is what the collab service needs to admit a WebSocket
+// connection for a page: who the user is and what they may do.
+type CollabSession struct {
+	Enabled  bool      `json:"enabled"`
+	PageID   uuid.UUID `json:"pageId"`
+	UserID   uuid.UUID `json:"userId"`
+	Name     string    `json:"name"`
+	CanWrite bool      `json:"canWrite"`
 }
 
 // PageContentVersion is a superseded revision of a page's content, retained so

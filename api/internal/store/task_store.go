@@ -9,6 +9,7 @@ import (
 	"github.com/glyph/api/internal/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type pgTaskStore struct{ pool DBPool }
@@ -19,9 +20,10 @@ func NewTaskStore(pool DBPool) TaskStore {
 
 const taskColumns = `id, user_id, title, description, status, priority, tags, due_date::text, source_page_id, source_node_id, link, "order", org_id, is_private, folder_id, created_at, updated_at`
 
-// taskAccessFilter enforces the three-tier access policy for tasks.
-// See store.ResourceAccessFilter for the policy definition.
-var taskAccessFilter = ResourceAccessFilter(ResourceTask)
+// taskAccessFilter enforces the three-tier access policy for tasks and hides
+// soft-deleted tasks from every read. See store.ResourceAccessFilter for the
+// policy definition.
+var taskAccessFilter = "(" + ResourceAccessFilter(ResourceTask) + " AND tasks.deleted_at IS NULL)"
 
 func scanTask(row interface{ Scan(...interface{}) error }) (*model.Task, error) {
 	t := &model.Task{}
@@ -154,14 +156,17 @@ func (s *pgTaskStore) Upsert(ctx context.Context, t *model.Task) (*model.Task, e
 		    is_private = EXCLUDED.is_private,
 		    folder_id = EXCLUDED.folder_id,
 		    updated_at = NOW()
-		  WHERE tasks.user_id = $2
+		  WHERE tasks.user_id = $2 AND tasks.deleted_at IS NULL
 		  RETURNING ` + taskColumns
+	// A soft-deleted row matches ON CONFLICT (id) but not the WHERE, so a stale
+	// client re-PUTting a task whose bullet was removed gets ErrNotFound
+	// instead of resurrecting it.
 	result, err := scanTask(s.pool.QueryRow(ctx, q,
 		t.ID, t.UserID, t.Title, t.Description, t.Status, t.Priority,
 		t.Tags, t.DueDate, t.SourcePageID, t.SourceNodeID, linkJSON, t.Order, t.OrgID, t.IsPrivate, t.FolderID,
 	))
 	if err != nil {
-		return nil, err
+		return nil, mapUniqueViolation(err)
 	}
 	return result, nil
 }
@@ -176,10 +181,125 @@ func (s *pgTaskStore) Create(ctx context.Context, t *model.Task) (*model.Task, e
 	q := `INSERT INTO tasks (id, user_id, title, description, status, priority, tags, due_date, source_page_id, source_node_id, link, "order", org_id, is_private, folder_id)
 		  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		  RETURNING ` + taskColumns
-	return scanTask(s.pool.QueryRow(ctx, q,
+	out, err := scanTask(s.pool.QueryRow(ctx, q,
 		t.ID, t.UserID, t.Title, t.Description, t.Status, t.Priority,
 		t.Tags, t.DueDate, t.SourcePageID, t.SourceNodeID, linkJSON, t.Order, t.OrgID, t.IsPrivate, t.FolderID,
 	))
+	if err != nil {
+		return nil, mapUniqueViolation(err)
+	}
+	return out, nil
+}
+
+// CreateLinked creates the task for a bullet, or returns the task that bullet
+// is already linked to. See TaskStore.CreateLinked.
+func (s *pgTaskStore) CreateLinked(ctx context.Context, t *model.Task) (*model.Task, bool, error) {
+	if t.SourcePageID == nil || t.SourceNodeID == nil {
+		return nil, false, fmt.Errorf("create linked task: sourcePageId and sourceNodeId are required")
+	}
+	if t.ID == uuid.Nil {
+		t.ID = uuid.New()
+	}
+	var linkJSON []byte
+	if t.Link != nil {
+		linkJSON, _ = json.Marshal(t.Link)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("create linked task — begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// No conflict target: this absorbs both a retried request (same id) and a
+	// second client racing to create a task for the same bullet (same
+	// page+node). Either way the loser falls through to the lookup below.
+	q := `INSERT INTO tasks (id, user_id, title, description, status, priority, tags, due_date, source_page_id, source_node_id, link, "order", org_id, is_private, folder_id)
+		  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		  ON CONFLICT DO NOTHING
+		  RETURNING ` + taskColumns
+	created, err := scanTask(tx.QueryRow(ctx, q,
+		t.ID, t.UserID, t.Title, t.Description, t.Status, t.Priority,
+		t.Tags, t.DueDate, t.SourcePageID, t.SourceNodeID, linkJSON, t.Order, t.OrgID, t.IsPrivate, t.FolderID,
+	))
+	if err == nil {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, false, fmt.Errorf("create linked task — commit: %w", err)
+		}
+		return created, true, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return nil, false, fmt.Errorf("create linked task: %w", err)
+	}
+
+	// Something already holds this bullet or this id. Prefer the bullet's
+	// task; the id match only matters for a retried request.
+	existing, deleted, err := scanTaskWithDeleted(tx.QueryRow(ctx,
+		`SELECT `+taskColumns+`, deleted_at IS NOT NULL FROM tasks
+		 WHERE (source_page_id = $1 AND source_node_id = $2) OR id = $3
+		 ORDER BY (source_page_id = $1 AND source_node_id = $2) DESC NULLS LAST
+		 LIMIT 1 FOR UPDATE`,
+		t.SourcePageID, t.SourceNodeID, t.ID,
+	))
+	if err != nil {
+		return nil, false, fmt.Errorf("create linked task — lookup: %w", err)
+	}
+	if existing.SourcePageID == nil || existing.SourceNodeID == nil ||
+		*existing.SourcePageID != *t.SourcePageID || *existing.SourceNodeID != *t.SourceNodeID {
+		return nil, false, fmt.Errorf("%w: task id already in use", ErrConflict)
+	}
+	if deleted {
+		// Restoring someone else's deleted task would let any editor of the
+		// page resurrect (and so read) a task they were never shown.
+		if existing.UserID != t.UserID {
+			return nil, false, fmt.Errorf("%w: bullet is linked to a deleted task owned by another user", ErrConflict)
+		}
+		existing, err = scanTask(tx.QueryRow(ctx,
+			`UPDATE tasks SET deleted_at = NULL, deleted_reason = NULL, updated_at = NOW()
+			 WHERE id = $1 RETURNING `+taskColumns, existing.ID))
+		if err != nil {
+			return nil, false, fmt.Errorf("create linked task — restore: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, fmt.Errorf("create linked task — commit: %w", err)
+	}
+	return existing, false, nil
+}
+
+func scanTaskWithDeleted(row interface{ Scan(...interface{}) error }) (*model.Task, bool, error) {
+	t := &model.Task{}
+	var (
+		linkJSON []byte
+		deleted  bool
+	)
+	if err := row.Scan(
+		&t.ID, &t.UserID, &t.Title, &t.Description, &t.Status, &t.Priority,
+		&t.Tags, &t.DueDate, &t.SourcePageID, &t.SourceNodeID, &linkJSON, &t.Order,
+		&t.OrgID, &t.IsPrivate, &t.FolderID, &t.CreatedAt, &t.UpdatedAt, &deleted,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, ErrNotFound
+		}
+		return nil, false, err
+	}
+	if len(linkJSON) > 0 {
+		var lm model.LinkMeta
+		if err := json.Unmarshal(linkJSON, &lm); err == nil {
+			t.Link = &lm
+		}
+	}
+	return t, deleted, nil
+}
+
+// mapUniqueViolation turns a Postgres unique_violation into ErrConflict so
+// handlers answer 409 instead of 500.
+func mapUniqueViolation(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return fmt.Errorf("%w: %s", ErrConflict, pgErr.ConstraintName)
+	}
+	return err
 }
 
 func (s *pgTaskStore) Update(ctx context.Context, t *model.Task) (*model.Task, error) {
@@ -191,17 +311,25 @@ func (s *pgTaskStore) Update(ctx context.Context, t *model.Task) (*model.Task, e
 		  SET title=$1, description=$2, status=$3, priority=$4, tags=$5,
 		      due_date=$6, source_page_id=$7, source_node_id=$8, link=$9, "order"=$10,
 		      org_id=$11, is_private=$12, folder_id=$13, updated_at=NOW()
-		  WHERE id=$14 AND user_id=$15
+		  WHERE id=$14 AND user_id=$15 AND deleted_at IS NULL
 		  RETURNING ` + taskColumns
-	return scanTask(s.pool.QueryRow(ctx, q,
+	out, err := scanTask(s.pool.QueryRow(ctx, q,
 		t.Title, t.Description, t.Status, t.Priority, t.Tags,
 		t.DueDate, t.SourcePageID, t.SourceNodeID, linkJSON, t.Order,
 		t.OrgID, t.IsPrivate, t.FolderID, t.ID, t.UserID,
 	))
+	if err != nil {
+		return nil, mapUniqueViolation(err)
+	}
+	return out, nil
 }
 
+// Delete soft-deletes a task. The row is kept (deleted_reason 'user') so the
+// delete is recoverable and the bullet's link can't be claimed by a new task.
 func (s *pgTaskStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM tasks WHERE id=$1 AND user_id=$2`, id, userID)
+	result, err := s.pool.Exec(ctx,
+		`UPDATE tasks SET deleted_at = NOW(), deleted_reason = 'user', updated_at = NOW()
+		 WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL`, id, userID)
 	if err != nil {
 		return err
 	}
@@ -245,7 +373,7 @@ func (s *pgTaskStore) ListByFilter(ctx context.Context, userID uuid.UUID, fs mod
 func (s *pgTaskStore) ListByFolder(ctx context.Context, folderID uuid.UUID, descendantPageIDs []uuid.UUID) ([]*model.Task, error) {
 	if len(descendantPageIDs) == 0 {
 		// No descendants — only standalone tasks assigned to the folder.
-		q := `SELECT ` + taskColumns + ` FROM tasks WHERE folder_id = $1 ORDER BY "order" ASC`
+		q := `SELECT ` + taskColumns + ` FROM tasks WHERE folder_id = $1 AND deleted_at IS NULL ORDER BY "order" ASC`
 		rows, err := s.pool.Query(ctx, q, folderID)
 		if err != nil {
 			return nil, fmt.Errorf("list tasks by folder (standalone): %w", err)
@@ -274,7 +402,7 @@ func (s *pgTaskStore) ListByFolder(ctx context.Context, folderID uuid.UUID, desc
 	inClause := "(" + joinStrings(placeholders, ",") + ")"
 
 	q := `SELECT ` + taskColumns + ` FROM tasks
-		  WHERE (source_page_id IN ` + inClause + ` OR folder_id = $1)
+		  WHERE (source_page_id IN ` + inClause + ` OR folder_id = $1) AND deleted_at IS NULL
 		  ORDER BY "order" ASC`
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {

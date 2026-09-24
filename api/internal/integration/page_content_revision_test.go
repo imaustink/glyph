@@ -68,7 +68,7 @@ func TestPageContentRevision(t *testing.T) {
 			require.Equal(t, http.StatusOK, code)
 			assert.Equal(t, 1, c1.Revision)
 
-			code, c2 := putContent(t, h, page.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("two")})
+			code, c2 := putContent(t, h, page.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("two"), "expectedRevision": c1.Revision})
 			require.Equal(t, http.StatusOK, code)
 			assert.Equal(t, 2, c2.Revision)
 		},
@@ -125,15 +125,33 @@ func TestPageContentRevision(t *testing.T) {
 			assert.Equal(t, first.Revision+1, updated.Revision)
 		},
 
-		// Legacy clients that send no precondition must keep working.
-		"OmittedExpectedRevisionStillWrites": func(t *testing.T, h *Harness) {
+		// A write with no precondition used to be accepted as an unconditional
+		// overwrite. That let any client that never read the page — or an old
+		// build predating revisions — clobber it, so it is now a conflict.
+		"OmittedExpectedRevisionIsRejectedOnceContentExists": func(t *testing.T, h *Harness) {
 			h.ResetDB(t)
 			page := createPage(t, h, h.UserA.ID, "Notes")
 			putContent(t, h, page.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("one")})
 
-			code, updated := putContent(t, h, page.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("two")})
+			w := h.Do(t, "PUT", "/api/v1/pages/"+page.ID.String()+"/content",
+				map[string]interface{}{"content": doc("UNCONDITIONAL CLOBBER")}, h.UserA.ID)
+			require.Equal(t, http.StatusConflict, w.Code)
+			assert.Equal(t, "stale_revision", Decode[map[string]interface{}](t, w)["code"])
+
+			w = h.Do(t, "GET", "/api/v1/pages/"+page.ID.String()+"/content", nil, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code)
+			got := Decode[model.PageContent](t, w)
+			assert.Contains(t, string(got.Content), "one")
+			assert.Equal(t, 1, got.Revision)
+		},
+
+		// The very first write has nothing to be stale against.
+		"FirstWriteNeedsNoPrecondition": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			page := createPage(t, h, h.UserA.ID, "Notes")
+			code, c1 := putContent(t, h, page.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("one")})
 			require.Equal(t, http.StatusOK, code)
-			assert.Equal(t, 2, updated.Revision)
+			assert.Equal(t, 1, c1.Revision)
 		},
 
 		// History is what makes an overwrite recoverable without a PITR.
@@ -141,8 +159,8 @@ func TestPageContentRevision(t *testing.T) {
 			h.ResetDB(t)
 			page := createPage(t, h, h.UserA.ID, "Notes")
 			putContent(t, h, page.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("first")})
-			putContent(t, h, page.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("second")})
-			putContent(t, h, page.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("third")})
+			putContent(t, h, page.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("second"), "expectedRevision": 1})
+			putContent(t, h, page.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("third"), "expectedRevision": 2})
 
 			w := h.Do(t, "GET", "/api/v1/pages/"+page.ID.String()+"/content/versions", nil, h.UserA.ID)
 			require.Equal(t, http.StatusOK, w.Code)
@@ -158,7 +176,7 @@ func TestPageContentRevision(t *testing.T) {
 			h.ResetDB(t)
 			page := createPage(t, h, h.UserA.ID, "Private")
 			putContent(t, h, page.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("secret")})
-			putContent(t, h, page.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("secret two")})
+			putContent(t, h, page.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("secret two"), "expectedRevision": 1})
 
 			w := h.Do(t, "GET", "/api/v1/pages/"+page.ID.String()+"/content/versions", nil, h.UserB.ID)
 			assert.NotEqual(t, http.StatusOK, w.Code, "user B must not read user A's content history")

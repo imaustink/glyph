@@ -16,6 +16,10 @@ import (
 type PageHandler struct {
 	Pages store.PageStore
 	Perms *PermissionChecker
+	// CollabEnabled mirrors CollabHandler.Enabled. While collaborative
+	// editing is on, REST content writes to a page attached to a live
+	// session are refused; while it is off they detach the page instead.
+	CollabEnabled bool
 }
 
 // ─── Pages ────────────────────────────────────────────────────────────────────
@@ -315,6 +319,7 @@ func (h *PageHandler) UpsertPageContent(c *gin.Context) {
 		return
 	}
 	body.PageID = id
+	body.DetachCollab = !h.CollabEnabled
 
 	// Validate and sanitize ProseMirror content to prevent XSS via stored documents.
 	if len(body.Content) > 0 {
@@ -337,8 +342,56 @@ func (h *PageHandler) UpsertPageContent(c *gin.Context) {
 		// unexpected — notFoundOrError's catch-all 404 would disguise a real
 		// database failure as a missing page on a write endpoint.
 		switch {
+		case errors.Is(err, store.ErrCollaborative):
+			// The client must switch to the collaborative editor; retrying
+			// the whole-document write can never succeed.
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "collaborative"})
 		case errors.Is(err, store.ErrConflict):
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "stale_revision"})
+		case errors.Is(err, store.ErrForbidden):
+			c.JSON(http.StatusForbidden, gin.H{"error": "write access denied"})
+		case errors.Is(err, store.ErrNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		default:
+			internalError(c, err)
+		}
+		return
+	}
+	c.JSON(http.StatusOK, content)
+}
+
+// POST /pages/:id/content/versions/:versionId/restore
+//
+// Makes a superseded revision current again. The revision it replaces is
+// archived first, so a restore can itself be undone. Any collaborative
+// session on the page is ended: connected clients are evicted and reload the
+// restored document rather than merging their now-replaced state back in.
+func (h *PageHandler) RestorePageContentVersion(c *gin.Context) {
+	user := auth.CurrentUser(c)
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	versionID, err := strconv.ParseInt(c.Param("versionId"), 10, 64)
+	if err != nil || versionID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid version id"})
+		return
+	}
+	page, err := h.Pages.GetByID(c.Request.Context(), id, user.ID)
+	if err != nil {
+		notFoundOrError(c, err)
+		return
+	}
+	if page.UserID != user.ID {
+		if !h.Perms.CanWritePage(c, page, user.ID) {
+			return
+		}
+	} else if !checkTokenScope(c, page.OrgID, model.ShareResourcePage, true) {
+		return
+	}
+	content, err := h.Pages.RestoreContentVersion(c.Request.Context(), id, versionID, user.ID)
+	if err != nil {
+		switch {
 		case errors.Is(err, store.ErrForbidden):
 			c.JSON(http.StatusForbidden, gin.H{"error": "write access denied"})
 		case errors.Is(err, store.ErrNotFound):

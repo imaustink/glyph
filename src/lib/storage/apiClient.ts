@@ -25,6 +25,16 @@ export class ApiError extends Error {
 	}
 }
 
+/**
+ * The machine-readable `code` from an API error body, e.g. "collaborative" or
+ * "stale_revision" on a 409 content write.
+ */
+export function apiErrorCode(err: unknown): string | undefined {
+	if (!(err instanceof ApiError)) return undefined;
+	const body = err.body as { code?: unknown } | null;
+	return body && typeof body.code === 'string' ? body.code : undefined;
+}
+
 export class UnauthorizedError extends ApiError {
 	constructor(method: string, path: string) {
 		super(401, method, path, null);
