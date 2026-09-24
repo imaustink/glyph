@@ -216,9 +216,21 @@ export class CollabSession {
 		}
 	}
 
+	/** Whether the session has stopped for good (fatal reason or reset). */
+	get isFinished(): boolean {
+		return this.finished;
+	}
+
 	/** Stop syncing this Y.Doc for good; the owner will discard it. */
 	private finish() {
 		this.finished = true;
+		// Resolve any pending whenReady() waiters. A fatal reason
+		// (SchemaMismatch/Forbidden) is refused before the first sync, so
+		// isReady() never becomes true on its own — without this a caller
+		// awaiting whenReady() hangs forever and leaks with the note left blank.
+		const waiting = this.readyResolvers;
+		this.readyResolvers = [];
+		for (const r of waiting) r();
 		this.provider.disconnect();
 		this.emitState();
 	}

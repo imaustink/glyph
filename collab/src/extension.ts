@@ -356,6 +356,37 @@ export class GlyphCollab implements Extension {
 	async afterUnloadDocument({ documentName }: afterUnloadDocumentPayload) {
 		const state = this.docs.get(documentName);
 		if (!state) return;
+
+		// Don't tear a document down while it still has unpersisted updates. A
+		// persistence outage leaves the batch in `pending` with only an in-process
+		// retry scheduled — persist() resolves even on failure, so Hocuspocus's
+		// sync ack (which is independent of server persistence) already told the
+		// client its edits were saved. Clearing the retry timer and deleting the
+		// state here would silently lose them. Flush once more; on success, unload;
+		// on failure keep the document (and its retry) alive so the edits are
+		// written when persistence recovers.
+		if (!state.evicted && (state.pending.length > 0 || state.retryTimer !== null)) {
+			if (state.retryTimer) {
+				clearTimeout(state.retryTimer);
+				state.retryTimer = null;
+			}
+			// Serialise with any in-flight persist and keep `chain` caught, so a
+			// later retry's `chain.then(...)` still runs persistOnce (a rejected
+			// chain would skip it and loop forever without ever re-appending).
+			const run = state.chain.then(() => this.persistOnce(state));
+			state.chain = run.catch(() => {});
+			try {
+				await run;
+			} catch (err) {
+				this.opts.log.error('deferring unload: document still has unpersisted updates', {
+					pageId: state.pageId,
+					err
+				});
+				this.scheduleRetry(state);
+				return;
+			}
+		}
+
 		if (state.retryTimer) clearTimeout(state.retryTimer);
 		state.unsubscribe();
 		state.shadow.destroy();
@@ -413,11 +444,22 @@ export class GlyphCollab implements Extension {
 			state.appendsSinceCompact++;
 		}
 
-		// 4. Keep the log short.
+		// 4. Keep the log short. Compaction merges the epoch's rows into one and
+		//    deletes exactly those it merged. Another replica can append a row
+		//    during our append round-trip that compaction either folds into the
+		//    merged row (whose content we never applied locally) or misses
+		//    entirely (it committed after compact's SELECT and kept a lower seq
+		//    than the merged row). Jumping lastSeq to the merged seq would make
+		//    the next catchUpOnce (fetchSince uses strict seq > afterSeq) skip
+		//    such a row forever, so this replica's document — and its next
+		//    snapshot — would drop a foreign update (README invariant 3). Leave
+		//    lastSeq where it is and catch up: fetchSince re-reads the merged row
+		//    (idempotent) plus any concurrent append, so nothing is lost.
 		if (state.appendsSinceCompact >= compactEvery) {
 			const seq = await persistence.compact(state.pageId, state.epoch);
-			if (seq !== null) state.lastSeq = Math.max(state.lastSeq, seq);
+			if (seq !== null) await this.catchUpOnce(state);
 			state.appendsSinceCompact = 1;
+			if (state.evicted) return;
 		}
 
 		// 5. Snapshot to page_contents through the API.

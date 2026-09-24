@@ -7,3 +7,7 @@ overrides:
   # Svelte devalue: DoS via sparse array deserialization
   # (GHSA-r593-y4mm-cwwr) — pulled in transitively via @sveltejs/kit.
   "devalue@>=5.6.3 <=5.8.0": ">=5.8.1"
+  # Pin yjs (and every y-* peer resolves against it) to 13.6.32. 13.6.33 was
+  # published within the CI minimum-release-age (supply-chain) window, which
+  # fails `pnpm install --frozen-lockfile`. Bump once 13.6.33+ clears the gate.
+  "yjs": "13.6.32"

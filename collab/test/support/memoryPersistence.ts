@@ -27,8 +27,17 @@ export class MemoryPersistence implements Persistence {
 	seedCount = 0;
 	/** Set to make the next N appends throw (simulating a database outage). */
 	failAppends = 0;
+	/** Test hook: runs at the start of a compaction, before rows are merged. */
+	onCompact: ((pageId: string, epoch: number) => void) | null = null;
 	private seq = 0;
 	private locks = new Map<string, Promise<void>>();
+
+	/** Test helper: append a row directly, as if a foreign replica had. */
+	injectRow(pageId: string, epoch: number, data: Uint8Array): number {
+		const seq = ++this.seq;
+		this.rows.push({ pageId, epoch, seq, data });
+		return seq;
+	}
 
 	/** Create a page, optionally with stored content. */
 	addPage(pageId: string, content: unknown = null, schemaVersion = 1) {
@@ -121,6 +130,7 @@ export class MemoryPersistence implements Persistence {
 
 	compact(pageId: string, epoch: number): Promise<number | null> {
 		return this.locked(pageId, () => {
+			this.onCompact?.(pageId, epoch);
 			const merged = this.rows.filter((r) => r.pageId === pageId && r.epoch === epoch);
 			if (merged.length < 2) return null;
 			const seq = ++this.seq;

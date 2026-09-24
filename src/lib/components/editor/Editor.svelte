@@ -383,6 +383,11 @@
 
     await s.whenReady();
     if (gen !== openGeneration || session !== s || !mounted) return;
+    // A fatal reason (schema mismatch / forbidden) can finish the session
+    // before its first sync. whenReady() now resolves in that case instead of
+    // hanging, but the Y.Doc is empty and detached — don't build a TipTap
+    // editor over it (onFatal has already surfaced the reason to the user).
+    if (s.isFinished) return;
 
     editor = createEditor(s, target);
     loadedPageId = target;
@@ -434,6 +439,10 @@
   function handleBeforeUnload(e: BeforeUnloadEvent) {
     if (mode === 'collab' && session?.hasUnsyncedChanges) {
       e.preventDefault();
+      // WebKit/Safari (and older engines) only show the leave-confirmation when
+      // returnValue is set to a non-empty value; preventDefault() alone is
+      // enough for Chromium but not them.
+      e.returnValue = '';
     }
   }
 

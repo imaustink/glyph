@@ -119,8 +119,12 @@ func (s *pgPageStore) WriteCollabSnapshot(ctx context.Context, snap *model.Colla
 	// history slot on every one.
 	unchanged := false
 	if cur != nil {
+		// NULL-safe: legacy rows can have SQL NULL content (see GetContent's
+		// COALESCE), and `content = $2` would then evaluate to NULL, which
+		// fails to Scan into a bool. IS NOT DISTINCT FROM treats NULL current
+		// content as "changed" so the snapshot is written rather than 500ing.
 		if err := tx.QueryRow(ctx,
-			`SELECT content = $2::jsonb FROM page_contents WHERE page_id = $1`,
+			`SELECT content IS NOT DISTINCT FROM $2::jsonb FROM page_contents WHERE page_id = $1`,
 			snap.PageID, []byte(snap.Content),
 		).Scan(&unchanged); err != nil {
 			return nil, fmt.Errorf("collab snapshot — compare: %w", err)

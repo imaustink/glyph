@@ -122,6 +122,24 @@ describe('convergence and persistence', () => {
 		await eventually(() => textOf(persistence.replay(PAGE)).includes('written during outage'), 8000, 'retried after outage');
 	});
 
+	it('flushes unsynced edits when the last client leaves during a persistence outage', async () => {
+		// The sync ack is independent of server persistence, so the client already
+		// believes these edits saved. If the last client disconnects while the
+		// append is still failing, tearing the document down (cancelling the retry
+		// and dropping `pending`) would silently lose them.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		persistence.failAppends = 3;
+		alice.fragment.insert(alice.fragment.length, [paragraph('written then left')]);
+		await sleep(150); // let the first persist fail and fall back to a retry
+		alice.destroy(); // last client leaves while persistence is still failing
+		await eventually(
+			() => textOf(persistence.replay(PAGE)).includes('written then left'),
+			10000,
+			'pending update written after the client left and persistence recovered'
+		);
+	});
+
 	it('reloads the same document from the log after every client leaves', async () => {
 		const alice = open({ user: 'alice' });
 		await alice.synced();
@@ -148,6 +166,50 @@ describe('convergence and persistence', () => {
 		await eventually(() => textOf(persistence.replay(PAGE)).includes('line 7'));
 		expect(persistence.rows.filter((r) => r.pageId === PAGE).length).toBeLessThan(8);
 		expect(textOf(persistence.replay(PAGE))).toBe(textOf(alice.doc));
+	});
+
+	it('a compaction that folds in a foreign append still keeps it (no cross-replica update loss)', async () => {
+		// README invariant 3: replicas can't lose each other's updates. Another
+		// replica can append a row in the window between this replica catching up
+		// and compacting; compaction folds that row into the merged one, whose
+		// content this replica never applied. Advancing lastSeq to the merged seq
+		// would make the next catch-up (strict seq > afterSeq) skip it forever.
+		await server.stop();
+		server = await startServer(persistence, api, { compactEvery: 2 });
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+
+		// A valid update from another replica's edit, relative to the seeded doc —
+		// held back, not appended yet.
+		const base = persistence.replay(PAGE);
+		const foreign = new Y.Doc();
+		Y.applyUpdate(foreign, Y.encodeStateAsUpdate(base));
+		const beforeEdit = Y.encodeStateVector(foreign);
+		foreign.getXmlFragment(COLLAB_FRAGMENT).insert(0, [paragraph('from another replica')]);
+		const foreignUpdate = Y.encodeStateAsUpdate(foreign, beforeEdit);
+
+		// Inject it exactly when alice's replica starts compacting — after it has
+		// caught up and appended, so its in-memory doc has never seen it.
+		let injected = false;
+		persistence.onCompact = (pageId, epoch) => {
+			if (injected) return;
+			injected = true;
+			persistence.injectRow(pageId, epoch, foreignUpdate);
+		};
+
+		for (let i = 0; i < 3; i++) {
+			alice.fragment.insert(alice.fragment.length, [paragraph(`edit ${i}`)]);
+			await sleep(60);
+		}
+
+		// The merged row must reach both alice's doc and her snapshot; otherwise
+		// her next snapshot would regress the other replica's committed edit.
+		await eventually(
+			() => JSON.stringify(api.latest(PAGE) ?? '').includes('from another replica'),
+			8000,
+			'foreign append survived compaction in the snapshot'
+		);
+		await eventually(() => textOf(alice.doc).includes('from another replica'));
 	});
 
 	it('replicas pick up each other\'s updates before snapshotting', async () => {
