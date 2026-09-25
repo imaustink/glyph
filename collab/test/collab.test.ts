@@ -140,6 +140,25 @@ describe('convergence and persistence', () => {
 		);
 	});
 
+	it('keeps parked edits when the note is reopened before the deferred retry runs', async () => {
+		// Same outage, but persistence recovers and someone opens the note again
+		// before the parked document's retry fires. Loading the note afresh must
+		// not orphan the parked edits: they belong in the new copy.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		persistence.failAppends = 100;
+		alice.fragment.insert(alice.fragment.length, [paragraph('parked edit')]);
+		await sleep(150);
+		alice.destroy(); // unload is deferred: the final flush fails
+		await sleep(150);
+		persistence.failAppends = 0; // recovered, but the retry hasn't fired yet
+
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		await eventually(() => textOf(bob.doc).includes('parked edit'), 3000, 'reopened note has the parked edit');
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('parked edit'), 5000, 'parked edit persisted');
+	});
+
 	it('reloads the same document from the log after every client leaves', async () => {
 		const alice = open({ user: 'alice' });
 		await alice.synced();

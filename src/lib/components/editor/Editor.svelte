@@ -261,9 +261,8 @@
       // Single-writer: disabled until the page is loaded — otherwise a
       // keystroke landing before setContent() replaces the whole document
       // gets silently discarded (or appended to the stale template content).
-      // Collaborative: only created once the content is there, so it starts
-      // in its final state; toggling editable right after creation left
-      // ProseMirror ignoring the first clicks' selection for a moment.
+      // Collaborative: only created once the content is there, so it can
+      // start in its final state.
       editable: s ? s.canEdit : false,
       onSelectionUpdate: ({ editor: ed }) => {
         dismissPendingIfCursorLeft(ed);
@@ -357,9 +356,9 @@
           if (session !== s) return;
           uiStore.setCollabState(st);
           // State events fire on every sync acknowledgement, i.e. per
-          // keystroke. setEditable() re-applies the view state even when the
-          // value is unchanged, which clobbers an in-progress DOM selection
-          // (fast typing then acts on the wrong range) — so only toggle it.
+          // keystroke, and setEditable() pushes a view update (and an
+          // 'update' event) even when the value is unchanged — so only call
+          // it when editability actually changes.
           if (editor && editor.isEditable !== s.canEdit) editor.setEditable(s.canEdit);
         },
         onReset: (reason) => {

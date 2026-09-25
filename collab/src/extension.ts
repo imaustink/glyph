@@ -323,13 +323,41 @@ export class GlyphCollab implements Extension {
 		};
 		document.on('update', onUpdate);
 		state.unsubscribe = () => document.off('update', onUpdate);
+
+		// A previous copy of this document may still be parked here: its last
+		// client left during a persistence outage, so afterUnloadDocument kept
+		// it (and a retry) to write its unpersisted updates later. Hocuspocus
+		// has already dropped that copy, and this load replaces its entry — so
+		// its retry would never run again. Carry its updates into the new copy
+		// instead (they re-enter `pending` via the listener above and are
+		// persisted with it). Updates from a replaced epoch are dropped: they
+		// belong to a document that no longer exists.
+		const parked = this.docs.get(documentName);
+		if (parked && parked !== state) {
+			if (parked.retryTimer) clearTimeout(parked.retryTimer);
+			parked.retryTimer = null;
+			parked.evicted = true;
+			const carried = parked.pending;
+			parked.pending = [];
+			if (parked.epoch === epoch && carried.length > 0) {
+				for (const update of carried) Y.applyUpdate(document, update, REPAIR_ORIGIN);
+				this.opts.log.info('carried unpersisted updates into reloaded document', { pageId, updates: carried.length });
+			}
+			parked.unsubscribe();
+			parked.shadow.destroy();
+		}
 		this.docs.set(documentName, state);
 		if (loaded.seeded) this.opts.log.info('seeded document', { pageId, epoch });
 	}
 
 	async afterLoadDocument({ documentName }: afterLoadDocumentPayload) {
 		const state = this.docs.get(documentName);
-		if (state) this.applyRepairs(state);
+		if (!state) return;
+		this.applyRepairs(state);
+		// Updates carried over from a parked copy (see onLoadDocument) arrived
+		// before Hocuspocus started listening, so no store is scheduled for
+		// them yet. Write them now rather than waiting for the next edit.
+		if (state.pending.length > 0) void this.persist(state);
 	}
 
 	private seed(stored: StoredPageContent | null): Uint8Array {

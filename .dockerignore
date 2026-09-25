@@ -1,4 +1,9 @@
 node_modules
+# Workspace packages' own node_modules (pnpm symlinks into the host's store) —
+# a bare "node_modules" only matches the context root, and copying these over
+# an image's fresh install leaves it resolving against the host's packages.
+**/node_modules
+collab/dist
 build
 .svelte-kit
 .env
