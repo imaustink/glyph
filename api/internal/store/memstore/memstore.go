@@ -8,6 +8,7 @@ package memstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -34,8 +35,15 @@ type Registry struct {
 	pages           map[uuid.UUID]*model.Page
 	contents        map[uuid.UUID]*model.PageContent
 	contentVersions map[uuid.UUID][]model.PageContentVersion
+	versionSeq      int64 // global, like the BIGSERIAL id in Postgres
 
-	tasks     map[uuid.UUID]*model.Task
+	tasks map[uuid.UUID]*model.Task
+	// deletedTasks holds soft-deleted tasks. Keeping them out of `tasks`
+	// hides them from every read path without each one needing a check.
+	deletedTasks map[uuid.UUID]deletedTask
+
+	collab map[uuid.UUID]*collabDoc
+
 	lanes     map[uuid.UUID]*model.Lane
 	templates map[uuid.UUID]*model.Template
 
@@ -56,7 +64,10 @@ func (r *Registry) init() {
 	r.pages = make(map[uuid.UUID]*model.Page)
 	r.contents = make(map[uuid.UUID]*model.PageContent)
 	r.contentVersions = make(map[uuid.UUID][]model.PageContentVersion)
+	r.versionSeq = 0
 	r.tasks = make(map[uuid.UUID]*model.Task)
+	r.deletedTasks = make(map[uuid.UUID]deletedTask)
+	r.collab = make(map[uuid.UUID]*collabDoc)
 	r.lanes = make(map[uuid.UUID]*model.Lane)
 	r.templates = make(map[uuid.UUID]*model.Template)
 	r.orgs = make(map[uuid.UUID]*model.Organization)
@@ -514,43 +525,121 @@ func (s *pageStore) UpsertContent(_ context.Context, pc *model.PageContent, user
 		return nil, store.ErrForbidden
 	}
 
-	cur, hasCurrent := s.r.contents[pc.PageID]
-	if hasCurrent && pc.ExpectedRevision != 0 && pc.ExpectedRevision != cur.Revision {
-		return nil, fmt.Errorf("%w: content revision %d is stale, current is %d",
-			store.ErrConflict, pc.ExpectedRevision, cur.Revision)
+	if doc := s.r.collab[pc.PageID]; doc != nil && doc.attached {
+		if !pc.DetachCollab {
+			return nil, store.ErrCollaborative
+		}
+		doc.attached = false
 	}
 
-	nextRevision := 1
+	cur, hasCurrent := s.r.contents[pc.PageID]
 	if hasCurrent {
-		// Archive the revision being replaced.
-		s.r.contentVersions[pc.PageID] = append(s.r.contentVersions[pc.PageID], model.PageContentVersion{
-			ID:            int64(len(s.r.contentVersions[pc.PageID]) + 1),
-			PageID:        pc.PageID,
+		if pc.ExpectedRevision == 0 {
+			return nil, fmt.Errorf("%w: expectedRevision is required, current is %d",
+				store.ErrConflict, cur.Revision)
+		}
+		if pc.ExpectedRevision != cur.Revision {
+			return nil, fmt.Errorf("%w: content revision %d is stale, current is %d",
+				store.ErrConflict, pc.ExpectedRevision, cur.Revision)
+		}
+	}
+	return s.r.writeContent(pc.PageID, pc.Content, pc.SchemaVersion), nil
+}
+
+// writeContent mirrors the Postgres writeContentLocked: archive, write,
+// prune history, reconcile tasks. Must be called with the write lock held.
+func (r *Registry) writeContent(pageID uuid.UUID, content json.RawMessage, schemaVersion int) *model.PageContent {
+	if content == nil {
+		content = json.RawMessage(`{"type":"doc","content":[]}`)
+	}
+	nextRevision := 1
+	if cur, ok := r.contents[pageID]; ok {
+		r.versionSeq++
+		r.contentVersions[pageID] = append(r.contentVersions[pageID], model.PageContentVersion{
+			ID:            r.versionSeq,
+			PageID:        pageID,
 			Content:       cur.Content,
 			Revision:      cur.Revision,
 			SchemaVersion: cur.SchemaVersion,
 			ReplacedAt:    cur.UpdatedAt,
 		})
-		if v := s.r.contentVersions[pc.PageID]; len(v) > contentVersionRetention {
-			s.r.contentVersions[pc.PageID] = v[len(v)-contentVersionRetention:]
-		}
+		r.contentVersions[pageID] = pruneContentVersions(r.contentVersions[pageID], time.Now())
 		nextRevision = cur.Revision + 1
 	}
-
 	stored := &model.PageContent{
-		PageID:        pc.PageID,
-		Content:       pc.Content,
+		PageID:        pageID,
+		Content:       content,
 		UpdatedAt:     time.Now(),
-		SchemaVersion: pc.SchemaVersion,
+		SchemaVersion: schemaVersion,
 		Revision:      nextRevision,
 	}
-	s.r.contents[pc.PageID] = stored
+	r.contents[pageID] = stored
+	r.reconcileSourceTasks(pageID, content)
 	cp := *stored
-	return &cp, nil
+	return &cp
 }
 
-// contentVersionRetention mirrors the Postgres store's retention window.
-const contentVersionRetention = 20
+// reconcileSourceTasks mirrors the Postgres reconcileSourceTasksLocked.
+func (r *Registry) reconcileSourceTasks(pageID uuid.UUID, content json.RawMessage) {
+	ids, err := store.ListItemNodeIDs(content)
+	if err != nil {
+		return
+	}
+	live := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		live[id] = true
+	}
+	now := time.Now()
+	for id, t := range r.tasks {
+		if t.SourcePageID != nil && *t.SourcePageID == pageID && t.SourceNodeID != nil && !live[*t.SourceNodeID] {
+			t.UpdatedAt = now
+			r.deletedTasks[id] = deletedTask{task: t, reason: deletedReasonSourceRemoved}
+			delete(r.tasks, id)
+		}
+	}
+	for id, d := range r.deletedTasks {
+		t := d.task
+		if d.reason == deletedReasonSourceRemoved && t.SourcePageID != nil && *t.SourcePageID == pageID &&
+			t.SourceNodeID != nil && live[*t.SourceNodeID] {
+			t.UpdatedAt = now
+			r.tasks[id] = t
+			delete(r.deletedTasks, id)
+		}
+	}
+}
+
+// Version-history retention, mirroring the Postgres contentVersionPruneSQL.
+const contentVersionKeepRecent = 20
+const maxContentVersionList = 200
+
+// pruneContentVersions keeps, from versions ordered oldest-first: the newest
+// contentVersionKeepRecent, everything from the last hour, the newest per 5
+// minutes for a day, and the newest per day for 30 days.
+func pruneContentVersions(versions []model.PageContentVersion, now time.Time) []model.PageContentVersion {
+	seen5m := map[int64]bool{}
+	seenDay := map[string]bool{}
+	keep := make([]bool, len(versions))
+	for i := len(versions) - 1; i >= 0; i-- { // newest first
+		v := versions[i]
+		rank := len(versions) - 1 - i
+		age := now.Sub(v.ReplacedAt)
+		bin5m := v.ReplacedAt.Unix() / 300
+		day := v.ReplacedAt.UTC().Format("2006-01-02")
+		first5m, firstDay := !seen5m[bin5m], !seenDay[day]
+		seen5m[bin5m], seenDay[day] = true, true
+		keep[i] = rank < contentVersionKeepRecent ||
+			age < time.Hour ||
+			(age < 24*time.Hour && first5m) ||
+			(age < 30*24*time.Hour && firstDay)
+	}
+	out := versions[:0]
+	for i, v := range versions {
+		if keep[i] {
+			out = append(out, v)
+		}
+	}
+	return out
+}
 
 func (s *pageStore) ListContentVersions(_ context.Context, pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error) {
 	s.r.mu.RLock()
@@ -562,8 +651,8 @@ func (s *pageStore) ListContentVersions(_ context.Context, pageID, userID uuid.U
 	if !s.r.canRead(userID, p.UserID, p.OrgID, p.IsPrivate, model.ShareResourcePage, p.ID) {
 		return nil, store.ErrForbidden
 	}
-	if limit <= 0 || limit > contentVersionRetention {
-		limit = contentVersionRetention
+	if limit <= 0 || limit > maxContentVersionList {
+		limit = maxContentVersionList
 	}
 	src := s.r.contentVersions[pageID]
 	out := []model.PageContentVersion{}
@@ -628,7 +717,7 @@ func (s *taskStore) ListByUser(_ context.Context, userID uuid.UUID) ([]*model.Ta
 	defer s.r.mu.RUnlock()
 	result := make([]*model.Task, 0)
 	for _, t := range s.r.tasks {
-		if s.r.canRead(userID, t.UserID, t.OrgID, t.IsPrivate, model.ShareResourceTask, t.ID) {
+		if s.r.canReadTask(userID, t) {
 			result = append(result, cloneTask(t))
 		}
 	}
@@ -657,7 +746,7 @@ func (s *taskStore) GetByID(_ context.Context, id, userID uuid.UUID) (*model.Tas
 	s.r.mu.RLock()
 	defer s.r.mu.RUnlock()
 	t, ok := s.r.tasks[id]
-	if !ok || !s.r.canRead(userID, t.UserID, t.OrgID, t.IsPrivate, model.ShareResourceTask, t.ID) {
+	if !ok || !s.r.canReadTask(userID, t) {
 		return nil, fmt.Errorf("tasks get: not found")
 	}
 	return cloneTask(t), nil
@@ -683,7 +772,7 @@ func (s *taskStore) ListBySourceNode(_ context.Context, userID uuid.UUID, source
 	var result []*model.Task
 	for _, t := range s.r.tasks {
 		if t.SourceNodeID != nil && *t.SourceNodeID == sourceNodeID {
-			if s.r.canRead(userID, t.UserID, t.OrgID, t.IsPrivate, model.ShareResourceTask, t.ID) {
+			if s.r.canReadTask(userID, t) {
 				result = append(result, cloneTask(t))
 			}
 		}
@@ -697,6 +786,13 @@ func (s *taskStore) Upsert(_ context.Context, t *model.Task) (*model.Task, error
 	defer s.r.mu.Unlock()
 	if t.ID == uuid.Nil {
 		t.ID = uuid.New()
+	}
+	// Mirrors the Postgres WHERE deleted_at IS NULL: never resurrect.
+	if _, deleted := s.r.deletedTasks[t.ID]; deleted {
+		return nil, store.ErrNotFound
+	}
+	if s.r.sourceTaken(t, t.ID) {
+		return nil, fmt.Errorf("%w: tasks_source_page_node_uniq", store.ErrConflict)
 	}
 	if existing, ok := s.r.tasks[t.ID]; ok {
 		if existing.UserID != t.UserID {
@@ -721,6 +817,12 @@ func (s *taskStore) Create(_ context.Context, t *model.Task) (*model.Task, error
 	if t.ID == uuid.Nil {
 		t.ID = uuid.New()
 	}
+	if s.r.taskIDTaken(t.ID) {
+		return nil, fmt.Errorf("%w: tasks_pkey", store.ErrConflict)
+	}
+	if s.r.sourceTaken(t, t.ID) {
+		return nil, fmt.Errorf("%w: tasks_source_page_node_uniq", store.ErrConflict)
+	}
 	now := time.Now()
 	t.CreatedAt = now
 	t.UpdatedAt = now
@@ -729,12 +831,48 @@ func (s *taskStore) Create(_ context.Context, t *model.Task) (*model.Task, error
 	return cloneTask(stored), nil
 }
 
+// CreateLinked mirrors the Postgres implementation.
+func (s *taskStore) CreateLinked(_ context.Context, t *model.Task) (*model.Task, bool, error) {
+	if t.SourcePageID == nil || t.SourceNodeID == nil {
+		return nil, false, fmt.Errorf("create linked task: sourcePageId and sourceNodeId are required")
+	}
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	if t.ID == uuid.Nil {
+		t.ID = uuid.New()
+	}
+	if existing, ok := s.r.tasks[s.r.liveOrDeletedBySource(*t.SourcePageID, *t.SourceNodeID)]; ok {
+		return cloneTask(existing), false, nil
+	}
+	if d, ok := s.r.deletedTasks[s.r.liveOrDeletedBySource(*t.SourcePageID, *t.SourceNodeID)]; ok {
+		if d.task.UserID != t.UserID {
+			return nil, false, fmt.Errorf("%w: bullet is linked to a deleted task owned by another user", store.ErrConflict)
+		}
+		d.task.UpdatedAt = time.Now()
+		s.r.tasks[d.task.ID] = d.task
+		delete(s.r.deletedTasks, d.task.ID)
+		return cloneTask(d.task), false, nil
+	}
+	if s.r.taskIDTaken(t.ID) {
+		return nil, false, fmt.Errorf("%w: task id already in use", store.ErrConflict)
+	}
+	now := time.Now()
+	t.CreatedAt = now
+	t.UpdatedAt = now
+	stored := cloneTask(t)
+	s.r.tasks[stored.ID] = stored
+	return cloneTask(stored), true, nil
+}
+
 func (s *taskStore) Update(_ context.Context, t *model.Task) (*model.Task, error) {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
 	existing, ok := s.r.tasks[t.ID]
 	if !ok || existing.UserID != t.UserID {
 		return nil, fmt.Errorf("tasks update: not found")
+	}
+	if s.r.sourceTaken(t, t.ID) {
+		return nil, fmt.Errorf("%w: tasks_source_page_node_uniq", store.ErrConflict)
 	}
 	t.CreatedAt = existing.CreatedAt
 	t.UpdatedAt = time.Now()
@@ -750,6 +888,8 @@ func (s *taskStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 	if !ok || t.UserID != userID {
 		return nil
 	}
+	t.UpdatedAt = time.Now()
+	s.r.deletedTasks[id] = deletedTask{task: t, reason: deletedReasonUser}
 	delete(s.r.tasks, id)
 	return nil
 }

@@ -17,16 +17,23 @@ type handlers struct {
 	orgs         *handler.OrgHandler
 	shares       *handler.ShareHandler
 	oauthClients *handler.OAuthClientHandler
+	collab       *handler.CollabHandler
 	search       *handler.SearchHandler
 }
 
 // newHandlers creates all handler instances from their stores.
-func newHandlers(stores *stores) *handlers {
+func newHandlers(stores *stores, collab collabConfig) *handlers {
 	perms := &handler.PermissionChecker{Orgs: stores.orgs, Shares: stores.shares}
 
 	return &handlers{
-		pages: &handler.PageHandler{Pages: stores.pages, Perms: perms},
-		tasks: &handler.TaskHandler{Tasks: stores.tasks, Perms: perms},
+		pages: &handler.PageHandler{Pages: stores.pages, Perms: perms, CollabEnabled: collab.enabled},
+		collab: &handler.CollabHandler{
+			Pages:        stores.pages,
+			Perms:        perms,
+			Enabled:      collab.enabled,
+			ServiceToken: collab.serviceToken,
+		},
+		tasks: &handler.TaskHandler{Tasks: stores.tasks, Perms: perms, Pages: stores.pages, Collab: stores.collab},
 		lanes: &handler.LaneHandler{Lanes: stores.lanes, Pages: stores.pages},
 		folders: &handler.FolderHandler{
 			Pages: stores.pages,
@@ -68,6 +75,8 @@ func registerRoutes(apiGroup *gin.RouterGroup, h *handlers) {
 	apiGroup.GET("/pages/:id/content", h.pages.GetPageContent)
 	apiGroup.PUT("/pages/:id/content", h.pages.UpsertPageContent)
 	apiGroup.GET("/pages/:id/content/versions", h.pages.ListPageContentVersions)
+	apiGroup.POST("/pages/:id/content/versions/:versionId/restore", h.pages.RestorePageContentVersion)
+	apiGroup.GET("/pages/:id/collab", h.collab.GetSession)
 
 	// Tasks
 	apiGroup.GET("/tasks", h.tasks.ListTasks)
@@ -141,4 +150,12 @@ func registerRoutes(apiGroup *gin.RouterGroup, h *handlers) {
 	apiGroup.GET("/orgs/:orgId/oauth-clients/:clientId/tokens", h.oauthClients.ListClientTokens)
 	apiGroup.DELETE("/orgs/:orgId/oauth-clients/:clientId/tokens/:tokenId", h.oauthClients.RevokeToken)
 	apiGroup.POST("/orgs/:orgId/oauth-clients/:clientId/tokens/revoke-all", h.oauthClients.RevokeAllTokens)
+}
+
+// registerInternalRoutes adds service-to-service routes. They live outside
+// /api (so neither the Ingress nor the dev proxies route them) and are
+// authenticated by the shared collab service token, never by a user session.
+func registerInternalRoutes(r *gin.Engine, h *handlers) {
+	internal := r.Group("/internal/collab", h.collab.ServiceAuth())
+	internal.PUT("/pages/:id/snapshot", h.collab.WriteSnapshot)
 }

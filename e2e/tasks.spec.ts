@@ -5,7 +5,8 @@ import {
 	navigateToTaskBoard,
 	createNewPage,
 	navigateToPage,
-	waitForEditorReady
+	waitForEditorReady,
+	selectionSettled
 } from './fixtures';
 
 test.describe('Tasks', () => {
@@ -679,17 +680,27 @@ test.describe('Tasks', () => {
 		await page.locator('.node-label').first().click();
 		await page.waitForSelector('main .tiptap-editor', { timeout: 15_000 });
 
-		// Select the entire bullet line and delete it.
-		// Click on the bullet text, select all content on that line, then delete.
+		// Select the bullet's text and delete it, then backspace once more to
+		// remove the (now empty) list item.
+		//
+		// ProseMirror learns about a mouse- or key-driven selection change from
+		// the browser's asynchronous `selectionchange` event. Keys pressed
+		// within the same few milliseconds act on the *previous* selection, so
+		// let each selection change land before the next key. (Previously
+		// Home/Shift+End/Backspace fired back-to-back: ProseMirror never saw
+		// the click, and the test only passed when the editor's stale caret
+		// happened to sit inside this bullet.) Triple-click selects the
+		// paragraph on every platform, unlike Home/End on macOS.
 		const bulletItem = page.locator('main .tiptap-editor li:has-text("Auto delete task")');
 		await expect(bulletItem).toBeVisible({ timeout: 15_000 });
-		await bulletItem.click();
+		await bulletItem.locator('p').click({ clickCount: 3 });
+		await selectionSettled(page);
+		await page.keyboard.press('Backspace');
+		await selectionSettled(page);
+		await page.keyboard.press('Backspace');
 
-		// Select all text in the bullet and delete, then backspace to remove the list item.
-		await page.keyboard.press('Home');
-		await page.keyboard.press('Shift+End');
-		await page.keyboard.press('Backspace');
-		await page.keyboard.press('Backspace');
+		// The bullet itself must be gone, not just edited.
+		await expect(page.locator('main .tiptap-editor li:has-text("Auto delete task")')).toHaveCount(0);
 
 		// Wait for debounced save and task deletion.
 		await page.waitForTimeout(1_500);

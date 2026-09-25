@@ -17,6 +17,8 @@ type stores struct {
 	oauthClients store.OAuthClientStore
 	oauthCodes   store.OAuthCodeStore
 	oauthTokens  store.OAuthTokenStore
+	// collab notifies the collab service of out-of-editor changes (nil = off).
+	collab store.CollabNotifier
 }
 
 // newStores creates all store instances from the database pool.
@@ -25,6 +27,7 @@ func newStores(pool *pgxpool.Pool) *stores {
 		users:        store.NewUserStore(pool),
 		pages:        store.NewPageStore(pool),
 		tasks:        store.NewTaskStore(pool),
+		collab:       store.NewCollabNotifier(pool),
 		lanes:        store.NewLaneStore(pool),
 		templates:    store.NewTemplateStore(pool),
 		orgs:         store.NewOrgStore(pool),

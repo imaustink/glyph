@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/glyph/api/internal/store"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -89,6 +90,20 @@ func (b *postgresBackend) Reset(t *testing.T) {
 	ctx := context.Background()
 	_, err := b.pool.Exec(ctx, "TRUNCATE shares, org_members, organizations, page_contents, tasks, lanes, templates, pages, users CASCADE")
 	require.NoError(t, err)
+}
+
+// AttachCollab stands in for the collab service seeding a page.
+func (b *postgresBackend) AttachCollab(t *testing.T, pageID uuid.UUID) int {
+	t.Helper()
+	var epoch int
+	err := b.pool.QueryRow(context.Background(),
+		`INSERT INTO page_collab_docs (page_id, epoch, attached) VALUES ($1, 1, true)
+		 ON CONFLICT (page_id) DO UPDATE
+		   SET epoch = page_collab_docs.epoch + 1, attached = true, snapshot_seq = 0
+		 RETURNING epoch`, pageID,
+	).Scan(&epoch)
+	require.NoError(t, err)
+	return epoch
 }
 
 func (b *postgresBackend) Teardown() {

@@ -5,6 +5,8 @@ import { nanoid } from 'nanoid';
 import type { TodoTriggerConfig } from '$lib/models/types';
 import { DEFAULT_TODO_TRIGGER } from '$lib/models/types';
 import { safeRegexTest } from '$lib/utils/safeRegex';
+import { isLocalTransaction } from '$lib/collab/isLocalTransaction';
+import { changedRanges, nodeTouches, type Range } from '$lib/editor/changedRanges';
 
 export interface DetectedBullet {
   nodeId: string;
@@ -17,6 +19,15 @@ export interface TodoDetectionOptions {
   pageId: () => string;
   /** Returns the trigger config for TODO detection. Defaults to exact-match "TODO" on headings. */
   todoTrigger: () => TodoTriggerConfig | undefined;
+  /**
+   * Collaborative mode. Only this user's own changes create tasks: a bullet
+   * is offered for task creation if the user typed/pasted it (or its text),
+   * or just typed the TODO heading above it. Remote edits never are —
+   * otherwise every connected client would try to create the task for the
+   * bullet one person typed. Nor are other people's unlinked bullets that
+   * merely exist in the document when this user edits something else.
+   */
+  localChangesOnly?: boolean;
 }
 
 export const todoDetectionPluginKey = new PluginKey<DetectedBullet[]>('todo-detection');
@@ -48,7 +59,8 @@ export const TodoDetectionExtension = Extension.create<TodoDetectionOptions>({
       /* c8 ignore next -- no-op default; always overridden in practice */
       onTodoBulletsDetected: () => {},
       pageId: () => '',
-      todoTrigger: () => undefined
+      todoTrigger: () => undefined,
+      localChangesOnly: false
     };
   },
 
@@ -73,9 +85,14 @@ export const TodoDetectionExtension = Extension.create<TodoDetectionOptions>({
 
         state: {
           init() { return [] as DetectedBullet[]; },
-          apply(tr, _value, _oldState, newState) {
+          apply(tr, _value, oldState, newState) {
             // Only recompute on doc changes; otherwise clear
             if (!tr.docChanged) return [];
+
+            if (options.localChangesOnly) {
+              if (!isLocalTransaction(tr)) return [];
+              return scanChangedBullets(newState.doc, oldState.doc, options.todoTrigger(), changedRanges(tr));
+            }
 
             const { unlinkedBullets } = scanDocumentCached(newState.doc, options.todoTrigger());
             return unlinkedBullets;
@@ -85,6 +102,11 @@ export const TodoDetectionExtension = Extension.create<TodoDetectionOptions>({
         appendTransaction(transactions, _oldState, newState) {
           // Only act on transactions that changed the document
           if (!transactions.some((tr) => tr.docChanged)) return null;
+          // Never assign identity in response to someone else's edit (see
+          // CollabNodeIdExtension for why that would race).
+          if (options.localChangesOnly && !transactions.some((tr) => tr.docChanged && isLocalTransaction(tr))) {
+            return null;
+          }
 
           const { bulletListsInTodoSections } = scanDocumentCached(newState.doc, options.todoTrigger());
 
@@ -204,6 +226,71 @@ function collectUnlinkedBullets(bulletList: ProseMirrorNode, out: DetectedBullet
       }
     });
   });
+}
+
+/**
+ * Unlinked bullets in TODO sections that one local transaction affected: the
+ * bullet was inserted, its own text was edited, it was just given its
+ * identity (nodeId) by this client, or the section's TODO heading itself was
+ * edited.
+ */
+function scanChangedBullets(
+  doc: ProseMirrorNode,
+  oldDoc: ProseMirrorNode,
+  triggerConfig: TodoTriggerConfig | undefined,
+  ranges: Range[]
+): DetectedBullet[] {
+  // Identity assignment is an attribute-only step with no content range, so
+  // "newly identified" is checked against the previous document instead.
+  let oldIds: Set<string> | null = null;
+  const isNewId = (id: string) => {
+    if (!oldIds) {
+      oldIds = new Set();
+      oldDoc.descendants((n) => {
+        if (n.type.name === 'listItem' && n.attrs.nodeId) oldIds!.add(n.attrs.nodeId as string);
+      });
+    }
+    return !oldIds.has(id);
+  };
+  const trigger = triggerConfig ?? DEFAULT_TODO_TRIGGER;
+  const blockTypes = trigger.blockTypes?.length ? trigger.blockTypes : ['heading'];
+  const matchesAnyType = blockTypes.includes('any');
+
+  const out: DetectedBullet[] = [];
+  let inTodoSection = false;
+  let headingChanged = false;
+
+  const visitList = (bulletList: ProseMirrorNode, listPos: number) => {
+    bulletList.forEach((listItem, liOffset) => {
+      const pos = listPos + 1 + liOffset;
+      const nodeId = listItem.attrs.nodeId as string | null;
+      const taskId = listItem.attrs.taskId as string | null;
+      if (nodeId && !taskId) {
+        let ownTextChanged = false;
+        listItem.forEach((child, childOffset) => {
+          if (child.type.name === 'paragraph' && nodeTouches(child, pos + 1 + childOffset, ranges)) ownTextChanged = true;
+        });
+        const inserted = ranges.some(([from, to]) => from <= pos && to >= pos + listItem.nodeSize);
+        if (headingChanged || ownTextChanged || inserted || isNewId(nodeId)) {
+          out.push({ nodeId, bulletText: getListItemText(listItem), pageId: '' });
+        }
+      }
+      listItem.forEach((child, childOffset) => {
+        if (child.type.name === 'bulletList') visitList(child, pos + 1 + childOffset);
+      });
+    });
+  };
+
+  doc.forEach((node, offset) => {
+    const isMatchableType = matchesAnyType || blockTypes.includes(node.type.name);
+    if (isMatchableType) {
+      inTodoSection = matchesTrigger(node.textContent.trim(), trigger);
+      headingChanged = inTodoSection && nodeTouches(node, offset, ranges);
+      return;
+    }
+    if (node.type.name === 'bulletList' && inTodoSection) visitList(node, offset);
+  });
+  return out;
 }
 
 function getListItemText(node: ProseMirrorNode): string {

@@ -1,4 +1,5 @@
 import { repositories } from '$lib/storage/config';
+import { ApiError } from '$lib/storage/apiClient';
 import type { ITaskRepository } from '$lib/storage/interfaces';
 import type { FilterContext } from '$lib/storage/filterUtils';
 import type { Task, FilterSet, Priority, TaskStatus, TreeNode } from '$lib/models/types';
@@ -81,9 +82,54 @@ export function createTasksStore(injectedRepo?: ITaskRepository) {
       ...makeTimestamps(),
       order: nextOrder()
     };
-    await repo.create(task);
-    setTasks([...tasks, task]);
-    return task;
+    // For a bullet-linked task the server may answer with a task that already
+    // exists for that bullet (another editor, or another tab, created it
+    // first). Adopt whatever it returns rather than our local draft, so both
+    // clients converge on the same task id.
+    const saved = (await repo.create(task)) ?? task;
+    setTasks([...tasks.filter((t) => t.id !== saved.id), saved]);
+    return saved;
+  }
+
+  /**
+   * Drop tasks from local state without touching storage. In API mode the
+   * server soft-deletes a task when its bullet leaves the document; this just
+   * brings the local view in line without the client acting on storage.
+   */
+  function forgetLocal(ids: Iterable<string>): void {
+    const drop = new Set(ids);
+    if (drop.size === 0) return;
+    for (const id of drop) _forgotten.add(id);
+    setTasks(tasks.filter((t) => !drop.has(t.id)));
+  }
+
+  /**
+   * Tasks dropped by forgetLocal. The server only soft-deletes them once it
+   * has saved the document without their bullet, a moment later — a bulk
+   * refresh landing in between would otherwise put them straight back.
+   * Cleared when the bullet returns (refreshTask).
+   */
+  const _forgotten = new Set<string>();
+
+  /**
+   * Re-read one task from storage into local state (or drop it if it no
+   * longer exists). Returns whether the task exists.
+   */
+  async function refreshTask(id: string): Promise<boolean> {
+    _forgotten.delete(id);
+    const fresh = await repo.getById(id);
+    if (fresh) {
+      setTasks([...tasks.filter((t) => t.id !== id), fresh]);
+      return true;
+    }
+    setTasks(tasks.filter((t) => t.id !== id));
+    return false;
+  }
+
+  /** Re-read every task sourced from a page, replacing local state for it. */
+  async function refreshForPage(pageId: string): Promise<void> {
+    const fresh = (await repo.getByPageId(pageId)).filter((t) => !_forgotten.has(t.id));
+    setTasks([...tasks.filter((t) => t.sourcePageId !== pageId), ...fresh]);
   }
 
   function getByPageIdRecursive(pageId: string, allNodes: TreeNode[]): Task[] {
@@ -135,7 +181,13 @@ export function createTasksStore(injectedRepo?: ITaskRepository) {
   }
 
   async function deleteTask(id: string): Promise<void> {
-    await repo.delete(id);
+    try {
+      await repo.delete(id);
+    } catch (err) {
+      // Already gone (e.g. the server removed it with its bullet): the
+      // outcome the caller wanted.
+      if (!(err instanceof ApiError && err.status === 404)) throw err;
+    }
     setTasks(tasks.filter((t) => t.id !== id));
   }
 
@@ -150,7 +202,10 @@ export function createTasksStore(injectedRepo?: ITaskRepository) {
     getByPageIdRecursive,
     createTask,
     updateTask,
-    deleteTask
+    deleteTask,
+    forgetLocal,
+    refreshTask,
+    refreshForPage
   };
 }
 

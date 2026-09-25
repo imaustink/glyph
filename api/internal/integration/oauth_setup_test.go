@@ -210,7 +210,7 @@ func setupOAuthServer(t *testing.T) *oauthServer {
 		apiGroup.GET("/pages/:id", pageH.GetPage)
 		apiGroup.PATCH("/pages/:id", pageH.UpdatePage)
 
-		taskH := &handler.TaskHandler{Tasks: s.tasks, Perms: perms}
+		taskH := &handler.TaskHandler{Tasks: s.tasks, Perms: perms, Pages: s.pages}
 		apiGroup.GET("/tasks", taskH.ListTasks)
 		apiGroup.POST("/tasks", taskH.CreateTask)
 		apiGroup.PATCH("/tasks/:id", taskH.UpdateTask)

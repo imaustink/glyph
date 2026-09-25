@@ -131,6 +131,19 @@ export async function waitForEditorReady(page: import('@playwright/test').Page) 
 	await expect(wrapper).toHaveAttribute('data-content-loaded', 'true', { timeout: 15_000 });
 }
 
+/**
+ * Let a selection change reach ProseMirror before the next key. The browser
+ * reports selection changes (from a click, or from keys like Shift+End) with
+ * an asynchronous `selectionchange` event; keys pressed before it arrives are
+ * handled against the old selection. Two animation frames is comfortably
+ * after that event's task has run.
+ */
+export async function selectionSettled(page: import('@playwright/test').Page) {
+	await page.evaluate(
+		() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+	);
+}
+
 /** Type into the TipTap editor. */
 export async function typeInEditor(page: import('@playwright/test').Page, text: string) {
 	await waitForEditorReady(page);

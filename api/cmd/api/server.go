@@ -31,8 +31,9 @@ func newServer(ctx context.Context, pool *pgxpool.Pool, s *stores, sessionSecret
 
 	apiGroup := setupAuth(ctx, r, pool, s, sessionSecret)
 
-	h := newHandlers(s)
+	h := newHandlers(s, loadCollabConfig())
 	registerRoutes(apiGroup, h)
+	registerInternalRoutes(r, h)
 
 	port := os.Getenv("PORT")
 	if port == "" {

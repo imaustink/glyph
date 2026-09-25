@@ -76,7 +76,7 @@ func newMCPEnv(t *testing.T) *mcpEnv {
 	glyphoauth.RegisterOAuthRoutes(r, oauthCfg, nil)
 	apiGroup := r.Group("/api/v1", glyphoauth.DualAuthMiddleware(sessionMw, bearerMw), handler.CSRFMiddleware())
 	glyphoauth.RegisterConsentRoutes(apiGroup, oauthCfg)
-	registerRoutes(apiGroup, newHandlers(s))
+	registerRoutes(apiGroup, newHandlers(s, collabConfig{}))
 	registerMCP(r, s, oauthCfg, bearerMw)
 
 	ctx := context.Background()
@@ -591,16 +591,18 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 	})
 	assert.Equal(t, e.orgID.String(), orgTask["task"].(map[string]interface{})["workspace"])
 
-	// Write release notes, Record demo video, Ship to beta, Renew domain.
+	// Record demo video, Ship to beta, Renew domain. "Write release notes" is
+	// gone: the replace above dropped its bullet, and the note is the source of
+	// truth for its tasks, so the server soft-deleted the orphaned task.
 	list := e.callOK(g.access, "list_tasks", map[string]interface{}{})
-	assert.EqualValues(t, 4, list["total"])
+	assert.EqualValues(t, 3, list["total"])
 	first := list["tasks"].([]interface{})[0].(map[string]interface{})
 	assert.Equal(t, "Record demo video", first["title"], "dated tasks sort first")
 
 	list = e.callOK(g.access, "list_tasks", map[string]interface{}{"tags": []string{"OPS"}})
 	assert.EqualValues(t, 1, list["total"])
 	list = e.callOK(g.access, "list_tasks", map[string]interface{}{"folder_id": folderID})
-	assert.EqualValues(t, 3, list["total"])
+	assert.EqualValues(t, 2, list["total"])
 	list = e.callOK(g.access, "list_tasks", map[string]interface{}{"due_before": "2026-09-30"})
 	assert.EqualValues(t, 0, list["total"])
 

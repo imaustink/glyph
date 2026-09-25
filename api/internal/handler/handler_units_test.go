@@ -881,6 +881,7 @@ type mockTaskStore struct {
 	listBySourcePageFn    func(ctx context.Context, userID uuid.UUID, pageID uuid.UUID) ([]*model.Task, error)
 	listByFilterFn        func(ctx context.Context, userID uuid.UUID, fs model.FilterSet) ([]*model.Task, error)
 	createFn              func(ctx context.Context, t *model.Task) (*model.Task, error)
+	createLinkedFn        func(ctx context.Context, t *model.Task) (*model.Task, bool, error)
 	getByIDFn             func(id, userID uuid.UUID) (*model.Task, error)
 	updateFn              func(t *model.Task) (*model.Task, error)
 	upsertFn              func(t *model.Task) (*model.Task, error)
@@ -928,6 +929,12 @@ func (m *mockTaskStore) Create(ctx context.Context, t *model.Task) (*model.Task,
 		return m.createFn(ctx, t)
 	}
 	return t, nil
+}
+func (m *mockTaskStore) CreateLinked(ctx context.Context, t *model.Task) (*model.Task, bool, error) {
+	if m.createLinkedFn != nil {
+		return m.createLinkedFn(ctx, t)
+	}
+	return t, true, nil
 }
 func (m *mockTaskStore) Update(_ context.Context, t *model.Task) (*model.Task, error) {
 	if m.updateFn != nil {
@@ -1065,17 +1072,19 @@ func TestTaskHandler_FilterTasks_StoreError_Returns500(t *testing.T) {
 // ─── mockPageStore ────────────────────────────────────────────────────────────
 
 type mockPageStore struct {
-	listByUserFn          func(ctx context.Context, userID uuid.UUID) ([]*model.Page, error)
-	listByUserPaginatedFn func(ctx context.Context, userID uuid.UUID, pg store.Pagination) ([]*model.Page, int, error)
-	createFn              func(ctx context.Context, p *model.Page) (*model.Page, error)
-	getByIDFn             func(id, userID uuid.UUID) (*model.Page, error)
-	upsertContentFn       func(pc *model.PageContent, userID uuid.UUID) (*model.PageContent, error)
-	listContentVersionsFn func(pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error)
-	getContentFn          func(pageID, userID uuid.UUID) (*model.PageContent, error)
-	updateFn              func(p *model.Page) (*model.Page, error)
-	deleteFn              func(id, userID uuid.UUID) error
-	isAncestorFn          func(candidateAncestorID, nodeID uuid.UUID) (bool, error)
-	upsertFn              func(p *model.Page) (*model.Page, error)
+	listByUserFn            func(ctx context.Context, userID uuid.UUID) ([]*model.Page, error)
+	listByUserPaginatedFn   func(ctx context.Context, userID uuid.UUID, pg store.Pagination) ([]*model.Page, int, error)
+	createFn                func(ctx context.Context, p *model.Page) (*model.Page, error)
+	getByIDFn               func(id, userID uuid.UUID) (*model.Page, error)
+	upsertContentFn         func(pc *model.PageContent, userID uuid.UUID) (*model.PageContent, error)
+	listContentVersionsFn   func(pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error)
+	restoreContentVersionFn func(pageID uuid.UUID, versionID int64, userID uuid.UUID) (*model.PageContent, error)
+	writeCollabSnapshotFn   func(snap *model.CollabSnapshot) (*model.PageContent, error)
+	getContentFn            func(pageID, userID uuid.UUID) (*model.PageContent, error)
+	updateFn                func(p *model.Page) (*model.Page, error)
+	deleteFn                func(id, userID uuid.UUID) error
+	isAncestorFn            func(candidateAncestorID, nodeID uuid.UUID) (bool, error)
+	upsertFn                func(p *model.Page) (*model.Page, error)
 }
 
 func (m *mockPageStore) ListByUser(ctx context.Context, userID uuid.UUID) ([]*model.Page, error) {
@@ -1146,6 +1155,18 @@ func (m *mockPageStore) ListContentVersions(_ context.Context, pageID, userID uu
 		return m.listContentVersionsFn(pageID, userID, limit)
 	}
 	return []model.PageContentVersion{}, nil
+}
+func (m *mockPageStore) RestoreContentVersion(_ context.Context, pageID uuid.UUID, versionID int64, userID uuid.UUID) (*model.PageContent, error) {
+	if m.restoreContentVersionFn != nil {
+		return m.restoreContentVersionFn(pageID, versionID, userID)
+	}
+	return nil, store.ErrNotFound
+}
+func (m *mockPageStore) WriteCollabSnapshot(_ context.Context, snap *model.CollabSnapshot) (*model.PageContent, error) {
+	if m.writeCollabSnapshotFn != nil {
+		return m.writeCollabSnapshotFn(snap)
+	}
+	return &model.PageContent{PageID: snap.PageID, Content: snap.Content}, nil
 }
 func (m *mockPageStore) IsAncestor(_ context.Context, candidateAncestorID, nodeID uuid.UUID) (bool, error) {
 	if m.isAncestorFn != nil {

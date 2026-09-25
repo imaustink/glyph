@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glyph/api/internal/auth"
@@ -16,6 +18,7 @@ import (
 	glyphoauth "github.com/glyph/api/internal/oauth"
 	"github.com/glyph/api/internal/store"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/oauth2"
 )
@@ -227,8 +230,18 @@ func registerMCP(r *gin.Engine, s *stores, oauthCfg glyphoauth.Config, bearerMw 
 func registerTestEndpoints(r *gin.Engine, pool *pgxpool.Pool, users store.UserStore) {
 	// /test/reset — truncates all tables for E2E test isolation.
 	r.POST("/test/reset", func(c *gin.Context) {
-		_, dbErr := pool.Exec(c.Request.Context(),
-			"TRUNCATE oauth_tokens, oauth_authorization_codes, oauth_client_orgs, oauth_clients, shares, org_members, organizations, page_contents, tasks, lanes, templates, pages, users CASCADE")
+		// The collab service writes to page_collab_* (under a pages row lock)
+		// while tests run, so the TRUNCATE can lose a deadlock to it. Retry.
+		var dbErr error
+		for attempt := 0; attempt < 5; attempt++ {
+			_, dbErr = pool.Exec(c.Request.Context(),
+				"TRUNCATE oauth_tokens, oauth_authorization_codes, oauth_client_orgs, oauth_clients, shares, org_members, organizations, page_collab_updates, page_collab_docs, page_contents, tasks, lanes, templates, pages, users CASCADE")
+			var pgErr *pgconn.PgError
+			if dbErr == nil || !errors.As(dbErr, &pgErr) || (pgErr.Code != "40P01" && pgErr.Code != "55P03") {
+				break
+			}
+			time.Sleep(time.Duration(50*(attempt+1)) * time.Millisecond)
+		}
 		if dbErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": dbErr.Error()})
 			return

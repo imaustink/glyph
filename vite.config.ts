@@ -43,7 +43,10 @@ export default defineConfig(({ mode }) => {
 						// gated on E2E_RESET_ENABLED separately, mirroring the Go API's
 						// own flag (and hooks.server.ts's production build path) — so
 						// setting API_PROXY_TARGET alone doesn't also expose it.
-						...(env.E2E_RESET_ENABLED === 'true' ? { '/test': env.API_PROXY_TARGET } : {})
+						...(env.E2E_RESET_ENABLED === 'true' ? { '/test': env.API_PROXY_TARGET } : {}),
+						// Realtime collaboration: WebSocket + the collab service's
+						// HTTP ops. Only when a collab service is running.
+						...(env.COLLAB_PROXY_TARGET ? { '/collab': { target: env.COLLAB_PROXY_TARGET, ws: true } } : {})
 					}
 				: undefined
 		},

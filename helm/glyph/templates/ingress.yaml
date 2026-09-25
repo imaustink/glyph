@@ -63,6 +63,19 @@ spec:
                 name: {{ include "glyph.fullname" $ }}-api
                 port:
                   name: http
+          {{- if $.Values.collab.enabled }}
+          # Realtime collaboration: a long-lived WebSocket plus the collab
+          # service's HTTP ops. Controllers that time out idle upstream
+          # connections need a generous read timeout here (see
+          # collab.ingressAnnotationsHint in values.yaml).
+          - path: /collab
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "glyph.fullname" $ }}-collab
+                port:
+                  name: http
+          {{- end }}
           # /oauth/register (RFC 7591 dynamic client registration) and /mcp
           # (the MCP Streamable HTTP endpoint) — together with the discovery
           # metadata below, what lets an MCP client connect with just the

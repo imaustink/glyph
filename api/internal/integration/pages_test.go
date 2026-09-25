@@ -307,7 +307,7 @@ func TestPages(t *testing.T) {
 			h.Do(t, "PUT", fmt.Sprintf("/api/v1/pages/%s/content", page.ID),
 				map[string]interface{}{"content": map[string]interface{}{"type": "doc", "content": []interface{}{map[string]interface{}{"type": "paragraph", "content": []interface{}{map[string]interface{}{"type": "text", "text": "version 1"}}}}}}, h.UserA.ID)
 			w := h.Do(t, "PUT", fmt.Sprintf("/api/v1/pages/%s/content", page.ID),
-				map[string]interface{}{"content": map[string]interface{}{"type": "doc", "content": []interface{}{map[string]interface{}{"type": "paragraph", "content": []interface{}{map[string]interface{}{"type": "text", "text": "version 2"}}}}}}, h.UserA.ID)
+				map[string]interface{}{"expectedRevision": 1, "content": map[string]interface{}{"type": "doc", "content": []interface{}{map[string]interface{}{"type": "paragraph", "content": []interface{}{map[string]interface{}{"type": "text", "text": "version 2"}}}}}}, h.UserA.ID)
 			require.Equal(t, http.StatusOK, w.Code)
 			assert.JSONEq(t, `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"version 2"}]}]}`, string(Decode[model.PageContent](t, w).Content))
 		},

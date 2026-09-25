@@ -226,6 +226,22 @@ Lane filtering is a pure function in [filterUtils.ts](../src/lib/storage/filterU
 
 **Critical:** `nodeId` is a stable UUID assigned once when a `listItem` node is created and never changes. ProseMirror positions are ephemeral — never store a position as a link. Always use `nodeId`.
 
+**A note's tasks belong to the note.** A task created from a bullet (`sourcePageId` set) is owned by the **page's owner**, whoever typed the bullet; creating one requires edit access to the page. Anyone who can read the page can see all its tasks (private or not — `taskSourcePageReadable` in [task_store.go](../api/internal/store/task_store.go), `canReadTask` in memstore), and anyone who can edit the page can edit and delete them (`authorizeTaskWrite` in [task_handler.go](../api/internal/handler/task_handler.go)). Standalone tasks keep their own owner/org/share rules.
+
+**Tasks follow the document, and the server does the following.** Creating the task for a bullet is idempotent: `(source_page_id, source_node_id)` is unique, and `POST /tasks` for a bullet that already has a task returns that task (200) instead of a duplicate — the client adopts whatever the server returns. Every content write (REST save, collab snapshot, version restore) reconciles the page's tasks in the same transaction (`reconcileSourceTasksLocked` in [page_store.go](../api/internal/store/page_store.go)): a task whose bullet is gone is **soft-deleted** (`deleted_reason = 'source_removed'`) and restored, fields intact, when the bullet comes back (undo, paste, version restore). An explicit delete (`'user'`) is never auto-restored. In API mode the editor therefore never deletes tasks on bullet removal — `useBulletRemoval({ serverReconciles: true })` only mirrors the change in `tasksStore` (`forgetLocal` / `refreshTask`). localStorage mode keeps the old client-side delete.
+
+### Realtime collaborative editing
+
+With the API backend and `COLLAB_ENABLED=true`, notes are edited live through the **collab service** ([collab/](../collab), Hocuspocus + Yjs) — see [collab/README.md](../collab/README.md) for the full design and its invariants. Things to know when working on the editor:
+
+- **Two modes, chosen per page open.** `Editor.svelte` asks `GET /api/v1/pages/:id/collab`; `'collab'` builds a fresh TipTap editor + `CollabSession` per page *after* the session is ready (synced + epoch known), `'rest'` is the original single-writer path, untouched. Never write into a collaborative Y.Doc before it is ready.
+- **One schema, fingerprinted.** Schema-defining extensions come from `documentExtensions()` in [schema.ts](../src/lib/editor/schema.ts), which the collab service bundles too. **Adding or changing a node, mark or attribute changes `schemaFingerprint()`**, so old clients get `schema-mismatch` and must reload — by design, because y-prosemirror *deletes* content it can't build. Don't add schema to `Editor.svelte` directly.
+- **Side effects only for local transactions.** Remote edits arrive as ProseMirror transactions too. Anything that creates tasks, pushes titles or assigns `nodeId`s must check `isLocalTransaction(tr)` ([isLocalTransaction.ts](../src/lib/collab/isLocalTransaction.ts)), or every connected client repeats it. `TodoDetectionExtension` has `localChangesOnly` for this; `CollabNodeIdExtension` assigns ids only inside the ranges the local user changed.
+- **Some repairs belong to the server alone** (duplicate `nodeId`s from concurrent moves, unsafe link hrefs): two clients would repair differently. See `repair()` in [documentRules.ts](../collab/src/documentRules.ts).
+- **No whole-document writes to collaborative pages.** `PUT /pages/:id/content` answers 409 `{code:"collaborative"}`. Out-of-editor edits go through the collab service (`removeListItemCollaboratively`).
+- **Undo is Yjs's UndoManager** (StarterKit `undoRedo: false` in collab mode) — it only undoes the local user's changes.
+- **E2E tip:** TipTap binds `Mod` from `navigator.platform`, which headless Chromium on macOS doesn't report as Mac; use the spec's `undo()` helper, not `ControlOrMeta+z`.
+
 ### TipTap / ProseMirror notes
 
 - **`SvelteNodeViewRenderer` (from `svelte-tiptap`) is intentionally avoided.** It has unresolved Svelte 5 rune mutation bugs (open issues #76, #80, #81 as of April 2026). Custom in-editor UI uses vanilla ProseMirror `NodeView` via `addNodeView()` in an extension, or coordinate-positioned Svelte portals (like `TaskHoverPreview`).

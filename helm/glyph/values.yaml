@@ -112,6 +112,63 @@ api:
   tolerations: []
 
 # =============================================================================
+# Collab (realtime collaborative editing — Hocuspocus / Yjs)
+# =============================================================================
+collab:
+  # Off by default. When on, a note opened in the browser is edited live with
+  # anyone else who has it open, through this service. Turning it off again
+  # is safe: editors fall back to single-writer mode, and each note is
+  # detached from its collaborative log on its next save.
+  enabled: false
+
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/glyph/collab
+    tag: ""  # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+
+  imagePullSecrets: []
+
+  # Shared secret for the collab service's calls to the API's /internal
+  # routes — `openssl rand -hex 32`. Required when enabled, unless
+  # existingSecret is set.
+  serviceToken: ""
+  existingSecret: ""
+  existingSecretKey: "service-token"
+
+  # Origins allowed to open a collaboration WebSocket (comma-separated).
+  # Empty = same-origin only (the Origin must match the Host the Ingress
+  # forwards), which is right when the app and /collab share a hostname.
+  allowedOrigins: ""
+
+  # -- Extra environment variables, e.g. COLLAB_STORE_DEBOUNCE_MS,
+  # COLLAB_CATCH_UP_INTERVAL_MS (see collab/src/config.ts).
+  extraEnv: []
+
+  # Ingress controllers with short upstream read timeouts will drop idle
+  # WebSockets. For ingress-nginx, for example:
+  #   nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  #   nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  # (Traefik, the k3s default, needs nothing.)
+  ingressAnnotationsHint: {}
+
+  service:
+    type: ClusterIP
+    port: 1235
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  nodeSelector: {}
+  tolerations: []
+
+# =============================================================================
 # Database — CloudNativePG (CNPG)
 # =============================================================================
 cnpg:

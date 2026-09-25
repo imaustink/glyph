@@ -135,12 +135,26 @@ jobs:
             docker push registry.kurpuis.com:5000/glyph-api:"$tag"
           fi
 
+          if docker manifest inspect \
+            registry.kurpuis.com:5000/glyph-collab:"$tag" >/dev/null 2>&1; then
+            echo "collab:$tag already in registry"
+          else
+            echo "collab:$tag missing — building"
+            docker build \
+              -t registry.kurpuis.com:5000/glyph-collab:"$tag" \
+              -f collab/Dockerfile .
+            docker push registry.kurpuis.com:5000/glyph-collab:"$tag"
+          fi
+
+      # collab.image.tag is set unconditionally; the collab Deployment only
+      # exists once collab.enabled is turned on in the production values.
       - name: Helm upgrade
         run: |
           helm upgrade glyph helm/glyph \
             -f homelab/kubernetes/helm/deployments/glyph/values-production.yaml \
             --set frontend.image.tag=${{ steps.image.outputs.tag }} \
             --set api.image.tag=${{ steps.image.outputs.tag }} \
+            --set collab.image.tag=${{ steps.image.outputs.tag }} \
             -n glyph --timeout 5m
 
       - name: Rollout restart

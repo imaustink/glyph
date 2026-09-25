@@ -49,8 +49,21 @@ type PageStore interface {
 	Delete(ctx context.Context, id, userID uuid.UUID) error
 
 	GetContent(ctx context.Context, pageID, userID uuid.UUID) (*model.PageContent, error)
+	// UpsertContent writes a whole document. It requires pc.ExpectedRevision
+	// to match once content exists (ErrConflict otherwise), refuses pages
+	// attached to a collaborative session (ErrCollaborative) unless
+	// pc.DetachCollab is set, and reconciles the page's bullet-linked tasks.
 	UpsertContent(ctx context.Context, pc *model.PageContent, userID uuid.UUID) (*model.PageContent, error)
 	ListContentVersions(ctx context.Context, pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error)
+	// RestoreContentVersion makes a superseded revision current (archiving
+	// the one it replaces) and detaches any collaborative session.
+	RestoreContentVersion(ctx context.Context, pageID uuid.UUID, versionID int64, userID uuid.UUID) (*model.PageContent, error)
+
+	// WriteCollabSnapshot is the collab service's write path to page_contents
+	// (ErrStaleSnapshot unless the snapshot's epoch is current and its seq is
+	// not behind the last one accepted). Service-authenticated; no user.
+	WriteCollabSnapshot(ctx context.Context, snap *model.CollabSnapshot) (*model.PageContent, error)
+
 	// SearchContent returns pages among pageIDs readable by userID whose
 	// content text contains query (case-insensitive), most recent first.
 	SearchContent(ctx context.Context, userID uuid.UUID, pageIDs []uuid.UUID, query string, limit int) ([]PageTextMatch, error)
@@ -79,8 +92,16 @@ type TaskStore interface {
 	ListByFolder(ctx context.Context, folderID uuid.UUID, descendantPageIDs []uuid.UUID) ([]*model.Task, error)
 	GetByID(ctx context.Context, id, userID uuid.UUID) (*model.Task, error)
 	Create(ctx context.Context, t *model.Task) (*model.Task, error)
+	// CreateLinked creates the task for a bullet (t.SourcePageID +
+	// t.SourceNodeID), or returns the task that bullet is already linked to,
+	// with created=false. A bullet has at most one task, so concurrent
+	// creations from several editors collapse into one. If the existing task
+	// was soft-deleted and belongs to t.UserID it is restored; if it belongs
+	// to someone else the result is ErrConflict.
+	CreateLinked(ctx context.Context, t *model.Task) (task *model.Task, created bool, err error)
 	Update(ctx context.Context, t *model.Task) (*model.Task, error)
 	Upsert(ctx context.Context, t *model.Task) (*model.Task, error)
+	// Delete soft-deletes a task.
 	Delete(ctx context.Context, id, userID uuid.UUID) error
 }
 
