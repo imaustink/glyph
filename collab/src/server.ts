@@ -7,6 +7,7 @@ import { HttpApi } from './api.js';
 import { PgPersistence } from './persistence.js';
 import { listen } from './notify.js';
 import { jsonLogger } from './log.js';
+import type { TaskStatus } from '$lib/models/types';
 
 const config = loadConfig();
 const log = jsonLogger();
@@ -27,7 +28,14 @@ const collab = new GlyphCollab({
 });
 const http = new GlyphHttp({ collab, api, allowedOrigins: config.allowedOrigins, log });
 
-const stopListening = listen(config.databaseUrl, (n) => collab.onReset(n.pageId), (msg, err) => log.warn(msg, { err }));
+const stopListening = listen(
+	config.databaseUrl,
+	(n) => {
+		if (n.type === 'reset') collab.onReset(n.pageId);
+		else collab.onTaskStatus(n.pageId, n.nodeId, n.status as TaskStatus);
+	},
+	(msg, err) => log.warn(msg, { err })
+);
 const timers = [
 	setInterval(() => void collab.reauthorizeAll().catch((err) => log.error('re-authorization sweep failed', { err })), config.reauthIntervalMs)
 ];

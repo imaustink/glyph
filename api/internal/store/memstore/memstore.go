@@ -717,7 +717,7 @@ func (s *taskStore) ListByUser(_ context.Context, userID uuid.UUID) ([]*model.Ta
 	defer s.r.mu.RUnlock()
 	result := make([]*model.Task, 0)
 	for _, t := range s.r.tasks {
-		if s.r.canRead(userID, t.UserID, t.OrgID, t.IsPrivate, model.ShareResourceTask, t.ID) {
+		if s.r.canReadTask(userID, t) {
 			result = append(result, cloneTask(t))
 		}
 	}
@@ -746,7 +746,7 @@ func (s *taskStore) GetByID(_ context.Context, id, userID uuid.UUID) (*model.Tas
 	s.r.mu.RLock()
 	defer s.r.mu.RUnlock()
 	t, ok := s.r.tasks[id]
-	if !ok || !s.r.canRead(userID, t.UserID, t.OrgID, t.IsPrivate, model.ShareResourceTask, t.ID) {
+	if !ok || !s.r.canReadTask(userID, t) {
 		return nil, fmt.Errorf("tasks get: not found")
 	}
 	return cloneTask(t), nil
@@ -772,7 +772,7 @@ func (s *taskStore) ListBySourceNode(_ context.Context, userID uuid.UUID, source
 	var result []*model.Task
 	for _, t := range s.r.tasks {
 		if t.SourceNodeID != nil && *t.SourceNodeID == sourceNodeID {
-			if s.r.canRead(userID, t.UserID, t.OrgID, t.IsPrivate, model.ShareResourceTask, t.ID) {
+			if s.r.canReadTask(userID, t) {
 				result = append(result, cloneTask(t))
 			}
 		}

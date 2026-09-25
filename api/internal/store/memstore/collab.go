@@ -29,6 +29,20 @@ type collabDoc struct {
 	quarantined bool
 }
 
+// canReadTask mirrors the Postgres taskAccessFilter: the task's own
+// owner/org/share tiers, or read access to the note it comes from. Must be
+// called with the lock held.
+func (r *Registry) canReadTask(userID uuid.UUID, t *model.Task) bool {
+	if r.canRead(userID, t.UserID, t.OrgID, t.IsPrivate, model.ShareResourceTask, t.ID) {
+		return true
+	}
+	if t.SourcePageID == nil {
+		return false
+	}
+	p, ok := r.pages[*t.SourcePageID]
+	return ok && r.canRead(userID, p.UserID, p.OrgID, p.IsPrivate, model.ShareResourcePage, p.ID)
+}
+
 // taskIDTaken reports whether id is used by a live or soft-deleted task.
 // Must be called with the lock held.
 func (r *Registry) taskIDTaken(id uuid.UUID) bool {

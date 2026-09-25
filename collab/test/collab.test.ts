@@ -476,6 +476,38 @@ describe('quarantine', () => {
 	});
 });
 
+describe('task status from outside the editor', () => {
+	it('shows a board-side status change on the bullet in every open copy, live', async () => {
+		const alice = open({ user: 'alice' });
+		const bob = open({ user: 'bob' });
+		await Promise.all([alice.synced(), bob.synced()]);
+		alice.fragment.insert(alice.fragment.length, [bulletList([{ nodeId: 'n1', taskId: 't1', text: 'ship it' }])]);
+		await eventually(() => textOf(bob.doc).includes('ship it'));
+
+		expect(server.collab.onTaskStatus(PAGE, 'n1', 'done')).toBe(true);
+
+		const bulletOf = (c: TestClient) =>
+			toJSON(c.doc).content!.find((n) => n.type === 'bulletList')?.content?.[0].attrs ?? {};
+		for (const c of [alice, bob]) {
+			await eventually(() => bulletOf(c).taskStatus === 'done' && bulletOf(c).checked === true, 3000, 'status reached client');
+		}
+		// …and it's persisted with the document.
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('taskStatus="done"'));
+
+		// Repeating it is a no-op, not another write.
+		expect(server.collab.onTaskStatus(PAGE, 'n1', 'done')).toBe(false);
+	});
+
+	it('leaves bullets without a task, and notes nobody has open, alone', async () => {
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [bulletList([{ nodeId: 'plain', text: 'no task' }])]);
+		await sleep(100);
+		expect(server.collab.onTaskStatus(PAGE, 'plain', 'done')).toBe(false);
+		expect(server.collab.onTaskStatus('22222222-2222-4222-8222-222222222222', 'n1', 'done')).toBe(false);
+	});
+});
+
 describe('server edits', () => {
 	it('removes a list item through the shared document so editors see it', async () => {
 		const alice = open({ user: 'alice' });

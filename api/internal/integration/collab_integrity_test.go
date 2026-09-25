@@ -255,20 +255,128 @@ func TestTaskSourceIntegrity(t *testing.T) {
 			assert.Len(t, bySource, 1)
 		},
 
-		// A collaborator racing to create the task for a bullet whose task is
-		// private to its owner must not be handed that task.
-		"AnotherUsersPrivateTaskIsNotDisclosed": func(t *testing.T, h *Harness) {
+		// A note's tasks are part of the note: a collaborator racing to create
+		// the task for a bullet gets the note's existing task, even one its
+		// owner marked private.
+		"ACollaboratorGetsTheNotesExistingTask": func(t *testing.T, h *Harness) {
 			h.ResetDB(t)
 			page := createPage(t, h, h.UserA.ID, "Shared plan")
 			sharePage(t, h, page.ID, h.UserA.ID, h.UserB.ID, "editor")
 			w := h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{
-				"title": "alice's secret task", "sourcePageId": page.ID.String(), "sourceNodeId": "n1", "isPrivate": true,
+				"title": "alice's task", "sourcePageId": page.ID.String(), "sourceNodeId": "n1", "isPrivate": true,
 			}, h.UserA.ID)
 			require.Equal(t, http.StatusCreated, w.Code)
+			first := Decode[model.Task](t, w)
 
 			w = h.Do(t, "POST", "/api/v1/tasks", linkedTaskBody(page.ID, "n1", "bob's attempt"), h.UserB.ID)
-			assert.Equal(t, http.StatusConflict, w.Code)
-			assert.NotContains(t, w.Body.String(), "alice's secret task")
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Equal(t, first.ID, Decode[model.Task](t, w).ID)
+		},
+
+		// Whoever types the bullet, the task belongs to the note's owner.
+		"ACollaboratorsTaskBelongsToTheNotesOwner": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			page := createPage(t, h, h.UserA.ID, "Shared plan")
+			sharePage(t, h, page.ID, h.UserA.ID, h.UserB.ID, "editor")
+
+			task := createLinkedTask(t, h, h.UserB.ID, page.ID, "by-bob")
+			assert.Equal(t, h.UserA.ID, task.UserID, "the page owner owns every task in the page")
+
+			// Both see it on their boards.
+			for _, uid := range []uuid.UUID{h.UserA.ID, h.UserB.ID} {
+				tasks := Decode[[]model.Task](t, h.Do(t, "GET", "/api/v1/tasks", nil, uid))
+				ids := map[uuid.UUID]bool{}
+				for _, tk := range tasks {
+					ids[tk.ID] = true
+				}
+				assert.True(t, ids[task.ID], "user %s should see the note's task", uid)
+			}
+		},
+
+		// Anyone who can read a note sees all of its tasks, private or not.
+		"EveryReaderOfANoteSeesAllItsTasks": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			page := createPage(t, h, h.UserA.ID, "Shared plan")
+			w := h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{
+				"title": "private to alice", "sourcePageId": page.ID.String(), "sourceNodeId": "n1", "isPrivate": true,
+			}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code)
+			task := Decode[model.Task](t, w)
+
+			assert.False(t, taskVisible(t, h, h.UserB.ID, task.ID), "not shared yet")
+			sharePage(t, h, page.ID, h.UserA.ID, h.UserB.ID, "viewer")
+			assert.True(t, taskVisible(t, h, h.UserB.ID, task.ID), "a viewer of the note sees its tasks")
+
+			bySource := Decode[[]model.Task](t, h.Do(t, "GET", "/api/v1/tasks?sourcePageId="+page.ID.String(), nil, h.UserB.ID))
+			assert.Len(t, bySource, 1)
+		},
+
+		"AnEditorOfTheNoteCanEditAndDeleteItsTasks": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			page := createPage(t, h, h.UserA.ID, "Shared plan")
+			sharePage(t, h, page.ID, h.UserA.ID, h.UserB.ID, "editor")
+			task := createLinkedTask(t, h, h.UserA.ID, page.ID, "n1")
+
+			w := h.Do(t, "PATCH", "/api/v1/tasks/"+task.ID.String(), map[string]interface{}{"status": "done"}, h.UserB.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Equal(t, model.TaskStatus("done"), Decode[model.Task](t, w).Status)
+
+			w = h.Do(t, "DELETE", "/api/v1/tasks/"+task.ID.String(), nil, h.UserB.ID)
+			require.Equal(t, http.StatusNoContent, w.Code, w.Body.String())
+			assert.False(t, taskVisible(t, h, h.UserA.ID, task.ID))
+		},
+
+		"AViewerOfTheNoteCannotChangeItsTasks": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			page := createPage(t, h, h.UserA.ID, "Shared plan")
+			sharePage(t, h, page.ID, h.UserA.ID, h.UserB.ID, "viewer")
+			task := createLinkedTask(t, h, h.UserA.ID, page.ID, "n1")
+
+			w := h.Do(t, "PATCH", "/api/v1/tasks/"+task.ID.String(), map[string]interface{}{"status": "done"}, h.UserB.ID)
+			assert.Equal(t, http.StatusForbidden, w.Code)
+			w = h.Do(t, "DELETE", "/api/v1/tasks/"+task.ID.String(), nil, h.UserB.ID)
+			assert.Equal(t, http.StatusForbidden, w.Code)
+			w = h.Do(t, "POST", "/api/v1/tasks", linkedTaskBody(page.ID, "n2", "viewer's attempt"), h.UserB.ID)
+			assert.Equal(t, http.StatusForbidden, w.Code)
+		},
+
+		// A status change made outside the editor (e.g. on the board) is
+		// passed to the collab service so open copies of the note show it.
+		"StatusChangesAreAnnouncedForOpenCopiesOfTheNote": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			page := createPage(t, h, h.UserA.ID, "Plan")
+			task := createLinkedTask(t, h, h.UserA.ID, page.ID, "n1")
+			h.Notifier.take()
+
+			w := h.Do(t, "PATCH", "/api/v1/tasks/"+task.ID.String(), map[string]interface{}{"title": "renamed"}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code)
+			assert.Empty(t, h.Notifier.take(), "no status change, nothing to announce")
+
+			w = h.Do(t, "PATCH", "/api/v1/tasks/"+task.ID.String(), map[string]interface{}{"status": "in-progress"}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code)
+			assert.Equal(t, []statusNotification{{PageID: page.ID, NodeID: "n1", Status: "in-progress"}}, h.Notifier.take())
+
+			// Standalone tasks have no bullet to update.
+			w = h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{"title": "standalone"}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code)
+			standalone := Decode[model.Task](t, w)
+			w = h.Do(t, "PATCH", "/api/v1/tasks/"+standalone.ID.String(), map[string]interface{}{"status": "done"}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code)
+			assert.Empty(t, h.Notifier.take())
+		},
+
+		// Ownership follows the note, so creating a task "in" a note someone
+		// can't edit must fail — otherwise anyone could put tasks in anyone's
+		// account.
+		"NobodyCanAddTasksToANoteTheyCannotEdit": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			page := createPage(t, h, h.UserA.ID, "Alice's plan")
+			w := h.Do(t, "POST", "/api/v1/tasks", linkedTaskBody(page.ID, "n1", "planted"), h.UserB.ID)
+			assert.Equal(t, http.StatusNotFound, w.Code)
+			w = h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{"title": "planted", "sourcePageId": page.ID.String()}, h.UserB.ID)
+			assert.Equal(t, http.StatusNotFound, w.Code)
+			w = h.Do(t, "PUT", "/api/v1/tasks/"+uuid.New().String(), map[string]interface{}{"title": "planted", "sourcePageId": page.ID.String()}, h.UserB.ID)
+			assert.Equal(t, http.StatusNotFound, w.Code)
 		},
 
 		// A stale client re-PUTting a task whose bullet was removed must not

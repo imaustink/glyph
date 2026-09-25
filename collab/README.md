@@ -103,5 +103,14 @@ wire protocol can't drift between the two.
   empty paragraph at the same instant can have one character land out of
   order (a y-prosemirror quirk). Seeded paragraphs, including the trailing
   one, are immune. Nothing is lost either way.
-- Task status shown on bullets reflects the task store of whoever last changed
-  it; other editors see board-side status changes on their next page load.
+
+## Task status on bullets
+
+When a note task's status changes outside the editor (the board, the task
+page, an API client), the API sends `NOTIFY glyph_collab
+{"type":"task-status", pageId, nodeId, status}`. Every replica with that note
+loaded sets the bullet's `taskStatus`/`checked` attributes in the shared
+document (`onTaskStatus` → `setListItemStatus`), so all open editors update
+live. The server is the only writer of this edit, so editors never race to
+write it. Notes nobody has open are left alone; editors sync statuses from
+the task list when they open a note.

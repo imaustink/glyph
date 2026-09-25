@@ -12,16 +12,24 @@ import pg from 'pg';
 
 export const COLLAB_CHANNEL = 'glyph_collab';
 
-export interface CollabNotification {
-	type: 'reset';
-	pageId: string;
-}
+export type CollabNotification =
+	| { type: 'reset'; pageId: string }
+	/** A note task's status changed outside the editor (e.g. on the board). */
+	| { type: 'task-status'; pageId: string; nodeId: string; status: string };
+
+const TASK_STATUSES = new Set(['todo', 'in-progress', 'done', 'cancelled']);
 
 export function parseNotification(payload: string | undefined): CollabNotification | null {
 	if (!payload) return null;
 	try {
-		const n = JSON.parse(payload) as CollabNotification;
-		return n?.type === 'reset' && typeof n.pageId === 'string' ? { type: 'reset', pageId: n.pageId.toLowerCase() } : null;
+		const n = JSON.parse(payload) as Partial<{ type: string; pageId: string; nodeId: string; status: string }>;
+		if (typeof n?.pageId !== 'string') return null;
+		const pageId = n.pageId.toLowerCase();
+		if (n.type === 'reset') return { type: 'reset', pageId };
+		if (n.type === 'task-status' && typeof n.nodeId === 'string' && n.nodeId && typeof n.status === 'string' && TASK_STATUSES.has(n.status)) {
+			return { type: 'task-status', pageId, nodeId: n.nodeId, status: n.status };
+		}
+		return null;
 	} catch {
 		return null;
 	}

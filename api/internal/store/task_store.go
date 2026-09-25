@@ -20,10 +20,24 @@ func NewTaskStore(pool DBPool) TaskStore {
 
 const taskColumns = `id, user_id, title, description, status, priority, tags, due_date::text, source_page_id, source_node_id, link, "order", org_id, is_private, folder_id, created_at, updated_at`
 
-// taskAccessFilter enforces the three-tier access policy for tasks and hides
-// soft-deleted tasks from every read. See store.ResourceAccessFilter for the
-// policy definition.
-var taskAccessFilter = "(" + ResourceAccessFilter(ResourceTask) + " AND tasks.deleted_at IS NULL)"
+// taskAccessFilter enforces the task read policy and hides soft-deleted tasks
+// from every read. A task is readable by the three tiers of
+// store.ResourceAccessFilter, and — if it comes from a note — by anyone who
+// can read that note: a note's tasks are part of the note.
+var taskAccessFilter = "((" + ResourceAccessFilter(ResourceTask) + " OR " + taskSourcePageReadable + ") AND tasks.deleted_at IS NULL)"
+
+// taskSourcePageReadable mirrors the page read filter for the task's source
+// page. $1 = userID.
+const taskSourcePageReadable = `(tasks.source_page_id IS NOT NULL AND EXISTS (
+	SELECT 1 FROM pages sp
+	WHERE sp.id = tasks.source_page_id AND (
+		sp.user_id = $1
+		OR (sp.org_id IS NOT NULL AND sp.is_private = false
+		    AND sp.org_id IN (SELECT org_id FROM org_members WHERE user_id = $1))
+		OR EXISTS (SELECT 1 FROM shares
+		           WHERE resource_type = 'page' AND resource_id = sp.id AND shared_with_id = $1)
+	)
+))`
 
 func scanTask(row interface{ Scan(...interface{}) error }) (*model.Task, error) {
 	t := &model.Task{}

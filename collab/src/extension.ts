@@ -49,7 +49,8 @@ import {
 import type { Api, CollabSession } from './api.js';
 import type { Persistence, StoredPageContent } from './persistence.js';
 import { NotFoundError } from './persistence.js';
-import { inspect, repair, seedUpdate, toJSON, type ProseMirrorJSON } from './documentRules.js';
+import { inspect, repair, seedUpdate, setListItemStatus, toJSON, type ProseMirrorJSON } from './documentRules.js';
+import type { TaskStatus } from '$lib/models/types';
 import type { Logger } from './log.js';
 import { originAllowed } from './origin.js';
 
@@ -578,6 +579,21 @@ export class GlyphCollab implements Extension {
 	onReset(pageId: string) {
 		const state = this.docs.get(collabDocumentName(pageId));
 		if (state) this.evict(state, CollabReason.Reset, 'document replaced');
+	}
+
+	/**
+	 * A note task's status changed outside the editor (the board, the task
+	 * page, an API client). Update its bullet in the live document so every
+	 * open copy shows it at once. The server is the only one making this
+	 * edit, so editors never race each other to write it; a note that isn't
+	 * open is left alone (editors sync statuses from the task list on open).
+	 */
+	onTaskStatus(pageId: string, nodeId: string, status: TaskStatus): boolean {
+		const state = this.docs.get(collabDocumentName(pageId));
+		if (!state || state.evicted || state.quarantined) return false;
+		const changed = setListItemStatus(state.document, nodeId, status, REPAIR_ORIGIN);
+		if (changed) this.opts.log.info('applied task status to bullet', { pageId, nodeId, status });
+		return changed;
 	}
 
 	/**

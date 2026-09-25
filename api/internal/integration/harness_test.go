@@ -2,10 +2,12 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -60,6 +62,35 @@ type Harness struct {
 	// Exposed so specs can flip the collaborative-editing kill switch.
 	PageHandler   *handler.PageHandler
 	CollabHandler *handler.CollabHandler
+	// Notifier records what the API would tell the collab service.
+	Notifier *recordingNotifier
+}
+
+type statusNotification struct {
+	PageID uuid.UUID
+	NodeID string
+	Status model.TaskStatus
+}
+
+// recordingNotifier is a store.CollabNotifier that remembers its calls.
+type recordingNotifier struct {
+	mu    sync.Mutex
+	calls []statusNotification
+}
+
+func (n *recordingNotifier) TaskStatusChanged(_ context.Context, pageID uuid.UUID, nodeID string, status model.TaskStatus) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.calls = append(n.calls, statusNotification{pageID, nodeID, status})
+	return nil
+}
+
+func (n *recordingNotifier) take() []statusNotification {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	out := n.calls
+	n.calls = nil
+	return out
 }
 
 // collabServiceToken authenticates test requests to /internal/collab.
@@ -109,7 +140,8 @@ func NewHarness(t *testing.T, b Backend) *Harness {
 
 	pageH := &handler.PageHandler{Pages: pages, Perms: perms, CollabEnabled: true}
 	collabH := &handler.CollabHandler{Pages: pages, Perms: perms, Enabled: true, ServiceToken: collabServiceToken}
-	taskH := &handler.TaskHandler{Tasks: tasks, Perms: perms}
+	notifier := &recordingNotifier{}
+	taskH := &handler.TaskHandler{Tasks: tasks, Perms: perms, Pages: pages, Collab: notifier}
 	laneH := &handler.LaneHandler{Lanes: lanes, Pages: pages}
 	tmplH := &handler.TemplateHandler{Templates: templates, Perms: perms}
 	folderH := &handler.FolderHandler{Pages: pages, Lanes: lanes, Tasks: tasks, Perms: perms}
@@ -135,6 +167,7 @@ func NewHarness(t *testing.T, b Backend) *Harness {
 		OrgStore:      orgs,
 		ShareStore:    shares,
 		PageHandler:   pageH,
+		Notifier:      notifier,
 		CollabHandler: collabH,
 	}
 

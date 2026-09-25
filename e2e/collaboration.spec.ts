@@ -103,9 +103,9 @@ class Collaborator {
 		await expect(popover).toBeHidden(SLOW);
 	}
 
-	async tasksFor(pageId: string): Promise<{ id: string; sourceNodeId: string | null; title: string }[]> {
+	async tasksFor(pageId: string): Promise<{ id: string; userId: string; sourceNodeId: string | null; title: string }[]> {
 		const res = await this.api.get(`/api/v1/tasks?sourcePageId=${pageId}`);
-		return (await res.json()) as { id: string; sourceNodeId: string | null; title: string }[];
+		return (await res.json()) as { id: string; userId: string; sourceNodeId: string | null; title: string }[];
 	}
 }
 
@@ -176,6 +176,44 @@ test.describe('Realtime collaboration', () => {
 		const tasks = await alice.tasksFor(pageId);
 		expect(tasks).toHaveLength(1);
 		expect(tasks[0].title).toContain('Ship collaboration');
+	});
+
+	test("a collaborator's TODO bullet belongs to the note's owner, and both see it", async ({ seedUsers }) => {
+		await alice.share(pageId, seedUsers!.userB.id, 'editor');
+		await alice.open(pageId);
+		await bob.open(pageId);
+
+		await bob.type('# TODO');
+		await bob.page.keyboard.press('Enter');
+		await bob.editor.pressSequentially('- Bob wrote this', { delay: 25 });
+		await bob.closeTaskPopover();
+		await expect(alice.page.locator('main .tiptap-editor li[data-task-id]')).toHaveCount(1, SLOW);
+
+		const [task] = await alice.tasksFor(pageId);
+		expect(task.userId).toBe(seedUsers!.userA.id);
+		// Bob sees it too (it's part of a note he can read).
+		await expect.poll(async () => (await bob.tasksFor(pageId)).map((t) => t.id), SLOW).toEqual([task.id]);
+	});
+
+	test('a status change on the board shows on the bullet for everyone with the note open', async ({ seedUsers }) => {
+		await alice.share(pageId, seedUsers!.userB.id, 'editor');
+		await alice.open(pageId);
+		await bob.open(pageId);
+
+		await alice.type('# TODO');
+		await alice.page.keyboard.press('Enter');
+		await alice.editor.pressSequentially('- Watch me change', { delay: 25 });
+		await alice.closeTaskPopover();
+		await expect.poll(async () => (await alice.tasksFor(pageId)).length, SLOW).toBe(1);
+		const [task] = await alice.tasksFor(pageId);
+
+		// Change the status the way the board does — outside either editor.
+		const res = await alice.api.patch(`/api/v1/tasks/${task.id}`, { data: { status: 'done' }, headers: JSON_HEADERS });
+		expect(res.status(), await res.text()).toBe(200);
+
+		// Bob's bullet updates without a reload.
+		await expect(bob.page.locator(`main .tiptap-editor li[data-task-id="${task.id}"]`)).toHaveAttribute('data-task-status', 'done', SLOW);
+		await expect(alice.page.locator(`main .tiptap-editor li[data-task-id="${task.id}"]`)).toHaveAttribute('data-task-status', 'done', SLOW);
 	});
 
 	test('deleting a bullet hides its task, and undo brings the same task back', async ({ seedUsers }) => {

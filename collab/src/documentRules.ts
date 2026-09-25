@@ -204,6 +204,37 @@ export function seedUpdate(schema: Schema, json: ProseMirrorJSON | null | undefi
 // ─── Server-side edits ────────────────────────────────────────────────────────
 
 /**
+ * Show a task's status on its bullet: the `taskStatus` and `checked` attributes
+ * the editor renders. Only linked bullets (with a taskId) are touched, and
+ * nothing is written when the bullet already shows this status. Returns
+ * whether anything changed.
+ */
+export function setListItemStatus(doc: Y.Doc, nodeId: string, status: string, origin: unknown): boolean {
+	const checked = status === 'done' || status === 'cancelled';
+	const targets: Y.XmlElement[] = [];
+	const find = (parent: Y.XmlFragment | Y.XmlElement) => {
+		for (const child of parent.toArray()) {
+			if (!(child instanceof Y.XmlElement)) continue;
+			if (child.nodeName === 'listItem' && child.getAttribute('nodeId') === nodeId && child.getAttribute('taskId')) {
+				const attrs = child.getAttributes() as Record<string, unknown>;
+				// Unset attributes mean the schema defaults (todo / unchecked).
+				if ((attrs.taskStatus ?? 'todo') !== status || (attrs.checked ?? false) !== checked) targets.push(child);
+			}
+			find(child);
+		}
+	};
+	find(doc.getXmlFragment(COLLAB_FRAGMENT));
+	if (targets.length === 0) return false;
+	doc.transact(() => {
+		for (const el of targets) {
+			el.setAttribute('taskStatus', status);
+			el.setAttribute('checked', checked as unknown as string);
+		}
+	}, origin);
+	return true;
+}
+
+/**
  * Remove the list item with the given nodeId (and its list, if that leaves it
  * empty). Used when a task is deleted from the task page. Returns whether
  * anything was removed.

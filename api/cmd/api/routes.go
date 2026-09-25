@@ -33,7 +33,7 @@ func newHandlers(stores *stores, collab collabConfig) *handlers {
 			Enabled:      collab.enabled,
 			ServiceToken: collab.serviceToken,
 		},
-		tasks: &handler.TaskHandler{Tasks: stores.tasks, Perms: perms},
+		tasks: &handler.TaskHandler{Tasks: stores.tasks, Perms: perms, Pages: stores.pages, Collab: stores.collab},
 		lanes: &handler.LaneHandler{Lanes: stores.lanes, Pages: stores.pages},
 		folders: &handler.FolderHandler{
 			Pages: stores.pages,

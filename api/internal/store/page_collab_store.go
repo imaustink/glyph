@@ -27,6 +27,33 @@ type collabNotification struct {
 	PageID uuid.UUID `json:"pageId"`
 }
 
+// CollabNotifier tells the collab service about changes made outside the
+// editor that live documents should reflect.
+type CollabNotifier interface {
+	// TaskStatusChanged: a note task's status changed (e.g. on the board), so
+	// its bullet's status indicator in any open copy of the note should too.
+	TaskStatusChanged(ctx context.Context, pageID uuid.UUID, nodeID string, status model.TaskStatus) error
+}
+
+type pgCollabNotifier struct{ pool DBPool }
+
+// NewCollabNotifier notifies the collab service over Postgres NOTIFY.
+func NewCollabNotifier(pool DBPool) CollabNotifier { return &pgCollabNotifier{pool: pool} }
+
+func (n *pgCollabNotifier) TaskStatusChanged(ctx context.Context, pageID uuid.UUID, nodeID string, status model.TaskStatus) error {
+	payload, err := json.Marshal(struct {
+		Type   string           `json:"type"`
+		PageID uuid.UUID        `json:"pageId"`
+		NodeID string           `json:"nodeId"`
+		Status model.TaskStatus `json:"status"`
+	}{"task-status", pageID, nodeID, status})
+	if err != nil {
+		return err
+	}
+	_, err = n.pool.Exec(ctx, `SELECT pg_notify($1, $2)`, CollabNotifyChannel, string(payload))
+	return err
+}
+
 // collabAttachedLocked reports whether the page is attached to a
 // collaborative session, locking its page_collab_docs row (if any) for the
 // rest of the transaction.
