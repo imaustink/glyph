@@ -216,7 +216,7 @@ func setupOAuthServer(t *testing.T) *oauthServer {
 		apiGroup.PATCH("/tasks/:id", taskH.UpdateTask)
 		apiGroup.GET("/pages/:id/content", pageH.GetPageContent)
 
-		laneH := &handler.LaneHandler{Lanes: s.lanes, Pages: s.pages}
+		laneH := &handler.LaneHandler{Lanes: s.lanes, Pages: s.pages, Perms: perms}
 		apiGroup.GET("/lanes", laneH.ListLanes)
 		apiGroup.POST("/lanes", laneH.CreateLane)
 

@@ -68,7 +68,7 @@ func (s *pgTemplateStore) GetByID(ctx context.Context, id, userID uuid.UUID) (*m
 }
 
 func (s *pgTemplateStore) Upsert(ctx context.Context, t *model.Template) (*model.Template, error) {
-	triggerJSON, err := marshalNullableJSON(t.TodoTrigger)
+	triggerJSON, err := marshalTemplateTrigger(t.TodoTrigger)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +98,7 @@ func (s *pgTemplateStore) Upsert(ctx context.Context, t *model.Template) (*model
 	return result, nil
 }
 func (s *pgTemplateStore) Create(ctx context.Context, t *model.Template) (*model.Template, error) {
-	triggerJSON, err := marshalNullableJSON(t.TodoTrigger)
+	triggerJSON, err := marshalTemplateTrigger(t.TodoTrigger)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +114,7 @@ func (s *pgTemplateStore) Create(ctx context.Context, t *model.Template) (*model
 }
 
 func (s *pgTemplateStore) Update(ctx context.Context, t *model.Template) (*model.Template, error) {
-	triggerJSON, err := marshalNullableJSON(t.TodoTrigger)
+	triggerJSON, err := marshalTemplateTrigger(t.TodoTrigger)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func (s *pgTemplateStore) Patch(ctx context.Context, id, ownerID uuid.UUID, fn f
 	if err := fn(t); err != nil {
 		return nil, err
 	}
-	triggerJSON, err := marshalNullableJSON(t.TodoTrigger)
+	triggerJSON, err := marshalTemplateTrigger(t.TodoTrigger)
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +176,17 @@ func (s *pgTemplateStore) Delete(ctx context.Context, id, userID uuid.UUID) erro
 		return ErrNotFound
 	}
 	return nil
+}
+
+// marshalTemplateTrigger stores a nil trigger as SQL NULL. Passed straight
+// to marshalNullableJSON, a nil *TodoTriggerConfig arrives as a non-nil
+// interface and is stored as JSONB null, which reads back as an empty
+// (non-nil) config — so {"todoTrigger": null} could never clear it.
+func marshalTemplateTrigger(tr *model.TodoTriggerConfig) ([]byte, error) {
+	if tr == nil {
+		return nil, nil
+	}
+	return marshalNullableJSON(tr)
 }
 
 func unmarshalJSON(data []byte, v interface{}) error {

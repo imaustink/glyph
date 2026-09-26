@@ -76,6 +76,11 @@ type PageStore interface {
 	// GetDescendantIDs returns the IDs of all descendant pages/folders rooted at
 	// folderID (inclusive). Used by folder board queries to scope tasks/lanes.
 	GetDescendantIDs(ctx context.Context, folderID uuid.UUID) ([]uuid.UUID, error)
+
+	// SetSubtreeOrg atomically moves pageID, its descendants and the tasks
+	// sourced from any of them into orgID (nil = personal). Access control
+	// is the caller's.
+	SetSubtreeOrg(ctx context.Context, pageID uuid.UUID, orgID *uuid.UUID) error
 }
 
 // TaskStore handles task persistence.

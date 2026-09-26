@@ -142,7 +142,7 @@ func NewHarness(t *testing.T, b Backend) *Harness {
 	collabH := &handler.CollabHandler{Pages: pages, Perms: perms, Enabled: true, ServiceToken: collabServiceToken}
 	notifier := &recordingNotifier{}
 	taskH := &handler.TaskHandler{Tasks: tasks, Perms: perms, Pages: pages, Collab: notifier}
-	laneH := &handler.LaneHandler{Lanes: lanes, Pages: pages}
+	laneH := &handler.LaneHandler{Lanes: lanes, Pages: pages, Perms: perms}
 	tmplH := &handler.TemplateHandler{Templates: templates, Perms: perms}
 	folderH := &handler.FolderHandler{Pages: pages, Lanes: lanes, Tasks: tasks, Perms: perms}
 	orgH := &handler.OrgHandler{Orgs: orgs, Users: users}

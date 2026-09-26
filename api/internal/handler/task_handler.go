@@ -65,6 +65,20 @@ func (h *TaskHandler) resolveSourcePage(c *gin.Context, pageID uuid.UUID, userID
 	return page, true
 }
 
+// adoptSourcePage makes task belong to its note: the note's owner owns it
+// and it lives in the note's org with the note's privacy, whatever the
+// client sent. A task in a different org from its note would be listed on
+// that org's boards while the note itself stays out of reach, and moving
+// the note between workspaces would leave its tasks behind. Also checks a
+// bearer token may write tasks in that org; on failure it writes the
+// response and returns false.
+func adoptSourcePage(c *gin.Context, task *model.Task, page *model.Page) bool {
+	task.UserID = page.UserID
+	task.OrgID = page.OrgID
+	task.IsPrivate = page.IsPrivate
+	return checkTokenScope(c, task.OrgID, model.ShareResourceTask, true)
+}
+
 // canWriteViaSourcePage reports whether userID may edit a task because they
 // may edit the note it comes from. Writes no response.
 func (h *TaskHandler) canWriteViaSourcePage(c *gin.Context, task *model.Task, userID uuid.UUID) (bool, error) {
@@ -188,6 +202,9 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 	if !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
 		return
 	}
+	if !h.Perms.CanUseFolder(c, h.Pages, body.FolderID, user.ID) {
+		return
+	}
 	body.UserID = user.ID
 	if body.SourcePageID != nil {
 		// A note's tasks belong to the note's owner, whoever typed the bullet —
@@ -196,7 +213,9 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 		if !ok {
 			return
 		}
-		body.UserID = page.UserID
+		if !adoptSourcePage(c, &body, page) {
+			return
+		}
 	}
 	if body.Tags == nil {
 		body.Tags = []string{}
@@ -297,12 +316,37 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
 		return
 	}
+	// Re-pointing a task at a bullet is creating a task on that note: the
+	// caller must be able to edit the note, and the task moves to the note's
+	// owner and org. Changing only the bullet keeps the note, which must
+	// still be editable.
+	var sourcePage *model.Page
+	if req.SourcePageID != nil {
+		page, ok := h.resolveSourcePage(c, *req.SourcePageID, user.ID)
+		if !ok {
+			return
+		}
+		sourcePage = page
+	} else if req.SourceNodeID != nil && existing.SourcePageID != nil {
+		if _, ok := h.resolveSourcePage(c, *existing.SourcePageID, user.ID); !ok {
+			return
+		}
+	}
 	// Merge the patch into the row as it is under the lock, not into the copy
 	// read above: a concurrent PATCH to another field must not be undone.
 	var statusBefore model.TaskStatus
 	task, err := h.Tasks.Patch(c.Request.Context(), id, existing.UserID, func(t *model.Task) error {
 		statusBefore = t.Status
 		req.ApplyTo(t)
+		// {"orgId": null} moves the task to the personal workspace.
+		if raw, present := keys["orgId"]; present && isJSONNull(raw) {
+			t.OrgID = nil
+		}
+		if sourcePage != nil {
+			t.UserID = sourcePage.UserID
+			t.OrgID = sourcePage.OrgID
+			t.IsPrivate = sourcePage.IsPrivate
+		}
 		// ApplyTo can't tell an explicit null from an omitted field; honor
 		// {"dueDate": null} / {"link": null} as "clear it", which is how the
 		// web app removes a due date.
@@ -381,6 +425,9 @@ func (h *TaskHandler) UpsertTask(c *gin.Context) {
 	if !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
 		return
 	}
+	if !h.Perms.CanUseFolder(c, h.Pages, body.FolderID, user.ID) {
+		return
+	}
 	body.ID = id
 	body.UserID = user.ID
 	if body.SourcePageID != nil {
@@ -388,7 +435,9 @@ func (h *TaskHandler) UpsertTask(c *gin.Context) {
 		if !ok {
 			return
 		}
-		body.UserID = page.UserID
+		if !adoptSourcePage(c, &body, page) {
+			return
+		}
 	}
 	if body.Tags == nil {
 		body.Tags = []string{}

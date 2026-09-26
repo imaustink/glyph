@@ -17,6 +17,9 @@ type LaneHandler struct {
 	// Pages resolves a folder-board lane's workspace (its folder's org) so the
 	// bearer-token scope check in GetLane can be applied against the right org.
 	Pages store.PageStore
+	// Perms checks a lane's folderId is a folder the caller may write.
+	// Optional: nil allows only the caller's own folders.
+	Perms *PermissionChecker
 }
 
 // ─── Lanes ────────────────────────────────────────────────────────────────────
@@ -45,6 +48,9 @@ func (h *LaneHandler) CreateLane(c *gin.Context) {
 	}
 	var body model.Lane
 	if !bindJSON(c, &body) {
+		return
+	}
+	if !h.Perms.CanUseFolder(c, h.Pages, body.FolderID, user.ID) {
 		return
 	}
 	body.UserID = user.ID
@@ -85,6 +91,9 @@ func (h *LaneHandler) BatchCreateLanes(c *gin.Context) {
 	}
 	lanes := make([]*model.Lane, 0, len(bodies))
 	for i := range bodies {
+		if !h.Perms.CanUseFolder(c, h.Pages, bodies[i].FolderID, user.ID) {
+			return
+		}
 		bodies[i].UserID = user.ID
 		if bodies[i].FilterSet.Rules == nil {
 			bodies[i].FilterSet.Rules = []model.FilterRule{}
@@ -199,6 +208,9 @@ func (h *LaneHandler) UpsertLane(c *gin.Context) {
 	}
 	var body model.Lane
 	if !bindJSON(c, &body) {
+		return
+	}
+	if !h.Perms.CanUseFolder(c, h.Pages, body.FolderID, user.ID) {
 		return
 	}
 	body.ID = id

@@ -1223,6 +1223,9 @@ func (m *mockPageStore) IsAncestor(_ context.Context, candidateAncestorID, nodeI
 func (m *mockPageStore) GetDescendantIDs(_ context.Context, folderID uuid.UUID) ([]uuid.UUID, error) {
 	return nil, nil
 }
+func (m *mockPageStore) SetSubtreeOrg(_ context.Context, pageID uuid.UUID, orgID *uuid.UUID) error {
+	return nil
+}
 
 // ─── PageHandler tests ────────────────────────────────────────────────────────
 
