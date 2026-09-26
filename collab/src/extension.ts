@@ -115,6 +115,11 @@ export interface GlyphCollabOptions {
 	allowedOrigins: string[];
 	maxDocumentBytes: number;
 	compactEvery: number;
+	/**
+	 * On shutdown, how long to keep retrying documents that still hold
+	 * unpersisted updates before giving up on them (ms, 0 = don't wait).
+	 */
+	shutdownDrainMs?: number;
 	log: Logger;
 }
 

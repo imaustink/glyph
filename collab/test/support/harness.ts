@@ -12,7 +12,7 @@ import { collabDocumentName, decodeServerMessage, encodeToken } from '$lib/colla
 import { GlyphCollab } from '../../src/extension.js';
 import { GlyphHttp } from '../../src/http.js';
 import type { Api, CollabSession, SnapshotBody, SnapshotResult } from '../../src/api.js';
-import { silentLogger } from '../../src/log.js';
+import { silentLogger, type Logger } from '../../src/log.js';
 import { MemoryPersistence } from './memoryPersistence.js';
 
 export const schema = documentSchema();
@@ -85,7 +85,14 @@ export interface TestServer {
 export async function startServer(
 	persistence: MemoryPersistence,
 	api: FakeApi,
-	opts: { maxDocumentBytes?: number; compactEvery?: number; debounce?: number } = {}
+	opts: {
+		maxDocumentBytes?: number;
+		compactEvery?: number;
+		debounce?: number;
+		/** How long stop() may keep retrying unpersisted documents (default: short, for tests). */
+		shutdownDrainMs?: number;
+		log?: Logger;
+	} = {}
 ): Promise<TestServer> {
 	const collab = new GlyphCollab({
 		persistence,
@@ -95,7 +102,8 @@ export async function startServer(
 		allowedOrigins: [],
 		maxDocumentBytes: opts.maxDocumentBytes ?? 5 * 1024 * 1024,
 		compactEvery: opts.compactEvery ?? 100,
-		log: silentLogger
+		shutdownDrainMs: opts.shutdownDrainMs ?? 500,
+		log: opts.log ?? silentLogger
 	});
 	const http = new GlyphHttp({ collab, api, allowedOrigins: [], log: silentLogger });
 	const server = new Server({
@@ -250,3 +258,10 @@ export async function eventually(check: () => boolean | void, timeoutMs = 3000, 
 }
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** A logger that keeps what it is given, for asserting on operational logs. */
+export function recordingLogger() {
+	const entries: { level: 'info' | 'warn' | 'error'; msg: string; fields?: Record<string, unknown> }[] = [];
+	const at = (level: 'info' | 'warn' | 'error') => (msg: string, fields?: Record<string, unknown>) => void entries.push({ level, msg, fields });
+	return { entries, log: { info: at('info'), warn: at('warn'), error: at('error') } satisfies Logger };
+}

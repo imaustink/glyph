@@ -17,6 +17,7 @@ import {
 	textOf,
 	eventually,
 	sleep,
+	recordingLogger,
 	type TestServer,
 	type TestClient
 } from './support/harness.js';
@@ -233,6 +234,44 @@ describe('convergence and persistence', () => {
 
 		await eventually(() => textOf(bob.doc).includes('batch in flight'), 5000, 'reopened copy has the failed batch');
 		await eventually(() => textOf(persistence.replay(PAGE)).includes('batch in flight'), 5000, 'failed batch persisted');
+	});
+
+	it('shutdown keeps retrying parked edits until persistence recovers [DI-15]', async () => {
+		// SIGTERM during an outage. Hocuspocus considers itself destroyed once
+		// no documents are loaded, but a parked copy (its last client left
+		// while appends failed) still holds edits the client was told were
+		// saved. Closing the pool then loses them.
+		const s2 = await startServer(persistence, api, { shutdownDrainMs: 5000 });
+		const alice = open({ user: 'alice' }, s2);
+		await alice.synced();
+		persistence.failAppends = 1000;
+		alice.fragment.insert(alice.fragment.length, [paragraph('unsaved at shutdown')]);
+		await sleep(150);
+		alice.destroy();
+		await sleep(150); // the unload flush failed: the copy is parked
+
+		setTimeout(() => (persistence.failAppends = 0), 400); // recovers mid-shutdown
+		await s2.stop();
+		expect(textOf(persistence.replay(PAGE))).toContain('unsaved at shutdown');
+	});
+
+	it('shutdown gives up at its deadline and says what it dropped [DI-15]', async () => {
+		const rec = recordingLogger();
+		const s2 = await startServer(persistence, api, { shutdownDrainMs: 300, log: rec.log });
+		const alice = open({ user: 'alice' }, s2);
+		await alice.synced();
+		persistence.failAppends = 1000;
+		alice.fragment.insert(alice.fragment.length, [paragraph('never saved')]);
+		await sleep(150);
+		alice.destroy();
+		await sleep(150);
+
+		const started = Date.now();
+		await s2.stop();
+		expect(Date.now() - started).toBeLessThan(3000);
+		const dropped = rec.entries.find((e) => e.level === 'error' && /shutting down/.test(e.msg) && e.fields?.pageId === PAGE);
+		expect(dropped, 'an error naming the page whose updates were dropped').toBeDefined();
+		persistence.failAppends = 0;
 	});
 
 	it('reloads the same document from the log after every client leaves', async () => {
