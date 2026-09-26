@@ -64,6 +64,7 @@ Each one is enforced in code and covered by a test.
 | `COLLAB_CATCH_UP_INTERVAL_MS` | `5000` | Pull other replicas' updates (multi-replica only). |
 | `COLLAB_COMPACT_EVERY` | `100` | Appends between log compactions. |
 | `COLLAB_MAX_DOCUMENT_BYTES` | `5242880` | Matches the API's content limit. |
+| `COLLAB_SHUTDOWN_DRAIN_MS` | `20000` | On SIGTERM, how long to keep retrying documents whose updates aren't persisted yet (e.g. during a database outage) before dropping them with an error log. Keep it below the pod's termination grace period. |
 
 The API side: `COLLAB_ENABLED=true` and `COLLAB_SERVICE_TOKEN`. Helm: `collab.enabled`,
 `collab.serviceToken` (see `helm/glyph/values.yaml`).

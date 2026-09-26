@@ -442,6 +442,77 @@ export class GlyphCollab implements Extension {
 		this.docs.delete(documentName);
 	}
 
+	/**
+	 * Shutdown. Hocuspocus calls this once every document has unloaded — but
+	 * a copy parked by afterUnloadDocument (its last client left while
+	 * persistence was failing) is not a Hocuspocus document, so it doesn't
+	 * hold shutdown up, and closing the pool after this would drop edits its
+	 * clients were told were saved. Keep retrying such copies, with backoff,
+	 * until they are all written or `shutdownDrainMs` runs out; then name
+	 * every document whose updates are being dropped, at error level. Runs
+	 * before server.ts's own onDestroy (extensions run in order), which is
+	 * what closes the pool.
+	 */
+	async onDestroy() {
+		await this.drain(this.opts.shutdownDrainMs ?? 0);
+	}
+
+	/** Persist every copy that still holds unpersisted updates, for up to `timeoutMs`. */
+	async drain(timeoutMs: number): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		let delay = 250;
+		// A scheduled retry means the last persist failed (possibly only its
+		// snapshot), so it counts as unsaved even with nothing in `pending`.
+		let left = [...this.docs.values()].filter((s) => !s.evicted && (s.pending.length > 0 || s.retryTimer !== null));
+		while (left.length > 0) {
+			this.opts.log.info('shutdown: persisting documents with unpersisted updates', { documents: left.length });
+			const failed: DocState[] = [];
+			await Promise.all(
+				left.map(async (state) => {
+					// Take over from the scheduled retry: the drain is the retry now.
+					if (state.retryTimer) clearTimeout(state.retryTimer);
+					state.retryTimer = null;
+					const run = state.chain.then(() => this.persistOnce(state));
+					state.chain = run.catch(() => {});
+					try {
+						await run;
+					} catch (err) {
+						this.opts.log.warn('shutdown: persist failed; retrying until the deadline', { pageId: state.pageId, err });
+						failed.push(state);
+						return;
+					}
+					// Written. A parked copy (no Hocuspocus document behind it any
+					// more) is torn down, as afterUnloadDocument would have done.
+					if (state.document.getConnectionsCount() === 0 && this.docs.get(state.name) === state) {
+						state.unsubscribe();
+						state.shadow.destroy();
+						this.docs.delete(state.name);
+					}
+				})
+			);
+			left = failed.filter((s) => !s.evicted && this.docs.get(s.name) === s);
+			if (left.length === 0) break;
+			if (Date.now() + delay > deadline) {
+				for (const state of left) {
+					this.opts.log.error('shutting down with unpersisted updates: they are lost', {
+						pageId: state.pageId,
+						epoch: state.epoch,
+						// 0 = everything is in the log, but page_contents lacks the latest snapshot.
+						unappendedUpdates: state.pending.length
+					});
+				}
+				break;
+			}
+			await new Promise((r) => setTimeout(r, delay));
+			delay = Math.min(delay * 2, 5000);
+		}
+		// Nothing may fire after the pool closes.
+		for (const state of this.docs.values()) {
+			if (state.retryTimer) clearTimeout(state.retryTimer);
+			state.retryTimer = null;
+		}
+	}
+
 	/** Run persistence for a document, serialised with any other run for it. */
 	persist(state: DocState): Promise<void> {
 		const run = state.chain.then(() => this.persistOnce(state));
