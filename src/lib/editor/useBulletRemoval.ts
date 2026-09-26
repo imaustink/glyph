@@ -6,6 +6,17 @@ export interface BulletRemovalHandle {
 	snapshot(editor: Editor): void;
 	/** Detect removed (and re-added) task-linked bullets (debounced externally). */
 	detectRemovedTaskBullets(editor: Editor): Promise<void>;
+	/**
+	 * localStorage mode: delete from storage the tasks whose bullets are still
+	 * gone. Call when the editor leaves the page (and on unload). No-op in API
+	 * mode, where the server does this.
+	 */
+	flush(): Promise<void>;
+	/**
+	 * The source page of a task whose bullet this editor saw removed (its task
+	 * may no longer be in local state), or undefined if it saw none.
+	 */
+	sourcePageOfRemoved(taskId: string): string | undefined;
 	/** Clean up timers. */
 	destroy(): void;
 }
@@ -19,8 +30,10 @@ export interface BulletRemovalOptions {
 	 * client-side delete fires from every connected client, including for a
 	 * cut/paste or an undo.
 	 *
-	 * False (localStorage mode) keeps the original behaviour: this client is
-	 * the only writer, so it deletes the task directly.
+	 * False (localStorage mode): this client is the only writer, so it deletes
+	 * the task itself — softly. The task is hidden at once and deleted from
+	 * storage only by flush() (when the editor leaves the page); a bullet that
+	 * comes back first (paste after a cut, undo) gets its task back (DI-10).
 	 */
 	serverReconciles?: boolean;
 }
@@ -32,6 +45,10 @@ export function useBulletRemoval(options: BulletRemovalOptions = {}): BulletRemo
 	let knownTaskNodeIds = new Map<string, string>(); // nodeId → taskId
 	const refreshTimers = new Set<ReturnType<typeof setTimeout>>();
 	let destroyed = false;
+	/** localStorage mode: removed bullets' tasks awaiting deletion (taskId → nodeId). */
+	const pendingDeletes = new Map<string, string>();
+	/** taskId → source page, for tasks whose bullet was removed. */
+	const removedFrom = new Map<string, string>();
 
 	function collectTaskNodeIds(editor: Editor): Map<string, string> {
 		const map = new Map<string, string>();
@@ -86,13 +103,34 @@ export function useBulletRemoval(options: BulletRemovalOptions = {}): BulletRemo
 		}
 		knownTaskNodeIds = current;
 
+		for (const [, taskId] of removed) {
+			const sourcePageId = tasksStore.getById(taskId)?.sourcePageId;
+			if (sourcePageId) removedFrom.set(taskId, sourcePageId);
+		}
+		tasksStore.forgetLocal(removed.map(([, taskId]) => taskId));
+
 		if (options.serverReconciles) {
-			tasksStore.forgetLocal(removed.map(([, taskId]) => taskId));
 			for (const taskId of reappeared) scheduleRefresh(taskId);
 			return;
 		}
 
-		for (const [nodeId, taskId] of removed) {
+		for (const [nodeId, taskId] of removed) pendingDeletes.set(taskId, nodeId);
+		for (const taskId of reappeared) {
+			if (!pendingDeletes.delete(taskId)) continue;
+			try {
+				// Still in storage: bring it back into local state.
+				await tasksStore.refreshTask(taskId);
+			} catch (err) {
+				console.warn('[Editor] Failed to restore task for returned bullet:', { taskId }, err);
+			}
+		}
+	}
+
+	async function flush() {
+		if (options.serverReconciles) return;
+		const doomed = [...pendingDeletes];
+		pendingDeletes.clear();
+		for (const [taskId, nodeId] of doomed) {
 			try {
 				await tasksStore.deleteTask(taskId);
 			} catch (err) {
@@ -101,11 +139,15 @@ export function useBulletRemoval(options: BulletRemovalOptions = {}): BulletRemo
 		}
 	}
 
+	function sourcePageOfRemoved(taskId: string): string | undefined {
+		return removedFrom.get(taskId);
+	}
+
 	function destroy() {
 		destroyed = true;
 		for (const t of refreshTimers) clearTimeout(t);
 		refreshTimers.clear();
 	}
 
-	return { snapshot, detectRemovedTaskBullets, destroy };
+	return { snapshot, detectRemovedTaskBullets, flush, sourcePageOfRemoved, destroy };
 }

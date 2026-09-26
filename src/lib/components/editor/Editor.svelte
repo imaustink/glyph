@@ -10,6 +10,7 @@
   import { TodoDetectionExtension, type DetectedBullet } from '$lib/editor/extensions/TodoDetectionExtension';
   import { NodeIdMapExtension } from '$lib/editor/plugins/NodeIdMapPlugin';
   import { CollabNodeIdExtension } from '$lib/editor/plugins/CollabNodeIdExtension';
+  import { PasteIdentityExtension } from '$lib/editor/plugins/PasteIdentityExtension';
   import { tasksStore } from '$lib/stores/tasks.svelte';
   import { pagesStore } from '$lib/stores/pages.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
@@ -231,6 +232,15 @@
         }
       }),
       NodeIdMapExtension,
+      // Pasted/dropped bullets get their own identity, and never keep a task
+      // link to another note's (or another bullet's) task — in every mode.
+      PasteIdentityExtension.configure({
+        taskBelongsHere: (taskId: string) => {
+          const page = collab ? collabPageId : loadedPageId;
+          const source = tasksStore.getById(taskId)?.sourcePageId ?? bulletRemoval.sourcePageOfRemoved(taskId);
+          return !!page && source === page;
+        }
+      }),
       Placeholder.configure({
         placeholder: 'Start writing… Create a heading named TODO to track tasks.'
       }),
@@ -289,7 +299,10 @@
     // Debounce removal detection. In API mode this only updates the local
     // task list (the server reconciles tasks), so it runs for remote edits too.
     if (removedBulletTimer) clearTimeout(removedBulletTimer);
-    removedBulletTimer = setTimeout(() => bulletRemoval.detectRemovedTaskBullets(ed), 1000);
+    removedBulletTimer = setTimeout(() => {
+      removedBulletTimer = null;
+      void bulletRemoval.detectRemovedTaskBullets(ed);
+    }, 1000);
 
     // Collaborative documents are persisted by the collab service.
     if (mode !== 'rest') return;
@@ -437,6 +450,24 @@
     }
   }
 
+  /**
+   * Leaving the page: run a bullet-removal check that is still waiting on its
+   * debounce against the document being left (else a bullet removed just
+   * before navigating is never noticed), then apply the local-mode
+   * deletions it deferred. Never rejects.
+   */
+  function settleBulletRemoval(): Promise<void> {
+    let check: Promise<void> = Promise.resolve();
+    if (removedBulletTimer) {
+      clearTimeout(removedBulletTimer);
+      removedBulletTimer = null;
+      if (editor) check = bulletRemoval.detectRemovedTaskBullets(editor);
+    }
+    return check
+      .then(() => bulletRemoval.flush())
+      .catch((err) => console.error('[Editor] Settling removed bullets failed:', err));
+  }
+
   /** Warn before leaving with collaborative edits the server hasn't acknowledged. */
   function handleBeforeUnload(e: BeforeUnloadEvent) {
     if (mode === 'collab' && session?.hasUnsyncedChanges) {
@@ -464,7 +495,7 @@
     prevPageId = next;
     // Clear transient UI state that is page-scoped
     pending = null;
-    if (removedBulletTimer) { clearTimeout(removedBulletTimer); removedBulletTimer = null; }
+    const removal = settleBulletRemoval();
     contentLoaded = false;
     // Mark the editor as holding no known page until the next one is open.
     // Any transaction dispatched in this window is now a no-op for saving
@@ -474,7 +505,7 @@
     // Drop per-page task status memory so the next page starts clean and
     // doesn't dispatch spurious status transactions for unrelated tasks.
     taskSync.resetStatusMemory();
-    void contentSave.flushAll().then(async () => {
+    void Promise.all([contentSave.flushAll(), removal]).then(async () => {
       taskCreation.clearPrompted();
       await openPage(next);
     });
@@ -483,9 +514,8 @@
   onDestroy(() => {
     mounted = false;
     openGeneration++;
-    const flushPromise = contentSave.flushAll();
+    const flushPromise = Promise.all([contentSave.flushAll(), settleBulletRemoval()]).then(() => {});
     uiStore.registerPendingFlush(flushPromise);
-    if (removedBulletTimer) clearTimeout(removedBulletTimer);
     if (typeof window !== 'undefined') window.removeEventListener('beforeunload', handleBeforeUnload);
     contentSave.destroy();
     bulletRemoval.destroy();
