@@ -44,7 +44,13 @@ type PageStore interface {
 	// who shared a folder receive the correct access-granted result.
 	GetFolderByID(ctx context.Context, id, userID uuid.UUID) (*model.Page, error)
 	Create(ctx context.Context, p *model.Page) (*model.Page, error)
+	// Update writes every mutable column of p (the type is fixed).
 	Update(ctx context.Context, p *model.Page) (*model.Page, error)
+	// UpdateFields writes only the named fields of p (by JSON name: title,
+	// parentId, order, tags, priority, todoTrigger, orgId, isPrivate), so two
+	// concurrent PATCHes of different fields cannot undo each other. Unknown
+	// names (including "type", which is immutable) are ignored.
+	UpdateFields(ctx context.Context, p *model.Page, fields []string) (*model.Page, error)
 	Upsert(ctx context.Context, p *model.Page) (*model.Page, error)
 	Delete(ctx context.Context, id, userID uuid.UUID) error
 

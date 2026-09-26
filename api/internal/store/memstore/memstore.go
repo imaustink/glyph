@@ -472,6 +472,45 @@ func (s *pageStore) Create(_ context.Context, p *model.Page) (*model.Page, error
 	return clonePage(stored), nil
 }
 
+// UpdateFields mirrors the Postgres field-level UPDATE: only the named
+// fields of p are copied onto the stored page.
+func (s *pageStore) UpdateFields(_ context.Context, p *model.Page, fields []string) (*model.Page, error) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	existing, ok := s.r.pages[p.ID]
+	if !ok || existing.UserID != p.UserID {
+		return nil, fmt.Errorf("pages update: %w", store.ErrNotFound)
+	}
+	next := clonePage(existing)
+	src := clonePage(p)
+	for _, f := range fields {
+		switch f {
+		case "title":
+			next.Title = src.Title
+		case "parentId":
+			if s.r.wouldCycle(p.ID, src.ParentID) {
+				return nil, store.ErrCycle
+			}
+			next.ParentID = src.ParentID
+		case "order":
+			next.Order = src.Order
+		case "tags":
+			next.Tags = src.Tags
+		case "priority":
+			next.Priority = src.Priority
+		case "todoTrigger":
+			next.TodoTrigger = src.TodoTrigger
+		case "orgId":
+			next.OrgID = src.OrgID
+		case "isPrivate":
+			next.IsPrivate = src.IsPrivate
+		}
+	}
+	next.UpdatedAt = time.Now()
+	s.r.pages[next.ID] = next
+	return clonePage(next), nil
+}
+
 func (s *pageStore) Update(_ context.Context, p *model.Page) (*model.Page, error) {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()

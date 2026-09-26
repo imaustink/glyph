@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/glyph/api/internal/model"
@@ -166,7 +167,21 @@ func (s *pgPageStore) Create(ctx context.Context, p *model.Page) (*model.Page, e
 	))
 }
 
+// PageUpdateFields lists every field Update writes, by JSON name. The type is
+// not among them: it is fixed at creation (see ErrTypeImmutable).
+var PageUpdateFields = []string{"title", "parentId", "order", "tags", "priority", "todoTrigger", "orgId", "isPrivate"}
+
 func (s *pgPageStore) Update(ctx context.Context, p *model.Page) (*model.Page, error) {
+	return s.UpdateFields(ctx, p, PageUpdateFields)
+}
+
+// UpdateFields writes only the named columns in a single UPDATE. The PATCH
+// handler used to read the row, merge the patch in Go and write every column
+// back, so of two concurrent PATCHes of different fields the later one
+// restored the other's field to its old value (DI-05). Writing only what the
+// request sent needs no read and no lock: each UPDATE is atomic, and fields
+// it doesn't name keep whatever the other writer committed.
+func (s *pgPageStore) UpdateFields(ctx context.Context, p *model.Page, fields []string) (*model.Page, error) {
 	triggerJSON, err := marshalNullableJSON(p.TodoTrigger)
 	if err != nil {
 		return nil, err
@@ -174,16 +189,44 @@ func (s *pgPageStore) Update(ctx context.Context, p *model.Page) (*model.Page, e
 	if p.Priority == "" {
 		p.Priority = model.PriorityNone
 	}
-	// type is never written: it is fixed at creation (see ErrTypeImmutable).
-	q := `UPDATE pages
-		  SET title=$1, parent_id=$2, "order"=$3, tags=$4, priority=$5, todo_trigger=$6,
-		      org_id=$7, is_private=$8, updated_at=NOW()
-		  WHERE id=$9 AND user_id=$10
+	args := []any{p.ID, p.UserID}
+	sets := make([]string, 0, len(fields)+1)
+	seen := map[string]bool{}
+	var parent *uuid.UUID
+	set := func(col string, v any) {
+		args = append(args, v)
+		sets = append(sets, fmt.Sprintf("%s=$%d", col, len(args)))
+	}
+	for _, f := range fields {
+		if seen[f] {
+			continue
+		}
+		seen[f] = true
+		switch f {
+		case "title":
+			set("title", p.Title)
+		case "parentId":
+			set("parent_id", p.ParentID)
+			parent = p.ParentID // only a write of parent_id needs the cycle check
+		case "order":
+			set(`"order"`, p.Order)
+		case "tags":
+			set("tags", p.Tags)
+		case "priority":
+			set("priority", p.Priority)
+		case "todoTrigger":
+			set("todo_trigger", triggerJSON)
+		case "orgId":
+			set("org_id", p.OrgID)
+		case "isPrivate":
+			set("is_private", p.IsPrivate)
+		}
+	}
+	sets = append(sets, "updated_at=NOW()")
+	q := `UPDATE pages SET ` + strings.Join(sets, ", ") + `
+		  WHERE id=$1 AND user_id=$2
 		  RETURNING ` + pageColumns
-	return s.writeWithParent(ctx, p.ID, p.ParentID, q,
-		p.Title, p.ParentID, p.Order, p.Tags, p.Priority, triggerJSON,
-		p.OrgID, p.IsPrivate, p.ID, p.UserID,
-	)
+	return s.writeWithParent(ctx, p.ID, parent, q, args...)
 }
 
 // pageTreeMoveLockSQL serialises every write that sets a page's parent, so

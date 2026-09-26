@@ -196,7 +196,13 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 		}
 	}
 
-	page, err := h.Pages.Update(c.Request.Context(), existing)
+	// Write only the fields the request sent, so a concurrent PATCH of other
+	// fields isn't undone by this one writing back its stale copy (DI-05).
+	fields := make([]string, 0, len(keys))
+	for k := range keys {
+		fields = append(fields, k)
+	}
+	page, err := h.Pages.UpdateFields(c.Request.Context(), existing, fields)
 	if err != nil {
 		// The store re-checks for a cycle under the tree-move lock, which
 		// catches a concurrent move the check above could not see.

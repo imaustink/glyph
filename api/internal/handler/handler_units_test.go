@@ -1123,6 +1123,9 @@ func (m *mockPageStore) Update(_ context.Context, p *model.Page) (*model.Page, e
 	}
 	return p, nil
 }
+func (m *mockPageStore) UpdateFields(ctx context.Context, p *model.Page, _ []string) (*model.Page, error) {
+	return m.Update(ctx, p)
+}
 func (m *mockPageStore) Upsert(_ context.Context, p *model.Page) (*model.Page, error) {
 	if m.upsertFn != nil {
 		return m.upsertFn(p)
