@@ -7,6 +7,7 @@
   import { uiStore } from '$lib/stores/ui.svelte';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
   import { evaluateTitleTemplate, evaluateContentTemplate } from '$lib/utils/titleTemplate';
+  import { orderAfter } from '$lib/utils/order';
   import ShareDialog from '$lib/components/shared/ShareDialog.svelte';
   import Modal from '$lib/components/shared/Modal.svelte';
   import VisibilityPicker from '$lib/components/shared/VisibilityPicker.svelte';
@@ -181,30 +182,20 @@
     }
     if (node.type === 'folder' && isDescendant(draggedId, node.id)) return;
 
-    if (node.type === 'folder') {
-      // Drop into folder — place at end
-      const siblings = pagesStore.getChildren(node.id);
-      const maxOrder = siblings.reduce((m, n) => Math.max(m, n.order), -1);
-      await pagesStore.moveNode(draggedId, node.id, maxOrder + 1);
-      expanded = true;
-    } else {
-      // Drop on a page/item — reorder as sibling (place after this node)
-      const siblings = pagesStore.getChildren(node.parentId);
-      const targetIndex = siblings.findIndex(n => n.id === node.id);
-      // Reorder: shift everything after targetIndex up, insert dragged after target
-      const newOrder = node.order + 0.5; // fractional, will be normalized
-      await pagesStore.moveNode(draggedId, node.parentId, newOrder);
-      // Normalize order for all siblings
-      await normalizeOrder(node.parentId);
-    }
-  }
-
-  async function normalizeOrder(parentId: string | null) {
-    const siblings = pagesStore.getChildren(parentId);
-    for (let i = 0; i < siblings.length; i++) {
-      if (siblings[i].order !== i) {
-        await pagesStore.moveNode(siblings[i].id, parentId, i);
+    try {
+      if (node.type === 'folder') {
+        // Drop into folder — place at end
+        const siblings = pagesStore.getChildren(node.id);
+        const maxOrder = siblings.reduce((m, n) => Math.max(m, n.order), -1);
+        await pagesStore.moveNode(draggedId, node.id, orderAfter(maxOrder));
+        expanded = true;
+      } else {
+        // Drop on a page/item — reorder as sibling (place after this node).
+        // placeAfter only ever writes integer orders (the API's order is an int).
+        await pagesStore.placeAfter(draggedId, node.id);
       }
+    } catch {
+      notificationsStore.error('Failed to move page.');
     }
   }
 </script>

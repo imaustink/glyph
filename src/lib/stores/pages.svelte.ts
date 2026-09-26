@@ -2,7 +2,7 @@ import { repositories } from '$lib/storage/config';
 import type { IPageRepository } from '$lib/storage/interfaces';
 import type { TreeNode, PageContent, TodoTriggerConfig, ProseMirrorJSONNode } from '$lib/models/types';
 import { now, makeTimestamps } from '$lib/utils/time';
-import { nextOrder } from '$lib/utils/order';
+import { nextOrder, orderBetween, orderAfter } from '$lib/utils/order';
 import { uuid } from '$lib/utils/uuid';
 import { collabSupported, getCollabSession, removeListItemCollaboratively } from '$lib/collab/client';
 
@@ -228,6 +228,49 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
     await updateNode(id, { parentId: newParentId, order: newOrder });
   }
 
+  /** Spacing used when siblings have to be renumbered, leaving room for later single-write moves. */
+  const ORDER_STEP = 1024;
+
+  /**
+   * Move `draggedId` so it sits directly after `targetId`, under the target's
+   * parent. Orders are always integers: the API's `order` is an int, and a
+   * fractional value is rejected with a 400.
+   *
+   * When there is an integer gap after the target only the dragged node is
+   * written. Otherwise the siblings are renumbered. Throws on failure so the
+   * caller can tell the user.
+   */
+  async function placeAfter(draggedId: string, targetId: string): Promise<void> {
+    if (draggedId === targetId) return;
+    const target = _idIndex.get(targetId);
+    const dragged = _idIndex.get(draggedId);
+    if (!target || !dragged) return;
+    const parentId = target.parentId;
+    if (parentId !== null && (parentId === draggedId || collectDescendantIds(draggedId).includes(parentId))) {
+      throw new Error('Cannot move a node into one of its own descendants.');
+    }
+
+    const siblings = getChildren(parentId).filter((n) => n.id !== draggedId);
+    const idx = siblings.findIndex((n) => n.id === targetId);
+    const next = siblings[idx + 1];
+    const gapOrder = next ? orderBetween(target.order, next.order) : orderAfter(target.order);
+    if (gapOrder !== null) {
+      await moveNode(draggedId, parentId, gapOrder);
+      return;
+    }
+
+    const ordered = [...siblings.slice(0, idx + 1), dragged, ...siblings.slice(idx + 1)];
+    // The dragged node goes first: it may be changing parent, and moveNode
+    // runs the cycle check before anything is written.
+    await moveNode(draggedId, parentId, (ordered.indexOf(dragged) + 1) * ORDER_STEP);
+    for (let i = 0; i < ordered.length; i++) {
+      const n = ordered[i];
+      const order = (i + 1) * ORDER_STEP;
+      if (n.id === draggedId || n.order === order) continue;
+      await updateNode(n.id, { order });
+    }
+  }
+
   /**
    * Remove a list item (identified by nodeId) from a page's ProseMirror content.
    * Also removes parent list nodes that become empty after the removal.
@@ -264,6 +307,7 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
     saveContent,
     forgetRevision,
     moveNode,
+    placeAfter,
     removeBulletByNodeId
   };
 }
