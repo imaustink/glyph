@@ -243,6 +243,46 @@ func TestPageIntegrity(t *testing.T) {
 			assert.Equal(t, []string{"first", "second"}, texts, "history and last content must survive the delete")
 		},
 
+		// ── DI-21: deleting a note/folder must not orphan its tasks ──────
+		"DI21_DeleteFolderSoftDeletesItsTasks": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			f := createFolder(t, h, h.UserA.ID, "F")
+			note := createChild(t, h, h.UserA.ID, f.ID, "page", "Note")
+			writeDoc(t, h, h.UserA.ID, note.ID, todoDoc(bullet{nodeID: "n1"}))
+			linked := createLinkedTask(t, h, h.UserA.ID, note.ID, "n1")
+			w := h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{"title": "board task", "folderId": f.ID.String()}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+			boardTask := Decode[model.Task](t, w)
+			other := Decode[model.Task](t, h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{"title": "unrelated"}, h.UserA.ID))
+
+			require.Equal(t, http.StatusNoContent, h.Do(t, "DELETE", "/api/v1/pages/"+f.ID.String(), nil, h.UserA.ID).Code)
+
+			assert.False(t, taskVisible(t, h, h.UserA.ID, linked.ID), "the note's task must be deleted with the note")
+			assert.False(t, taskVisible(t, h, h.UserA.ID, boardTask.ID), "the folder board's task must be deleted with the folder")
+			assert.True(t, taskVisible(t, h, h.UserA.ID, other.ID), "unrelated tasks are untouched")
+		},
+
+		// The delete is a soft delete, so the tasks can be recovered.
+		"DI21_DeletedNoteTasksAreSoftDeleted": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			pool := rawPool(t, h)
+			note := createPage(t, h, h.UserA.ID, "Note")
+			writeDoc(t, h, h.UserA.ID, note.ID, todoDoc(bullet{nodeID: "n1"}))
+			linked := createLinkedTask(t, h, h.UserA.ID, note.ID, "n1")
+
+			require.Equal(t, http.StatusNoContent, h.Do(t, "DELETE", "/api/v1/pages/"+note.ID.String(), nil, h.UserA.ID).Code)
+
+			var reason *string
+			var deleted bool
+			require.NoError(t, pool.QueryRow(context.Background(),
+				`SELECT deleted_at IS NOT NULL, deleted_reason FROM tasks WHERE id = $1`, linked.ID,
+			).Scan(&deleted, &reason))
+			assert.True(t, deleted, "task row must be kept, soft-deleted")
+			if assert.NotNil(t, reason) {
+				assert.Equal(t, "source_removed", *reason)
+			}
+		},
+
 		// Kept history must not leak to whoever re-creates a page under the
 		// deleted page's id (PUT takes a client-chosen id).
 		"DI02_RecreatedPageIDDoesNotSeeOldHistory": func(t *testing.T, h *Harness) {
