@@ -759,7 +759,7 @@ func (s *taskStore) GetByID(_ context.Context, id, userID uuid.UUID) (*model.Tas
 	defer s.r.mu.RUnlock()
 	t, ok := s.r.tasks[id]
 	if !ok || !s.r.canReadTask(userID, t) {
-		return nil, fmt.Errorf("tasks get: not found")
+		return nil, fmt.Errorf("tasks get: %w", store.ErrNotFound)
 	}
 	return cloneTask(t), nil
 }
@@ -885,7 +885,7 @@ func (s *taskStore) Update(_ context.Context, t *model.Task) (*model.Task, error
 	defer s.r.mu.Unlock()
 	existing, ok := s.r.tasks[t.ID]
 	if !ok || existing.UserID != t.UserID {
-		return nil, fmt.Errorf("tasks update: not found")
+		return nil, fmt.Errorf("tasks update: %w", store.ErrNotFound)
 	}
 	if s.r.sourceTaken(t, t.ID) {
 		return nil, fmt.Errorf("%w: tasks_source_page_node_uniq", store.ErrConflict)
@@ -926,7 +926,7 @@ func (s *taskStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 	defer s.r.mu.Unlock()
 	t, ok := s.r.tasks[id]
 	if !ok || t.UserID != userID {
-		return nil
+		return fmt.Errorf("tasks delete: %w", store.ErrNotFound)
 	}
 	t.UpdatedAt = time.Now()
 	s.r.deletedTasks[id] = deletedTask{task: t, reason: deletedReasonUser}
@@ -1174,7 +1174,7 @@ func (s *laneStore) GetByID(_ context.Context, id, userID uuid.UUID) (*model.Lan
 	defer s.r.mu.RUnlock()
 	l, ok := s.r.lanes[id]
 	if !ok || l.UserID != userID {
-		return nil, fmt.Errorf("lanes get: not found")
+		return nil, fmt.Errorf("lanes get: %w", store.ErrNotFound)
 	}
 	return cloneLane(l), nil
 }
@@ -1253,7 +1253,7 @@ func (s *laneStore) Update(_ context.Context, l *model.Lane) (*model.Lane, error
 	defer s.r.mu.Unlock()
 	existing, ok := s.r.lanes[l.ID]
 	if !ok || existing.UserID != l.UserID {
-		return nil, fmt.Errorf("lanes update: not found")
+		return nil, fmt.Errorf("lanes update: %w", store.ErrNotFound)
 	}
 	l.CreatedAt = existing.CreatedAt
 	l.UpdatedAt = time.Now()
@@ -1298,7 +1298,7 @@ func (s *laneStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 	defer s.r.mu.Unlock()
 	l, ok := s.r.lanes[id]
 	if !ok || l.UserID != userID {
-		return nil
+		return fmt.Errorf("lanes delete: %w", store.ErrNotFound)
 	}
 	delete(s.r.lanes, id)
 	return nil
@@ -1380,7 +1380,7 @@ func (s *templateStore) GetByID(_ context.Context, id, userID uuid.UUID) (*model
 	defer s.r.mu.RUnlock()
 	t, ok := s.r.templates[id]
 	if !ok || !s.r.canRead(userID, t.UserID, t.OrgID, t.IsPrivate, model.ShareResourceTemplate, t.ID) {
-		return nil, fmt.Errorf("templates get: not found")
+		return nil, fmt.Errorf("templates get: %w", store.ErrNotFound)
 	}
 	return cloneTemplate(t), nil
 }
@@ -1427,7 +1427,7 @@ func (s *templateStore) Update(_ context.Context, t *model.Template) (*model.Tem
 	defer s.r.mu.Unlock()
 	existing, ok := s.r.templates[t.ID]
 	if !ok || existing.UserID != t.UserID {
-		return nil, fmt.Errorf("templates update: not found")
+		return nil, fmt.Errorf("templates update: %w", store.ErrNotFound)
 	}
 	t.CreatedAt = existing.CreatedAt
 	t.UpdatedAt = time.Now()
@@ -1459,7 +1459,7 @@ func (s *templateStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 	defer s.r.mu.Unlock()
 	t, ok := s.r.templates[id]
 	if !ok || t.UserID != userID {
-		return nil
+		return fmt.Errorf("templates delete: %w", store.ErrNotFound)
 	}
 	delete(s.r.templates, id)
 	return nil
@@ -1512,7 +1512,7 @@ func (s *orgStore) GetByID(_ context.Context, id uuid.UUID) (*model.Organization
 	defer s.r.mu.RUnlock()
 	org, ok := s.r.orgs[id]
 	if !ok {
-		return nil, fmt.Errorf("org get: not found")
+		return nil, fmt.Errorf("org get: %w", store.ErrNotFound)
 	}
 	cp := cloneOrg(org)
 	for k := range s.r.members {
@@ -1552,7 +1552,7 @@ func (s *orgStore) Update(_ context.Context, org *model.Organization) (*model.Or
 	defer s.r.mu.Unlock()
 	existing, ok := s.r.orgs[org.ID]
 	if !ok {
-		return nil, fmt.Errorf("org update: not found")
+		return nil, fmt.Errorf("org update: %w", store.ErrNotFound)
 	}
 	existing.Name = org.Name
 	existing.UpdatedAt = time.Now()
@@ -1566,6 +1566,29 @@ func (s *orgStore) Delete(_ context.Context, id uuid.UUID) error {
 	for k := range s.r.members {
 		if k.orgID == id {
 			delete(s.r.members, k)
+		}
+	}
+	// Mirrors org_id ... ON DELETE SET NULL: the org's resources become
+	// their owners' personal ones.
+	inOrg := func(orgID *uuid.UUID) bool { return orgID != nil && *orgID == id }
+	for _, p := range s.r.pages {
+		if inOrg(p.OrgID) {
+			p.OrgID = nil
+		}
+	}
+	for _, t := range s.r.tasks {
+		if inOrg(t.OrgID) {
+			t.OrgID = nil
+		}
+	}
+	for _, d := range s.r.deletedTasks {
+		if inOrg(d.task.OrgID) {
+			d.task.OrgID = nil
+		}
+	}
+	for _, t := range s.r.templates {
+		if inOrg(t.OrgID) {
+			t.OrgID = nil
 		}
 	}
 	return nil

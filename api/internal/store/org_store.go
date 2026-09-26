@@ -84,6 +84,9 @@ func (s *pgOrgStore) GetByID(ctx context.Context, id uuid.UUID) (*model.Organiza
 	if err := s.pool.QueryRow(ctx, q, id).Scan(
 		&out.ID, &out.Name, &out.CreatedBy, &out.MemberCount, &out.CreatedAt, &out.UpdatedAt,
 	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("org get: %w", err)
 	}
 	return out, nil
@@ -132,6 +135,9 @@ func (s *pgOrgStore) Update(ctx context.Context, org *model.Organization) (*mode
 	if err := s.pool.QueryRow(ctx, q, org.Name, org.ID).Scan(
 		&out.ID, &out.Name, &out.CreatedBy, &out.CreatedAt, &out.UpdatedAt,
 	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("org update: %w", err)
 	}
 	return out, nil
