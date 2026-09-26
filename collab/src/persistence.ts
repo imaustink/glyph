@@ -12,6 +12,17 @@
  *
  *  - Updates are only ever appended. Compaction replaces exactly the rows it
  *    merged, in one transaction, so a concurrent append is never lost.
+ *
+ *  - A page's seqs become visible in seq order. BIGSERIAL hands out a seq
+ *    when the row is inserted, not when it commits, so two unserialised
+ *    appends can commit out of order — and a reader that has already moved
+ *    past the later seq (fetchSince is strictly seq > afterSeq) skips the
+ *    earlier one forever. Every writer of page_collab_updates therefore
+ *    takes the page's page_collab_docs row lock *before* its INSERT draws a
+ *    seq, and holds it to commit: the next writer can only draw a seq after
+ *    the previous one is visible. (Collab pods from before this rule append
+ *    without the lock; during a rollout that overlaps them the old race
+ *    remains, and it is gone once they are.)
  */
 import * as Y from 'yjs';
 import pg from 'pg';
@@ -192,11 +203,16 @@ export class PgPersistence implements Persistence {
 
 	async append(pageId: string, epoch: number, data: Uint8Array): Promise<number | null> {
 		// Conditional on the epoch still being live, so a replica holding a
-		// replaced document finds out on its next write.
+		// replaced document finds out on its next write. The CTE locks the
+		// page_collab_docs row before the INSERT draws its seq, and the lock is
+		// held until this (single, autocommitted) statement commits — so seqs
+		// for a page commit in seq order (see the header).
 		const { rows } = await this.pool.query(
-			`INSERT INTO page_collab_updates (page_id, epoch, data)
-			 SELECT $1, $2, $3
-			 WHERE EXISTS (SELECT 1 FROM page_collab_docs WHERE page_id = $1 AND epoch = $2 AND attached)
+			`WITH live AS (
+			   SELECT 1 FROM page_collab_docs WHERE page_id = $1 AND epoch = $2 AND attached FOR UPDATE
+			 )
+			 INSERT INTO page_collab_updates (page_id, epoch, data)
+			 SELECT $1, $2, $3 FROM live
 			 RETURNING seq`,
 			[pageId, epoch, Buffer.from(data)]
 		);
@@ -213,6 +229,10 @@ export class PgPersistence implements Persistence {
 
 	async compact(pageId: string, epoch: number): Promise<number | null> {
 		return this.tx(async (c) => {
+			// The merged row draws a new seq: take the seq-order lock first,
+			// like append (see the header). Appends wait for the compaction,
+			// and every append that committed before it is in the SELECT below.
+			await c.query(`SELECT 1 FROM page_collab_docs WHERE page_id = $1 FOR UPDATE`, [pageId]);
 			const { rows } = await c.query(
 				`SELECT seq, data FROM page_collab_updates WHERE page_id = $1 AND epoch = $2 ORDER BY seq FOR UPDATE`,
 				[pageId, epoch]

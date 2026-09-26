@@ -459,7 +459,7 @@ export class GlyphCollab implements Extension {
 
 	private async persistOnce(state: DocState): Promise<void> {
 		if (state.evicted) return;
-		const { persistence, api, schema, maxDocumentBytes, compactEvery, log } = this.opts;
+		const { persistence, compactEvery, log } = this.opts;
 
 		// 1. Pull in anything another replica appended.
 		await this.catchUpOnce(state);
@@ -484,8 +484,17 @@ export class GlyphCollab implements Extension {
 				this.evict(state, CollabReason.Reset, 'epoch replaced');
 				return;
 			}
-			state.lastSeq = Math.max(state.lastSeq, seq);
 			state.appendsSinceCompact++;
+			// Don't jump lastSeq to our own seq: another replica may have
+			// appended between step 1 and our append, and its row sits below
+			// ours. Every later catch-up (strictly seq > lastSeq) would skip it,
+			// and our snapshots would silently drop its edit (DI-11). Catch up
+			// instead: that reads the foreign row and our own (re-applying our
+			// own update is a no-op), and moves lastSeq past both. Seqs of a
+			// page become visible in seq order (see persistence.ts), so nothing
+			// below what we read here can still appear later.
+			await this.catchUpOnce(state);
+			if (state.evicted) return;
 		}
 
 		// 4. Keep the log short. Compaction merges the epoch's rows into one and
@@ -506,12 +515,31 @@ export class GlyphCollab implements Extension {
 			if (state.evicted) return;
 		}
 
-		// 5. Snapshot to page_contents through the API.
-		if (state.quarantined) return;
+		// 5. Snapshot to page_contents through the API. "Behind" means another
+		//    replica's snapshot for a later seq of this same epoch landed first
+		//    (two replicas snapshotting concurrently). Nothing is wrong with our
+		//    copy — everything we hold is in the log — so catch up past that
+		//    seq and try once more. If that is still behind (or there was
+		//    nothing to catch up), the newer snapshot already covers our
+		//    appends; the next store tries again. Never evict for it: eviction
+		//    Resets every editor and discards their unappended edits.
+		if ((await this.snapshot(state)) === 'behind' && !state.evicted) {
+			const seen = state.lastSeq;
+			await this.catchUpOnce(state);
+			if (state.evicted) return;
+			if (state.lastSeq > seen && (await this.snapshot(state)) === 'ok') return;
+			log.info('snapshot is behind another replica\'s; leaving it to the next store', { pageId: state.pageId, seq: state.lastSeq });
+		}
+	}
+
+	/** Step 5 of persistOnce: validate the document and write it to page_contents. */
+	private async snapshot(state: DocState): Promise<'ok' | 'behind' | 'done'> {
+		const { api, schema, maxDocumentBytes, log } = this.opts;
+		if (state.quarantined) return 'done';
 		const result = inspect(state.document, schema, maxDocumentBytes);
 		if (result.fatal) {
 			await this.quarantine(state, result.fatal);
-			return;
+			return 'done';
 		}
 		if (result.contentError) {
 			log.warn('document violates the content model (kept as is)', { pageId: state.pageId, error: result.contentError });
@@ -519,7 +547,7 @@ export class GlyphCollab implements Extension {
 		const serialised = JSON.stringify(result.json);
 		if (serialised === state.lastSnapshot) {
 			state.retryDelayMs = 1000;
-			return;
+			return 'ok';
 		}
 		const res = await api.snapshot(state.pageId, {
 			epoch: state.epoch,
@@ -531,16 +559,18 @@ export class GlyphCollab implements Extension {
 			case 'ok':
 				state.lastSnapshot = serialised;
 				state.retryDelayMs = 1000;
-				return;
+				return 'ok';
+			case 'behind':
+				return 'behind';
 			case 'stale':
 				this.evict(state, CollabReason.Reset, 'snapshot rejected as stale');
-				return;
+				return 'done';
 			case 'disabled':
 				this.evict(state, CollabReason.Disabled, 'collaboration disabled');
-				return;
+				return 'done';
 			case 'invalid':
 				await this.quarantine(state, `API refused snapshot: ${res.message}`);
-				return;
+				return 'done';
 		}
 	}
 

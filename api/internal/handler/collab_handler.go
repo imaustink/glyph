@@ -99,8 +99,12 @@ func (h *CollabHandler) ServiceAuth() gin.HandlerFunc {
 // page_contents. The content goes through the same validation and
 // sanitisation as a REST write, and the same write path (history, task
 // reconciliation). Stale snapshots — from an epoch that has since been
-// replaced, or older than one already accepted — are refused with 409 so the
-// collab service knows to evict its copy.
+// replaced — are refused with 409 "stale_snapshot" so the collab service
+// knows to evict its copy. A snapshot for the current epoch that is merely
+// older than one already accepted (another replica got there first) is
+// refused with 409 "snapshot_behind": the sender catches up and retries
+// instead of evicting. Collab builds that predate the code treat it like any
+// 409 (evict), exactly as before.
 func (h *CollabHandler) WriteSnapshot(c *gin.Context) {
 	id, ok := parseUUID(c, "id")
 	if !ok {
@@ -125,6 +129,9 @@ func (h *CollabHandler) WriteSnapshot(c *gin.Context) {
 	out, err := h.Pages.WriteCollabSnapshot(c.Request.Context(), &body)
 	if err != nil {
 		switch {
+		case errors.Is(err, store.ErrSnapshotBehind):
+			slog.Info("rejected collab snapshot behind a newer one", "page_id", id, "epoch", body.Epoch, "seq", body.UpToSeq, "reason", err)
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "snapshot_behind"})
 		case errors.Is(err, store.ErrStaleSnapshot):
 			slog.Info("rejected stale collab snapshot", "page_id", id, "epoch", body.Epoch, "seq", body.UpToSeq, "reason", err)
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "stale_snapshot"})

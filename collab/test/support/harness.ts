@@ -56,7 +56,7 @@ export class FakeApi implements Api {
 		if (!this.enabled) return { kind: 'disabled' };
 		const d = this.persistence.docs.get(pageId);
 		if (!d || !d.attached || d.epoch !== body.epoch || d.quarantined) return { kind: 'stale' };
-		if (body.upToSeq < (this.lastSeq.get(pageId) ?? 0)) return { kind: 'stale' };
+		if (body.upToSeq < (this.lastSeq.get(pageId) ?? 0)) return { kind: 'behind' };
 		this.lastSeq.set(pageId, body.upToSeq);
 		const list = this.snapshots.get(pageId) ?? [];
 		list.push({ body, revision: list.length + 1 });

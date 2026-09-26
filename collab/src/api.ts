@@ -10,8 +10,15 @@ export interface CollabSession {
 
 export type SnapshotResult =
 	| { kind: 'ok'; revision: number }
-	/** The epoch was replaced or the snapshot is behind: evict our copy. */
+	/** The epoch was replaced (or the page detached): evict our copy. */
 	| { kind: 'stale' }
+	/**
+	 * Same epoch, but another replica already snapshotted a later seq. Our
+	 * copy is still authoritative: catch up and snapshot again, don't evict.
+	 * (An API from before this code answers "stale_snapshot" instead, which
+	 * evicts as it always did.)
+	 */
+	| { kind: 'behind' }
 	/** The API refused the content: quarantine. */
 	| { kind: 'invalid'; message: string }
 	/** Collaborative editing is switched off: evict. */
@@ -70,6 +77,7 @@ export class HttpApi implements Api {
 		}
 		const err = (await res.json().catch(() => ({}))) as { code?: string; error?: string };
 		if (res.status === 409 && err.code === 'disabled') return { kind: 'disabled' };
+		if (res.status === 409 && err.code === 'snapshot_behind') return { kind: 'behind' };
 		if (res.status === 409 || res.status === 404) return { kind: 'stale' };
 		if (res.status === 400) return { kind: 'invalid', message: err.error ?? 'invalid content' };
 		throw new Error(`snapshot ${pageId}: API answered ${res.status} ${err.error ?? ''}`);
