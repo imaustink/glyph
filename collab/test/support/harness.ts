@@ -12,7 +12,7 @@ import { collabDocumentName, decodeServerMessage, encodeToken } from '$lib/colla
 import { GlyphCollab } from '../../src/extension.js';
 import { GlyphHttp } from '../../src/http.js';
 import type { Api, CollabSession, SnapshotBody, SnapshotResult } from '../../src/api.js';
-import { silentLogger } from '../../src/log.js';
+import { silentLogger, type Logger } from '../../src/log.js';
 import { MemoryPersistence } from './memoryPersistence.js';
 
 export const schema = documentSchema();
@@ -27,6 +27,8 @@ export class FakeApi implements Api {
 	snapshots = new Map<string, { body: SnapshotBody; revision: number }[]>();
 	/** Called on each snapshot; return a result to override the default. */
 	onSnapshot: ((pageId: string, body: SnapshotBody) => SnapshotResult | undefined) | null = null;
+	/** Awaited before each snapshot is judged: lets a test hold one in flight. */
+	beforeSnapshot: ((pageId: string, body: SnapshotBody) => void | Promise<void>) | null = null;
 	private lastSeq = new Map<string, number>();
 
 	constructor(private readonly persistence: MemoryPersistence) {}
@@ -48,18 +50,19 @@ export class FakeApi implements Api {
 
 	/** Mirrors the API's WriteCollabSnapshot preconditions. */
 	async snapshot(pageId: string, body: SnapshotBody): Promise<SnapshotResult> {
+		await this.beforeSnapshot?.(pageId, body);
 		const override = this.onSnapshot?.(pageId, body);
 		if (override) return override;
-		if (!this.enabled) return { kind: 'disabled' };
 		const d = this.persistence.docs.get(pageId);
 		if (!d || !d.attached || d.epoch !== body.epoch || d.quarantined) return { kind: 'stale' };
-		if (body.upToSeq < (this.lastSeq.get(pageId) ?? 0)) return { kind: 'stale' };
+		if (body.upToSeq < (this.lastSeq.get(pageId) ?? 0)) return { kind: 'behind' };
 		this.lastSeq.set(pageId, body.upToSeq);
 		const list = this.snapshots.get(pageId) ?? [];
 		list.push({ body, revision: list.length + 1 });
 		this.snapshots.set(pageId, list);
 		this.persistence.pages.set(pageId, { content: body.content, schemaVersion: body.schemaVersion });
-		return { kind: 'ok', revision: list.length };
+		// Like the API: the kill switch doesn't refuse snapshots of attached pages.
+		return this.enabled ? { kind: 'ok', revision: list.length } : { kind: 'ok', revision: list.length, disabled: true };
 	}
 
 	latest(pageId: string) {
@@ -82,17 +85,28 @@ export interface TestServer {
 export async function startServer(
 	persistence: MemoryPersistence,
 	api: FakeApi,
-	opts: { maxDocumentBytes?: number; compactEvery?: number; debounce?: number } = {}
+	opts: {
+		maxDocumentBytes?: number;
+		compactEvery?: number;
+		debounce?: number;
+		maxDebounce?: number;
+		/** The editor-schema fingerprint this server runs (default: the current one). Another value stands in for an older build. */
+		fingerprint?: string;
+		/** How long stop() may keep retrying unpersisted documents (default: short, for tests). */
+		shutdownDrainMs?: number;
+		log?: Logger;
+	} = {}
 ): Promise<TestServer> {
 	const collab = new GlyphCollab({
 		persistence,
 		api,
 		schema,
-		fingerprint,
+		fingerprint: opts.fingerprint ?? fingerprint,
 		allowedOrigins: [],
 		maxDocumentBytes: opts.maxDocumentBytes ?? 5 * 1024 * 1024,
 		compactEvery: opts.compactEvery ?? 100,
-		log: silentLogger
+		shutdownDrainMs: opts.shutdownDrainMs ?? 500,
+		log: opts.log ?? silentLogger
 	});
 	const http = new GlyphHttp({ collab, api, allowedOrigins: [], log: silentLogger });
 	const server = new Server({
@@ -100,7 +114,7 @@ export async function startServer(
 		quiet: true,
 		stopOnSignals: false,
 		debounce: opts.debounce ?? 50,
-		maxDebounce: 200,
+		maxDebounce: opts.maxDebounce ?? 200,
 		unloadImmediately: true,
 		extensions: [collab, http]
 	});
@@ -247,3 +261,10 @@ export async function eventually(check: () => boolean | void, timeoutMs = 3000, 
 }
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** A logger that keeps what it is given, for asserting on operational logs. */
+export function recordingLogger() {
+	const entries: { level: 'info' | 'warn' | 'error'; msg: string; fields?: Record<string, unknown> }[] = [];
+	const at = (level: 'info' | 'warn' | 'error') => (msg: string, fields?: Record<string, unknown>) => void entries.push({ level, msg, fields });
+	return { entries, log: { info: at('info'), warn: at('warn'), error: at('error') } satisfies Logger };
+}

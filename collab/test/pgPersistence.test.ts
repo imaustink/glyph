@@ -116,6 +116,40 @@ describe.skipIf(!url)('PgPersistence (Postgres)', () => {
 		expect(toJSON(replay)).toEqual(toJSON(doc));
 	});
 
+	it('a reader that has seen a seq has seen every lower seq of the page [DI-11]', async () => {
+		// BIGSERIAL assigns seq when the row is inserted, not when it commits.
+		// An append that takes seq N and commits after another append took and
+		// committed N+1 is invisible to a reader that already moved past N+1
+		// (fetchSince is strictly seq > afterSeq), so that replica skips it
+		// forever. A trigger stands in for a slow commit: it sleeps, after the
+		// seq is assigned and before the statement commits, for one marked row.
+		await pool.query(`
+			CREATE OR REPLACE FUNCTION test_slow_append() RETURNS trigger AS $$
+			BEGIN
+				IF NEW.data = '\\xdead'::bytea THEN PERFORM pg_sleep(0.5); END IF;
+				RETURN NEW;
+			END $$ LANGUAGE plpgsql;
+			CREATE TRIGGER test_slow_append AFTER INSERT ON page_collab_updates
+				FOR EACH ROW EXECUTE FUNCTION test_slow_append();`);
+		try {
+			const loaded = await persistence.loadOrSeed(pageId, seeder, fingerprint);
+			const slow = persistence.append(pageId, loaded.epoch, new Uint8Array([0xde, 0xad]));
+			await new Promise((r) => setTimeout(r, 100)); // slow has its seq, not yet committed
+			await persistence.append(pageId, loaded.epoch, new Uint8Array([0, 0]));
+			const seen = await persistence.fetchSince(pageId, loaded.epoch, 0);
+			await slow;
+
+			const upTo = Math.max(...seen.map((u) => u.seq));
+			const later = await persistence.fetchSince(pageId, loaded.epoch, upTo);
+			const all = await persistence.fetchSince(pageId, loaded.epoch, 0);
+			// Everything in the log is reachable from what the reader saw.
+			const bySeq = (a: number, b: number) => a - b;
+			expect([...seen, ...later].map((u) => u.seq).sort(bySeq)).toEqual(all.map((u) => u.seq).sort(bySeq));
+		} finally {
+			await pool.query(`DROP TRIGGER test_slow_append ON page_collab_updates; DROP FUNCTION test_slow_append();`);
+		}
+	});
+
 	it('reseed only succeeds from the current epoch', async () => {
 		const loaded = await persistence.loadOrSeed(pageId, seeder, fingerprint);
 		const update = seedUpdate(schema, { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'v2' }] }] });
@@ -123,6 +157,49 @@ describe.skipIf(!url)('PgPersistence (Postgres)', () => {
 		const next = await persistence.reseed(pageId, loaded.epoch, update, fingerprint);
 		expect(next).toBe(loaded.epoch + 1);
 		expect(await persistence.reseed(pageId, loaded.epoch, update, fingerprint)).toBeNull();
+	});
+
+	it('a schema reseed waits for other replicas\' leases on the epoch [DI-16]', async () => {
+		const older = { holder: 'replica-old', ttlMs: 60000 };
+		const newer = { holder: 'replica-new', ttlMs: 60000 };
+		const loaded = await persistence.loadOrSeed(pageId, seeder, 'old-build', older);
+		// The new build loads the old-fingerprint log without leasing it…
+		await persistence.loadOrSeed(pageId, seeder, fingerprint, newer);
+		const leases = await pool.query(`SELECT holder, epoch FROM page_collab_leases WHERE page_id = $1`, [pageId]);
+		expect(leases.rows).toEqual([{ holder: 'replica-old', epoch: loaded.epoch }]);
+
+		// …and may not replace the epoch while the older replica holds it.
+		const update = seedUpdate(schema, { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'v2' }] }] });
+		expect(await persistence.reseed(pageId, loaded.epoch, update, fingerprint, newer)).toBe('held');
+
+		await persistence.releaseLease(pageId, older.holder, loaded.epoch);
+		expect(await persistence.reseed(pageId, loaded.epoch, update, fingerprint, newer)).toBe(loaded.epoch + 1);
+		const after = await pool.query(`SELECT holder, epoch FROM page_collab_leases WHERE page_id = $1`, [pageId]);
+		expect(after.rows).toEqual([{ holder: 'replica-new', epoch: loaded.epoch + 1 }]);
+	});
+
+	it('an expired lease does not hold up a reseed; renewal keeps one alive [DI-16]', async () => {
+		const loaded = await persistence.loadOrSeed(pageId, seeder, 'old-build', { holder: 'gone', ttlMs: 1 });
+		await persistence.renewLeases('alive', [{ pageId, epoch: loaded.epoch }], 60000);
+		const update = seedUpdate(schema, null);
+		await new Promise((r) => setTimeout(r, 20));
+		expect(await persistence.reseed(pageId, loaded.epoch, update, fingerprint, { holder: 'new', ttlMs: 60000 })).toBe('held');
+		await persistence.releaseLease(pageId, 'alive', loaded.epoch);
+		expect(await persistence.reseed(pageId, loaded.epoch, update, fingerprint, { holder: 'new', ttlMs: 60000 })).toBe(loaded.epoch + 1);
+	});
+
+	it('skips leasing while the leases table does not exist yet (migration not run)', async () => {
+		await pool.query(`ALTER TABLE page_collab_leases RENAME TO page_collab_leases_hidden`);
+		try {
+			const fresh = new PgPersistence(pool);
+			const loaded = await fresh.loadOrSeed(pageId, seeder, 'old-build', { holder: 'a', ttlMs: 60000 });
+			const update = seedUpdate(schema, null);
+			expect(await fresh.reseed(pageId, loaded.epoch, update, fingerprint, { holder: 'b', ttlMs: 60000 })).toBe(loaded.epoch + 1);
+			await fresh.renewLeases('b', [{ pageId, epoch: loaded.epoch + 1 }], 60000);
+			await fresh.releaseLease(pageId, 'b', loaded.epoch + 1);
+		} finally {
+			await pool.query(`ALTER TABLE page_collab_leases_hidden RENAME TO page_collab_leases`);
+		}
 	});
 
 	it('quarantine is visible in state and cleared by the next epoch', async () => {

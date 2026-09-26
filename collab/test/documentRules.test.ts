@@ -39,6 +39,19 @@ describe('inspect', () => {
 		expect(result.fatal).toMatch(/limit/);
 	});
 
+	it('counts the size limit in UTF-8 bytes, as the API does [DI-LOW]', () => {
+		// UTF-16 length undercounts CJK and emoji text (3–4 bytes per 1–2
+		// units). A document under the limit by that count but over it in
+		// bytes would pass here, be refused by the API, and get quarantined.
+		const doc = docWith(paragraph('你好🙂'.repeat(40)));
+		const serialised = JSON.stringify(toJSON(doc));
+		const limit = serialised.length + 10;
+		expect(Buffer.byteLength(serialised, 'utf8')).toBeGreaterThan(limit);
+		const result = inspect(doc, schema, limit);
+		expect(result.fatal ?? 'accepted').toMatch(/limit/);
+		expect(result.bytes).toBe(Buffer.byteLength(serialised, 'utf8'));
+	});
+
 	it('reports a content-model violation without refusing it', () => {
 		// A list item with no paragraph can come out of concurrent structural
 		// edits; every client renders it, so it is logged, not refused.
