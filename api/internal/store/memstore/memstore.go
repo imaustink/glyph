@@ -883,6 +883,18 @@ type taskStore struct {
 	listByUserErr error // set only in tests to inject a ListByUser error
 }
 
+// sortTasks gives task lists a total order, like the Postgres
+// ORDER BY "order", id (uuid compares byte-wise), so pagination is stable
+// across order ties.
+func sortTasks(result []*model.Task) {
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Order != result[j].Order {
+			return result[i].Order < result[j].Order
+		}
+		return bytes.Compare(result[i].ID[:], result[j].ID[:]) < 0
+	})
+}
+
 func (s *taskStore) ListByUser(_ context.Context, userID uuid.UUID) ([]*model.Task, error) {
 	if s.listByUserErr != nil {
 		return nil, s.listByUserErr
@@ -895,7 +907,7 @@ func (s *taskStore) ListByUser(_ context.Context, userID uuid.UUID) ([]*model.Ta
 			result = append(result, cloneTask(t))
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Order < result[j].Order })
+	sortTasks(result)
 	return result, nil
 }
 
@@ -951,7 +963,7 @@ func (s *taskStore) ListBySourceNode(_ context.Context, userID uuid.UUID, source
 			}
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Order < result[j].Order })
+	sortTasks(result)
 	return result, nil
 }
 
@@ -1310,7 +1322,7 @@ func (s *taskStore) ListByFolder(_ context.Context, folderID uuid.UUID, descenda
 			result = append(result, &cloned)
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Order < result[j].Order })
+	sortTasks(result)
 	return result, nil
 }
 

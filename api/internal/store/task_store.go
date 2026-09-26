@@ -62,7 +62,7 @@ func scanTask(row interface{ Scan(...interface{}) error }) (*model.Task, error) 
 }
 
 func (s *pgTaskStore) ListByUser(ctx context.Context, userID uuid.UUID) ([]*model.Task, error) {
-	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` ORDER BY "order" ASC`
+	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` ORDER BY "order" ASC, id ASC`
 	rows, err := s.pool.Query(ctx, q, userID)
 	if err != nil {
 		return nil, fmt.Errorf("tasks list: %w", err)
@@ -87,7 +87,7 @@ func (s *pgTaskStore) ListByUserPaginated(ctx context.Context, userID uuid.UUID,
 		return nil, 0, fmt.Errorf("tasks count: %w", err)
 	}
 
-	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` ORDER BY "order" ASC LIMIT $2 OFFSET $3`
+	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` ORDER BY "order" ASC, id ASC LIMIT $2 OFFSET $3`
 	rows, err := s.pool.Query(ctx, q, userID, pg.Limit, pg.Offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("tasks list paginated: %w", err)
@@ -110,7 +110,7 @@ func (s *pgTaskStore) GetByID(ctx context.Context, id, userID uuid.UUID) (*model
 }
 
 func (s *pgTaskStore) ListBySourcePage(ctx context.Context, userID uuid.UUID, pageID uuid.UUID) ([]*model.Task, error) {
-	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` AND source_page_id = $2 ORDER BY "order" ASC`
+	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` AND source_page_id = $2 ORDER BY "order" ASC, id ASC`
 	rows, err := s.pool.Query(ctx, q, userID, pageID)
 	if err != nil {
 		return nil, fmt.Errorf("tasks list by page: %w", err)
@@ -128,7 +128,7 @@ func (s *pgTaskStore) ListBySourcePage(ctx context.Context, userID uuid.UUID, pa
 }
 
 func (s *pgTaskStore) ListBySourceNode(ctx context.Context, userID uuid.UUID, sourceNodeID string) ([]*model.Task, error) {
-	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` AND source_node_id = $2 ORDER BY "order" ASC`
+	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` AND source_node_id = $2 ORDER BY "order" ASC, id ASC`
 	rows, err := s.pool.Query(ctx, q, userID, sourceNodeID)
 	if err != nil {
 		return nil, fmt.Errorf("tasks list by node: %w", err)
@@ -423,11 +423,11 @@ func (s *pgTaskStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
 func (s *pgTaskStore) ListByFilter(ctx context.Context, userID uuid.UUID, fs model.FilterSet) ([]*model.Task, error) {
 	filterClause, filterArgs := BuildTaskFilterSQL(fs, 2) // $1 = userID
 
-	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` ORDER BY "order" ASC`
+	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` ORDER BY "order" ASC, id ASC`
 	baseArgs := []interface{}{userID}
 
 	if filterClause != "" {
-		q = `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` AND ` + filterClause + ` ORDER BY "order" ASC`
+		q = `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` AND ` + filterClause + ` ORDER BY "order" ASC, id ASC`
 		baseArgs = append(baseArgs, filterArgs...)
 	}
 
@@ -454,7 +454,7 @@ func (s *pgTaskStore) ListByFilter(ctx context.Context, userID uuid.UUID, fs mod
 func (s *pgTaskStore) ListByFolder(ctx context.Context, folderID uuid.UUID, descendantPageIDs []uuid.UUID) ([]*model.Task, error) {
 	if len(descendantPageIDs) == 0 {
 		// No descendants — only standalone tasks assigned to the folder.
-		q := `SELECT ` + taskColumns + ` FROM tasks WHERE folder_id = $1 AND deleted_at IS NULL ORDER BY "order" ASC`
+		q := `SELECT ` + taskColumns + ` FROM tasks WHERE folder_id = $1 AND deleted_at IS NULL ORDER BY "order" ASC, id ASC`
 		rows, err := s.pool.Query(ctx, q, folderID)
 		if err != nil {
 			return nil, fmt.Errorf("list tasks by folder (standalone): %w", err)
@@ -484,7 +484,7 @@ func (s *pgTaskStore) ListByFolder(ctx context.Context, folderID uuid.UUID, desc
 
 	q := `SELECT ` + taskColumns + ` FROM tasks
 		  WHERE (source_page_id IN ` + inClause + ` OR folder_id = $1) AND deleted_at IS NULL
-		  ORDER BY "order" ASC`
+		  ORDER BY "order" ASC, id ASC`
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list tasks by folder: %w", err)
