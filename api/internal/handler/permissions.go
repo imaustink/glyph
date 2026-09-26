@@ -220,6 +220,35 @@ func (pc *PermissionChecker) CanUseOrg(c *gin.Context, orgID *uuid.UUID, request
 	return true
 }
 
+// CanMoveToOrg checks the destination of a write that changes a resource's
+// workspace to dest (nil = Personal), writing 403 and returning false if it
+// is not allowed. Personal is the owner's: moving there takes the resource
+// (and, for a folder, its subtree and their tasks) out of the org, cutting
+// every other member off, so only the owner may do it — write access to the
+// source (an org editor, an editor share) is not enough. A bearer token's
+// grant must cover the destination as well as the source (checkTokenScope
+// on the current org only covers the source): a token scoped to an org must
+// not move data to Personal, or into another org, unless granted it. An org
+// destination also requires membership (CanUseOrg).
+func (pc *PermissionChecker) CanMoveToOrg(
+	c *gin.Context,
+	dest *uuid.UUID,
+	ownerID, requesterID uuid.UUID,
+	resourceType model.ShareResourceType,
+) bool {
+	if dest == nil && ownerID != requesterID {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "only the owner can move this to their personal workspace",
+			"code":  "personal_move_not_owner",
+		})
+		return false
+	}
+	if !checkTokenScope(c, dest, resourceType, true) {
+		return false
+	}
+	return pc.CanUseOrg(c, dest, requesterID)
+}
+
 // CanUseParent verifies the requester may attach a node underneath parentID.
 // A nil parentID (root-level node) always passes.
 //

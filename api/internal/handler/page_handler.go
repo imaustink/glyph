@@ -158,9 +158,6 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 		typeImmutable(c)
 		return
 	}
-	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
-		return
-	}
 	// Remember the pre-update parent so we only re-validate on an actual move.
 	originalParentID := existing.ParentID
 	originalOrgID := existing.OrgID
@@ -170,6 +167,12 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 	// {"orgId": null} moves the node to the personal workspace.
 	if raw, present := keys["orgId"]; present && isJSONNull(raw) {
 		existing.OrgID = nil
+	}
+	// A workspace move takes the whole subtree along; its destination must
+	// be allowed (Personal: the owner only; within the token's grant).
+	if !sameOrg(originalOrgID, existing.OrgID) &&
+		!h.Perms.CanMoveToOrg(c, existing.OrgID, existing.UserID, user.ID, model.ShareResourcePage) {
+		return
 	}
 
 	// ApplyTo cannot distinguish {"parentId": null} (move to the top level) from
