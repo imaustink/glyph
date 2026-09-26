@@ -34,7 +34,7 @@ import { useTaskCreation } from './useTaskCreation';
 
 function makeEditor() {
 	return {
-		commands: { setTaskIdForNode: vi.fn() }
+		commands: { setTaskIdForNode: vi.fn(), setCheckedForNode: vi.fn(), setStatusForNode: vi.fn() }
 	};
 }
 
