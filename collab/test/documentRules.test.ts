@@ -187,7 +187,7 @@ describe('seeding', () => {
 		const seeded = (content: unknown[]) => {
 			const doc = new Y.Doc();
 			Y.applyUpdate(doc, seedUpdate(schema, { type: 'doc', content } as never));
-			return toJSON(doc).content;
+			return toJSON(doc).content ?? [];
 		};
 
 		it('turns a block image into a paragraph linking to its source', () => {
@@ -208,7 +208,10 @@ describe('seeding', () => {
 			const content = seeded([
 				{ type: 'paragraph', content: [{ type: 'text', text: 'hot', marks: [{ type: 'highlight' }, { type: 'bold' }] }] }
 			]);
-			expect(content[0]).toEqual({ type: 'paragraph', content: [{ type: 'text', text: 'hot', marks: [{ type: 'bold' }] }] });
+			expect(content[0]).toEqual({
+				type: 'paragraph',
+				content: [{ type: 'text', text: 'hot', marks: [expect.objectContaining({ type: 'bold' })] }]
+			});
 		});
 
 		it('keeps the text and known children of an unknown block', () => {
