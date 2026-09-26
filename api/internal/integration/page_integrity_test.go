@@ -4,9 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/glyph/api/internal/model"
+	"github.com/glyph/api/internal/store"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -97,5 +103,100 @@ func TestPageIntegrity(t *testing.T) {
 			require.Equal(t, http.StatusOK, w.Code)
 			assertTriggerUnset(t, w.Body.Bytes(), "legacy row")
 		},
+
+		// ── DI-06: page-tree cycles ──────────────────────────────────────
+		"DI06_PutSelfParentRejected": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			f := createFolder(t, h, h.UserA.ID, "F")
+			w := h.Do(t, "PUT", "/api/v1/pages/"+f.ID.String(),
+				map[string]interface{}{"title": "F", "type": "folder", "parentId": f.ID.String()}, h.UserA.ID)
+			require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+			assert.Nil(t, getPage(t, h, h.UserA.ID, f.ID).ParentID)
+		},
+
+		"DI06_PutUnderOwnDescendantRejected": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			f := createFolder(t, h, h.UserA.ID, "F")
+			c := createChild(t, h, h.UserA.ID, f.ID, "folder", "C")
+			w := h.Do(t, "PUT", "/api/v1/pages/"+f.ID.String(),
+				map[string]interface{}{"title": "F", "type": "folder", "parentId": c.ID.String()}, h.UserA.ID)
+			require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+			assert.Nil(t, getPage(t, h, h.UserA.ID, f.ID).ParentID)
+		},
+
+		// Two moves that are each fine alone (A under B, B under A) must not
+		// both succeed when they race.
+		"DI06_ConcurrentCrossMovesCannotFormCycle": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			for round := 0; round < 40; round++ {
+				a := createFolder(t, h, h.UserA.ID, "A")
+				b := createFolder(t, h, h.UserA.ID, "B")
+				var wg sync.WaitGroup
+				start := make(chan struct{})
+				move := func(id, parent uuid.UUID) {
+					defer wg.Done()
+					<-start
+					h.Do(t, "PATCH", "/api/v1/pages/"+id.String(),
+						map[string]interface{}{"parentId": parent.String()}, h.UserA.ID)
+				}
+				wg.Add(2)
+				go move(a.ID, b.ID)
+				go move(b.ID, a.ID)
+				close(start)
+				wg.Wait()
+
+				ga, gb := getPage(t, h, h.UserA.ID, a.ID), getPage(t, h, h.UserA.ID, b.ID)
+				cycle := ga.ParentID != nil && *ga.ParentID == b.ID && gb.ParentID != nil && *gb.ParentID == a.ID
+				require.False(t, cycle, "round %d: concurrent moves stored a cycle A→B→A", round)
+			}
+		},
+
+		// A cycle already in the data (written before the check existed) must
+		// not make the recursive tree queries run forever.
+		"DI06_TreeQueriesTerminateOnExistingCycle": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			pool := rawPool(t, h)
+			a := createFolder(t, h, h.UserA.ID, "A")
+			b := createChild(t, h, h.UserA.ID, a.ID, "folder", "B")
+			_, err := pool.Exec(context.Background(), `UPDATE pages SET parent_id = $1 WHERE id = $2`, b.ID, a.ID)
+			require.NoError(t, err)
+
+			ps := store.NewPageStore(pool)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			isAnc, err := ps.IsAncestor(ctx, uuid.New(), a.ID)
+			require.NoError(t, err, "IsAncestor on a cycle")
+			assert.False(t, isAnc)
+
+			ids, err := ps.GetDescendantIDs(ctx, a.ID)
+			require.NoError(t, err, "GetDescendantIDs on a cycle")
+			assert.ElementsMatch(t, []uuid.UUID{a.ID, b.ID}, ids)
+
+			rows, err := pool.Query(ctx, store.DescendantPagesSQL(), a.ID)
+			require.NoError(t, err)
+			n := 0
+			for rows.Next() {
+				n++
+			}
+			rows.Close()
+			require.NoError(t, rows.Err(), "DescendantPagesSQL on a cycle")
+			assert.Equal(t, 2, n)
+		},
 	})
+}
+
+func getPage(t *testing.T, h *Harness, userID, id uuid.UUID) model.Page {
+	t.Helper()
+	w := h.Do(t, "GET", "/api/v1/pages/"+id.String(), nil, userID)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	return Decode[model.Page](t, w)
+}
+
+func createChild(t *testing.T, h *Harness, userID, parentID uuid.UUID, typ, title string) model.Page {
+	t.Helper()
+	w := h.Do(t, "POST", "/api/v1/pages",
+		map[string]interface{}{"title": title, "type": typ, "parentId": parentID.String()}, userID)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	return Decode[model.Page](t, w)
 }
