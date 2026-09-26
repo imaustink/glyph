@@ -2,18 +2,27 @@
  * Data-integrity regressions in the note editor and its note↔task links
  * (docs/data-integrity-audit.md). Each test names the finding it covers.
  */
-import { test, expect, navigateToTaskBoard, selectionSettled, waitForEditorReady } from './fixtures';
+import { test, expect, createNewPage, navigateToTaskBoard, selectionSettled, waitForEditorReady } from './fixtures';
 import type { Page } from '@playwright/test';
 
 const popover = (page: Page) => page.locator('[role="dialog"][aria-label="Create task"]');
 
-/** Type a TODO heading and one bullet, confirm its task, and return the task id. */
+/**
+ * On a fresh, empty note, type a TODO heading and one bullet, confirm its
+ * task, and return the task id. A fresh note keeps the tests independent: in
+ * the api project the landing note persists between tests (serial mode), and
+ * where a click lands in leftover content decides where typing goes.
+ */
 async function createLinkedBullet(page: Page, text: string): Promise<string> {
-	await waitForEditorReady(page);
+	await createNewPage(page);
+	const titleInput = page.locator('input.title-edit');
+	if (await titleInput.isVisible()) await titleInput.press('Escape');
 	const editor = page.locator('main .tiptap-editor');
 	await editor.click();
-	await page.keyboard.press('Control+End');
-	await editor.press('Enter');
+	// The default template may seed content; start from an empty document.
+	await page.keyboard.press('ControlOrMeta+a');
+	await page.keyboard.press('Backspace');
+	await selectionSettled(page);
 	await editor.pressSequentially('# TODO', { delay: 30 });
 	await editor.press('Enter');
 	await editor.pressSequentially(`- ${text}`, { delay: 30 });
@@ -136,7 +145,7 @@ test.describe('Editor data integrity', () => {
 		await expect(page.locator(`main .tiptap-editor li[data-node-id="${nodeId}"]`)).toHaveCount(1);
 	});
 
-	test('undoing a bullet deletion restores its task, even after a while (DI-10)', async ({ page }) => {
+	test('undoing a bullet deletion restores its task, even after a while (DI-10)', async ({ page, storageMode }) => {
 		const taskId = await createLinkedBullet(page, 'Buy milk');
 		const bullet = page.locator(`main .tiptap-editor li[data-task-id="${taskId}"]`);
 
@@ -152,10 +161,23 @@ test.describe('Editor data integrity', () => {
 		// Longer than the 1 s removal debounce.
 		await page.waitForTimeout(2500);
 
-		await page.keyboard.press('ControlOrMeta+z');
-		await expect(bullet).toHaveCount(1);
+		// TipTap binds "Mod" from navigator.platform, which headless Chromium on
+		// macOS doesn't report as a Mac — so derive the key the same way
+		// (ControlOrMeta would pick the host's key). Collab's UndoManager can
+		// group steps, so undo until the bullet is back.
+		const mod = (await page.evaluate(() => /Mac|iPhone|iPad|iPod/.test(navigator.platform))) ? 'Meta' : 'Control';
+		await expect(async () => {
+			await page.keyboard.press(`${mod}+z`);
+			await expect(bullet).toHaveCount(1, { timeout: 1000 });
+		}).toPass({ timeout: 15_000 });
 		await expect(bullet).toContainText('Buy milk');
-		await page.waitForTimeout(1500);
+		if (storageMode === 'api') {
+			// The server restores the task when the restored bullet reaches it —
+			// in collab mode, on the next (debounced) snapshot.
+			await expect.poll(async () => (await page.request.get(`/api/v1/tasks/${taskId}`)).status(), { timeout: 20_000 }).toBe(200);
+		} else {
+			await page.waitForTimeout(1500);
+		}
 
 		await bullet.locator('.task-open-link').click();
 		await expect(page.locator('h1.task-title')).toHaveText('Buy milk', { timeout: 15_000 });
