@@ -60,8 +60,13 @@ var pageAccessFilter = ResourceAccessFilter(ResourcePage)
 // shares so that folder-specific share grants are respected.
 var folderAccessFilter = ResourceAccessFilter(ResourceFolder)
 
+// pageListOrder is a total order: "order" has many ties (every new page is
+// 0), and without the id tie-breaker LIMIT/OFFSET pages could repeat or skip
+// rows between requests.
+const pageListOrder = `"order" ASC, id ASC`
+
 func (s *pgPageStore) ListByUser(ctx context.Context, userID uuid.UUID) ([]*model.Page, error) {
-	q := `SELECT ` + pageColumns + ` FROM pages WHERE ` + pageAccessFilter + ` ORDER BY "order" ASC`
+	q := `SELECT ` + pageColumns + ` FROM pages WHERE ` + pageAccessFilter + ` ORDER BY ` + pageListOrder
 	rows, err := s.pool.Query(ctx, q, userID)
 	if err != nil {
 		return nil, fmt.Errorf("pages list: %w", err)
@@ -87,7 +92,7 @@ func (s *pgPageStore) ListByUserPaginated(ctx context.Context, userID uuid.UUID,
 		return nil, 0, fmt.Errorf("pages count: %w", err)
 	}
 
-	q := `SELECT ` + pageColumns + ` FROM pages WHERE ` + pageAccessFilter + ` ORDER BY "order" ASC LIMIT $2 OFFSET $3`
+	q := `SELECT ` + pageColumns + ` FROM pages WHERE ` + pageAccessFilter + ` ORDER BY ` + pageListOrder + ` LIMIT $2 OFFSET $3`
 	rows, err := s.pool.Query(ctx, q, userID, pg.Limit, pg.Offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("pages list paginated: %w", err)

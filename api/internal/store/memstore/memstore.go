@@ -7,6 +7,7 @@
 package memstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -364,7 +365,14 @@ func (s *pageStore) ListByUser(_ context.Context, userID uuid.UUID) ([]*model.Pa
 			result = append(result, clonePage(p))
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Order < result[j].Order })
+	// Total order, like the Postgres ORDER BY "order", id (uuid compares
+	// byte-wise), so pagination is stable across order ties.
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Order != result[j].Order {
+			return result[i].Order < result[j].Order
+		}
+		return bytes.Compare(result[i].ID[:], result[j].ID[:]) < 0
+	})
 	return result, nil
 }
 
