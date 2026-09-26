@@ -189,3 +189,62 @@ func TestMCPGetPageCheckboxFollowsTask(t *testing.T) {
 	got := e.callOK(g.access, "get_page", map[string]interface{}{"page_id": pageID})
 	assert.Contains(t, got["markdown"], "- [x] Ship it <!-- task:"+tasks[0]+" -->")
 }
+
+// storedBulletTaskIDs maps each stored bullet's nodeId to its taskId ("" when
+// unlinked).
+func (e *mcpEnv) storedBulletTaskIDs(pageID string) map[string]string {
+	e.t.Helper()
+	stored, _ := e.storedContent(pageID)
+	var root interface{}
+	require.NoError(e.t, json.Unmarshal([]byte(stored), &root))
+	out := map[string]string{}
+	var walk func(v interface{})
+	walk = func(v interface{}) {
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			return
+		}
+		if m["type"] == "listItem" {
+			attrs, _ := m["attrs"].(map[string]interface{})
+			id, _ := attrs["nodeId"].(string)
+			task, _ := attrs["taskId"].(string)
+			out[id] = task
+		}
+		kids, _ := m["content"].([]interface{})
+		for _, k := range kids {
+			walk(k)
+		}
+	}
+	walk(root)
+	return out
+}
+
+// A TODO written over the empty bullet the editor leaves at the end of a
+// TODO section is new content, so it becomes a task. A bullet that already
+// had text and was left unlinked stays unlinked even if the write edits it.
+func TestMCPReplaceLinksTodoWrittenOverEmptyBullet(t *testing.T) {
+	e := newMCPEnv(t)
+	g := e.connect(e.alice, true, nil, "")
+	pageID, _ := e.mcpPage(g.access, "x\n")
+	e.session(e.alice, "PUT", "/api/v1/pages/"+pageID+"/content", map[string]interface{}{
+		"expectedRevision": e.revision(g.access, pageID),
+		"content": json.RawMessage(`{"type":"doc","content":[` +
+			`{"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"TODO"}]},` +
+			`{"type":"bulletList","content":[` +
+			`{"type":"listItem","attrs":{"nodeId":"u-1"},"content":[{"type":"paragraph","content":[{"type":"text","text":"not a task"}]}]},` +
+			`{"type":"listItem","attrs":{"nodeId":"e-1"},"content":[{"type":"paragraph"}]}]}]}`),
+	}, http.StatusOK)
+
+	out := e.callOK(g.access, "write_page_content", map[string]interface{}{
+		"page_id": pageID, "mode": "replace", "expected_revision": e.revision(g.access, pageID),
+		"markdown": "## TODO\n\n- not a task, edited\n- Buy milk\n",
+	})
+	created, _ := out["tasks_created"].([]interface{})
+	require.Len(t, created, 1, "the TODO written over the empty bullet becomes a task: %v", out)
+	task := created[0].(map[string]interface{})
+	assert.Equal(t, "Buy milk", task["title"])
+
+	links := e.storedBulletTaskIDs(pageID)
+	assert.Equal(t, task["id"], links["e-1"], "the bullet that was empty is linked to the new task")
+	assert.Equal(t, "", links["u-1"], "a bullet that already had text stays unlinked")
+}
