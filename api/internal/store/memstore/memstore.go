@@ -519,6 +519,15 @@ func (s *pageStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 		delete(s.r.contents, pid)
 		delete(s.r.collab, pid)
 	}
+	// The subtree's tasks are soft-deleted, as in Postgres.
+	now := time.Now()
+	for tid, t := range s.r.tasks {
+		if (t.SourcePageID != nil && inSubtree[*t.SourcePageID]) || (t.FolderID != nil && inSubtree[*t.FolderID]) {
+			t.UpdatedAt = now
+			s.r.deletedTasks[tid] = deletedTask{task: t, reason: deletedReasonSourceRemoved}
+			delete(s.r.tasks, tid)
+		}
+	}
 	// Mirror the remaining foreign keys: lanes.folder_id cascades, and the
 	// task references are SET NULL.
 	for lid, l := range s.r.lanes {

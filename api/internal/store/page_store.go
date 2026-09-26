@@ -259,7 +259,7 @@ const pageSubtreeCTE = `
 // (ErrSubtreeNotOwned) unless the caller owns every page in it. Before the
 // rows go, each page's current content is archived into
 // page_content_versions, which no longer cascades with its page, so a deleted
-// note is recoverable.
+// note is recoverable, and the subtree's tasks are soft-deleted.
 func (s *pgPageStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -306,6 +306,16 @@ func (s *pgPageStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
 		 FROM page_contents WHERE page_id = ANY($1) AND content IS NOT NULL`, ids,
 	); err != nil {
 		return fmt.Errorf("page delete — archive content: %w", err)
+	}
+	// The tasks of the deleted notes (and those placed directly on a deleted
+	// folder's board) go with them, as a removed bullet's task does, instead
+	// of surviving as orphans with a dangling source. Soft delete, so they
+	// stay recoverable; the foreign keys then null their page references.
+	if _, err := tx.Exec(ctx,
+		`UPDATE tasks SET deleted_at = NOW(), deleted_reason = 'source_removed', updated_at = NOW()
+		 WHERE deleted_at IS NULL AND (source_page_id = ANY($1) OR folder_id = ANY($1))`, ids,
+	); err != nil {
+		return fmt.Errorf("page delete — tasks: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM pages WHERE id = ANY($1)`, ids); err != nil {
 		return fmt.Errorf("page delete: %w", err)
