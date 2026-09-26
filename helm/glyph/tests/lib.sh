@@ -46,7 +46,7 @@ doc() {
 }
 
 # has_kind KIND — true if any rendered doc has that kind.
-has_kind() { printf '%s\n' "$OUT" | grep -qE "^kind: $1\$"; }
+has_kind() { grep -qE "^kind: $1\$" <<<"$OUT"; }
 
 _fail() {
   FAILED=1
@@ -55,7 +55,7 @@ _fail() {
 
 assert_ok() {
   if [[ "$STATUS" -ne 0 ]]; then
-    _fail "expected render to succeed, got status $STATUS: $(printf '%s' "$OUT" | grep -m3 -i error)"
+    _fail "expected render to succeed, got status $STATUS: $(grep -m3 -i error <<<"$OUT")"
   fi
 }
 
@@ -63,21 +63,24 @@ assert_ok() {
 assert_render_fails() {
   if [[ "$STATUS" -eq 0 ]]; then
     _fail "expected render to fail with /$1/, but it succeeded"
-  elif ! printf '%s' "$OUT" | grep -qE -- "$1"; then
-    _fail "render failed, but not with /$1/: $(printf '%s' "$OUT" | grep -m3 -i error)"
+  elif ! grep -qE -- "$1" <<<"$OUT"; then
+    _fail "render failed, but not with /$1/: $(grep -m3 -i error <<<"$OUT")"
   fi
 }
 
 # assert_contains TEXT PATTERN [description]  (PATTERN is an ERE)
+# Both read the text from a here-string, not a pipe: `grep -q` exits at the
+# first match, and a pipe's writer would then die of SIGPIPE, which pipefail
+# reports as a failed match.
 assert_contains() {
-  if ! printf '%s' "$1" | grep -qE -- "$2"; then
+  if ! grep -qE -- "$2" <<<"$1"; then
     _fail "${3:-expected match} — /$2/ not found"
   fi
 }
 
 assert_not_contains() {
-  if printf '%s' "$1" | grep -qE -- "$2"; then
-    _fail "${3:-expected no match} — /$2/ found: $(printf '%s' "$1" | grep -m1 -E -- "$2")"
+  if grep -qE -- "$2" <<<"$1"; then
+    _fail "${3:-expected no match} — /$2/ found: $(grep -m1 -E -- "$2" <<<"$1")"
   fi
 }
 
