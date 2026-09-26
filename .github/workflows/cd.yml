@@ -51,6 +51,9 @@ jobs:
   deploy:
     if: github.repository == 'imaustink/glyph'
     runs-on: arc-runner-set
+    # Must match ci.yml's build-and-push: one repo, component as tag prefix.
+    env:
+      IMAGE_REPO: docker.io/blackmarket/glyph
     steps:
       - uses: actions/checkout@v4
 
@@ -96,7 +99,7 @@ jobs:
 
       - name: Docker login
         run: |
-          echo "$REGISTRY_PASSWORD" | docker login registry.kurpuis.com:5000 \
+          echo "$REGISTRY_PASSWORD" | docker login docker.io \
             -u "$REGISTRY_USERNAME" --password-stdin
         env:
           REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
@@ -112,49 +115,55 @@ jobs:
           tag=${{ steps.image.outputs.tag }}
 
           if docker manifest inspect \
-            registry.kurpuis.com:5000/glyph-frontend:"$tag" >/dev/null 2>&1; then
+            "$IMAGE_REPO:frontend-$tag" >/dev/null 2>&1; then
             echo "frontend:$tag already in registry"
           else
             echo "frontend:$tag missing — building"
             docker build \
               --build-arg VITE_STORAGE_MODE=api \
               --build-arg VITE_API_URL= \
-              -t registry.kurpuis.com:5000/glyph-frontend:"$tag" \
+              -t "$IMAGE_REPO:frontend-$tag" \
               -f Dockerfile .
-            docker push registry.kurpuis.com:5000/glyph-frontend:"$tag"
+            docker push "$IMAGE_REPO:frontend-$tag"
           fi
 
           if docker manifest inspect \
-            registry.kurpuis.com:5000/glyph-api:"$tag" >/dev/null 2>&1; then
+            "$IMAGE_REPO:api-$tag" >/dev/null 2>&1; then
             echo "api:$tag already in registry"
           else
             echo "api:$tag missing — building"
             docker build \
-              -t registry.kurpuis.com:5000/glyph-api:"$tag" \
+              -t "$IMAGE_REPO:api-$tag" \
               -f api/Dockerfile api/
-            docker push registry.kurpuis.com:5000/glyph-api:"$tag"
+            docker push "$IMAGE_REPO:api-$tag"
           fi
 
           if docker manifest inspect \
-            registry.kurpuis.com:5000/glyph-collab:"$tag" >/dev/null 2>&1; then
+            "$IMAGE_REPO:collab-$tag" >/dev/null 2>&1; then
             echo "collab:$tag already in registry"
           else
             echo "collab:$tag missing — building"
             docker build \
-              -t registry.kurpuis.com:5000/glyph-collab:"$tag" \
+              -t "$IMAGE_REPO:collab-$tag" \
               -f collab/Dockerfile .
-            docker push registry.kurpuis.com:5000/glyph-collab:"$tag"
+            docker push "$IMAGE_REPO:collab-$tag"
           fi
 
       # collab.image.tag is set unconditionally; the collab Deployment only
       # exists once collab.enabled is turned on in the production values.
+      # The repository is set here too (overriding the production values) so
+      # it can't drift from the repo the images above were pushed to.
       - name: Helm upgrade
         run: |
+          tag=${{ steps.image.outputs.tag }}
           helm upgrade glyph helm/glyph \
             -f homelab/kubernetes/helm/deployments/glyph/values-production.yaml \
-            --set frontend.image.tag=${{ steps.image.outputs.tag }} \
-            --set api.image.tag=${{ steps.image.outputs.tag }} \
-            --set collab.image.tag=${{ steps.image.outputs.tag }} \
+            --set frontend.image.repository="$IMAGE_REPO" \
+            --set frontend.image.tag="frontend-$tag" \
+            --set api.image.repository="$IMAGE_REPO" \
+            --set api.image.tag="api-$tag" \
+            --set collab.image.repository="$IMAGE_REPO" \
+            --set collab.image.tag="collab-$tag" \
             -n glyph --timeout 5m
 
       - name: Rollout restart
