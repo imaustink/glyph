@@ -5,6 +5,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -152,5 +153,31 @@ func TestValidatorDowngradesNodesTheEditorLacks(t *testing.T) {
 				t.Fatalf("\nwant: %s\ngot:  %s", tc.want, out)
 			}
 		})
+	}
+}
+
+// TestValidateProseMirrorContent_SizeCountsUTF8Bytes pins the size limit to
+// UTF-8 bytes of the JSON as sent — what the collab service must measure too
+// (Buffer.byteLength). A CJK document under the limit in UTF-16 units but
+// over it in bytes must be refused here, and collab must refuse it first, or
+// the page is quarantined when its snapshot bounces.
+func TestValidateProseMirrorContent_SizeCountsUTF8Bytes(t *testing.T) {
+	wrap := func(text string) []byte {
+		b, _ := json.Marshal(map[string]any{"type": "doc", "content": []any{
+			map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": text}}},
+		}})
+		return b
+	}
+	// "日" is 3 bytes in UTF-8 but one UTF-16 unit: 2M of them is ~6 MB.
+	cjk := wrap(strings.Repeat("日", 2*1024*1024))
+	if len([]rune(string(cjk))) >= maxContentSize {
+		t.Fatalf("test doc should be under the limit in characters")
+	}
+	if _, err := ValidateProseMirrorContent(cjk); err == nil {
+		t.Fatal("a document over the limit in UTF-8 bytes must be refused")
+	}
+	overhead := len(wrap(""))
+	if _, err := ValidateProseMirrorContent(wrap(strings.Repeat("a", maxContentSize-overhead))); err != nil {
+		t.Fatalf("a document of exactly the limit must be accepted: %v", err)
 	}
 }
