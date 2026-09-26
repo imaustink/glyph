@@ -1,3 +1,7 @@
+# Migrations for the install-time migrate Job and for each API pod's
+# wait-for-schema check. (Upgrades migrate from <fullname>-migrations-hook —
+# see migrate-job.yaml — because a pre-upgrade hook runs before this
+# ConfigMap is updated.)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -6,7 +10,4 @@ metadata:
     {{- include "glyph.labels" . | nindent 4 }}
 
 data:
-  {{- range $path, $bytes := .Files.Glob "migrations/*.sql" }}
-  {{ base $path }}: |
-    {{- toString $bytes | nindent 4 }}
-  {{- end }}
+  {{- include "glyph.migrations.data" . | trim | nindent 2 }}

@@ -149,3 +149,17 @@ Migration job name — includes a hash of the migration config to re-run on chan
 {{- define "glyph.migrate.name" -}}
 {{- printf "%s-migrate" (include "glyph.fullname" .) }}
 {{- end }}
+
+{{/*
+ConfigMap data for the migrations: every migrations/*.sql file (synced from
+api/migrations at deploy time) plus files/glyph-migrate.sh, which the migrate
+Job and the API's wait-for-schema init container run.
+*/}}
+{{- define "glyph.migrations.data" -}}
+{{- range $path, $bytes := .Files.Glob "migrations/*.sql" }}
+{{ base $path }}: |
+  {{- toString $bytes | nindent 2 }}
+{{- end }}
+glyph-migrate.sh: |
+  {{- .Files.Get "files/glyph-migrate.sh" | nindent 2 }}
+{{- end }}

@@ -15,7 +15,7 @@ Your release is named: {{ .Release.Name }}
 2. Check the CNPG database cluster status:
   kubectl get cluster {{ include "glyph.cnpg.clusterName" . }} -n {{ .Release.Namespace }}
 
-3. Check migration job status:
+3. Check migration job status (on upgrades it runs as a pre-upgrade hook):
   kubectl get jobs -l app.kubernetes.io/component=migrate -n {{ .Release.Namespace }}
 
 {{- if not .Values.cnpg.backup.enabled }}
