@@ -12,6 +12,8 @@
   import { storageMode } from '$lib/storage/config';
   import { authStore } from '$lib/stores/auth.svelte';
   import { onMount } from 'svelte';
+  import { notificationsStore } from '$lib/stores/notifications.svelte';
+  import { apiErrorMessage } from '$lib/storage/apiClient';
 
   let editorComponent = $state<ReturnType<typeof Editor> | null>(null);
 
@@ -74,7 +76,11 @@
 
   async function handleVisibilityChange(orgId: string | null, isPrivate: boolean) {
     if (!node) return;
-    await pagesStore.updateNode(node.id, { orgId, isPrivate });
+    try {
+      await pagesStore.updateNode(node.id, { orgId, isPrivate });
+    } catch (err) {
+      notificationsStore.error(apiErrorMessage(err, 'Failed to update visibility.'));
+    }
   }
 </script>
 

@@ -203,23 +203,20 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 		}
 	}
 
-	// A node's workspace is its subtree's: moving a folder (or a page with
-	// sub-pages) to another org, or to Personal, takes its descendants and
-	// their notes' tasks along, atomically, before the node itself is saved.
-	if !sameOrg(originalOrgID, existing.OrgID) {
-		if err := h.Pages.SetSubtreeOrg(c.Request.Context(), id, existing.OrgID); err != nil {
-			internalError(c, err)
-			return
-		}
-	}
-
 	// Write only the fields the request sent, so a concurrent PATCH of other
 	// fields isn't undone by this one writing back its stale copy (DI-05).
 	fields := make([]string, 0, len(keys))
 	for k := range keys {
 		fields = append(fields, k)
 	}
-	page, err := h.Pages.UpdateFields(c.Request.Context(), existing, fields)
+	// A node's workspace is its subtree's: moving a folder (or a page with
+	// sub-pages) to another org, or to Personal, takes its descendants and
+	// their tasks along, in the same transaction as the node's own write.
+	update := h.Pages.UpdateFields
+	if !sameOrg(originalOrgID, existing.OrgID) {
+		update = h.Pages.UpdateFieldsMovingOrg
+	}
+	page, err := update(c.Request.Context(), existing, fields)
 	if err != nil {
 		// The store re-checks for a cycle under the tree-move lock, which
 		// catches a concurrent move the check above could not see.
@@ -227,10 +224,22 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot move a node into one of its own descendants"})
 			return
 		}
+		if errors.Is(err, store.ErrSubtreeNotOwned) {
+			// The move would carry pages other users created inside this
+			// folder into another workspace, as a delete would destroy them.
+			subtreeHasOtherOwners(c, err)
+			return
+		}
 		internalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, page)
+}
+
+// subtreeHasOtherOwners answers a delete or org move of a folder that holds
+// pages other users own (store.ErrSubtreeNotOwned).
+func subtreeHasOtherOwners(c *gin.Context, err error) {
+	c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "subtree_has_other_owners"})
 }
 
 func sameOrg(a, b *uuid.UUID) bool {
@@ -264,7 +273,7 @@ func (h *PageHandler) DeletePage(c *gin.Context) {
 		if errors.Is(err, store.ErrSubtreeNotOwned) {
 			// Deleting would cascade to pages other users created inside
 			// this folder. They must move or delete their pages first.
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "subtree_has_other_owners"})
+			subtreeHasOtherOwners(c, err)
 			return
 		}
 		notFoundOrError(c, err)

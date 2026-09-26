@@ -501,6 +501,11 @@ func (s *pageStore) Create(_ context.Context, p *model.Page) (*model.Page, error
 func (s *pageStore) UpdateFields(_ context.Context, p *model.Page, fields []string) (*model.Page, error) {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
+	return s.updateFieldsLocked(p, fields)
+}
+
+// updateFieldsLocked is UpdateFields' body; the caller holds s.r.mu.
+func (s *pageStore) updateFieldsLocked(p *model.Page, fields []string) (*model.Page, error) {
 	existing, ok := s.r.pages[p.ID]
 	if !ok || existing.UserID != p.UserID {
 		return nil, fmt.Errorf("pages update: %w", store.ErrNotFound)

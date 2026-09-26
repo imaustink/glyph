@@ -83,10 +83,14 @@ type PageStore interface {
 	// folderID (inclusive). Used by folder board queries to scope tasks/lanes.
 	GetDescendantIDs(ctx context.Context, folderID uuid.UUID) ([]uuid.UUID, error)
 
-	// SetSubtreeOrg atomically moves pageID, its descendants and the tasks
-	// sourced from any of them into orgID (nil = personal). Access control
-	// is the caller's.
-	SetSubtreeOrg(ctx context.Context, pageID uuid.UUID, orgID *uuid.UUID) error
+	// UpdateFieldsMovingOrg is UpdateFields for a write that changes p's org
+	// to p.OrgID (nil = personal): in the same transaction, under the
+	// tree-move lock, it moves p's descendants and the tasks sourced from,
+	// or on the folder board of, any of them to that org. It returns ErrSubtreeNotOwned, changing
+	// nothing, if the subtree holds a page not owned by p.UserID, and on any
+	// other failure (ErrCycle included) changes nothing either. Access
+	// control is the caller's.
+	UpdateFieldsMovingOrg(ctx context.Context, p *model.Page, fields []string) (*model.Page, error)
 }
 
 // TaskPatchOptions qualify a TaskStore.Patch.
