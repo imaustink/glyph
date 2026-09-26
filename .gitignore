@@ -28,6 +28,9 @@ vite.config.ts.timestamp-*
 
 # Helm — migrations are copied from api/migrations/ at deploy time
 helm/glyph/migrations/
+# Production values for scripts/deploy.sh (its default --values). They hold
+# secrets and live outside the repo (homelab); a local copy is never committed.
+/values-production.yaml
 
 # Playwright test results
 test-results/

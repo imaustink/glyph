@@ -46,6 +46,10 @@ die() { echo "✗ $*" >&2; exit 1; }
 cd "$(git rev-parse --show-toplevel)"
 
 # ── Guards ────────────────────────────────────────────────────────────────────
+# Untracked files count: the frontend (`COPY . .`) and collab images are built
+# from the working tree, so an untracked file could change an image whose
+# tree-hash tag says it didn't. The default values-production.yaml is
+# gitignored (and dockerignored), so it doesn't trip this.
 if [[ -n "$(git status --porcelain)" ]]; then
   die "the working tree has uncommitted changes; deploy only what is on origin/main."
 fi
