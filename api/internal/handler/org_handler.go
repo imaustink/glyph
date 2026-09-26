@@ -196,6 +196,10 @@ func (h *OrgHandler) AddOrgMember(c *gin.Context) {
 	} else {
 		u, err := h.Users.GetByEmail(c.Request.Context(), body.Email)
 		if err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				c.JSON(http.StatusConflict, gin.H{"error": "several accounts use that email; add the member by userId", "code": "ambiguous_email"})
+				return
+			}
 			c.JSON(http.StatusNotFound, gin.H{"error": "no user found with that email"})
 			return
 		}

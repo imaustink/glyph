@@ -250,8 +250,13 @@ func (s *userStore) Upsert(_ context.Context, sub, issuer string, email, name *s
 	defer s.r.mu.Unlock()
 	key := sub + "|" + issuer
 	if u, ok := s.r.usersBySub[key]; ok {
-		u.Email = email
-		u.Name = name
+		// A claim the IdP left out keeps the stored value (like Postgres).
+		if email != nil {
+			u.Email = email
+		}
+		if name != nil {
+			u.Name = name
+		}
 		u.UpdatedAt = time.Now()
 		cp := *u
 		return &cp, nil
@@ -271,7 +276,7 @@ func (s *userStore) GetByID(_ context.Context, id uuid.UUID) (*model.User, error
 	defer s.r.mu.RUnlock()
 	u, ok := s.r.usersByID[id]
 	if !ok {
-		return nil, fmt.Errorf("user get: not found")
+		return nil, fmt.Errorf("user get: %w", store.ErrNotFound)
 	}
 	cp := *u
 	return &cp, nil
@@ -280,13 +285,20 @@ func (s *userStore) GetByID(_ context.Context, id uuid.UUID) (*model.User, error
 func (s *userStore) GetByEmail(_ context.Context, email string) (*model.User, error) {
 	s.r.mu.RLock()
 	defer s.r.mu.RUnlock()
+	var found *model.User
 	for _, u := range s.r.usersByID {
 		if u.Email != nil && strings.EqualFold(*u.Email, email) {
-			cp := *u
-			return &cp, nil
+			if found != nil {
+				return nil, fmt.Errorf("%w: several accounts use this email", store.ErrConflict)
+			}
+			found = u
 		}
 	}
-	return nil, fmt.Errorf("user get by email: not found")
+	if found == nil {
+		return nil, fmt.Errorf("user get by email: %w", store.ErrNotFound)
+	}
+	cp := *found
+	return &cp, nil
 }
 
 func (s *userStore) Search(_ context.Context, query string, excludeID uuid.UUID, orgIDs []uuid.UUID, limit int) ([]*model.UserSearchResult, error) {

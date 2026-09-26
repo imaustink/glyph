@@ -17,13 +17,16 @@ func NewUserStore(pool DBPool) UserStore {
 	return &pgUserStore{pool: pool}
 }
 
+// Upsert creates or refreshes the user for an IdP identity. A claim the IdP
+// left out (nil email or name) keeps the stored value: overwriting it with
+// NULL erased the address other users share with.
 func (s *pgUserStore) Upsert(ctx context.Context, sub, issuer string, email, name *string) (*model.User, error) {
 	const q = `
 		INSERT INTO users (sub, issuer, email, name)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (sub, issuer) DO UPDATE
-			SET email = EXCLUDED.email,
-			    name  = EXCLUDED.name,
+			SET email = COALESCE(EXCLUDED.email, users.email),
+			    name  = COALESCE(EXCLUDED.name, users.name),
 			    updated_at = NOW()
 		RETURNING id, sub, issuer, email, name, created_at, updated_at`
 
@@ -52,19 +55,39 @@ func (s *pgUserStore) GetByID(ctx context.Context, id uuid.UUID) (*model.User, e
 	return u, nil
 }
 
+// GetByEmail finds the one user with this address, ignoring case. If
+// several accounts match (the same address from two IdPs, or differing
+// only in case) it returns ErrConflict rather than picking one: the result
+// decides who receives a share or an org membership.
 func (s *pgUserStore) GetByEmail(ctx context.Context, email string) (*model.User, error) {
-	const q = `SELECT id, sub, issuer, email, name, created_at, updated_at FROM users WHERE email = $1`
-	u := &model.User{}
-	err := s.pool.QueryRow(ctx, q, email).Scan(
-		&u.ID, &u.Sub, &u.Issuer, &u.Email, &u.Name, &u.CreatedAt, &u.UpdatedAt,
-	)
+	const q = `SELECT id, sub, issuer, email, name, created_at, updated_at FROM users
+		WHERE lower(email) = lower($1)
+		ORDER BY id
+		LIMIT 2`
+	rows, err := s.pool.Query(ctx, q, email)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNotFound
-		}
 		return nil, fmt.Errorf("user get by email: %w", err)
 	}
-	return u, nil
+	defer rows.Close()
+	var found []*model.User
+	for rows.Next() {
+		u := &model.User{}
+		if err := rows.Scan(&u.ID, &u.Sub, &u.Issuer, &u.Email, &u.Name, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("user get by email scan: %w", err)
+		}
+		found = append(found, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("user get by email: %w", err)
+	}
+	switch len(found) {
+	case 0:
+		return nil, ErrNotFound
+	case 1:
+		return found[0], nil
+	default:
+		return nil, fmt.Errorf("%w: several accounts use this email", ErrConflict)
+	}
 }
 
 // likeEscaper escapes the LIKE/ILIKE metacharacters %, _, and the escape
