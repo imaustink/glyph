@@ -28,8 +28,9 @@ vi.mock('$lib/stores/ui.svelte', () => ({
 vi.mock('$lib/stores/notifications.svelte', () => ({
 	notificationsStore: { error: (...args: unknown[]) => notifyError(...args) }
 }));
+const flushAllTaskTitleUpdates = vi.fn();
 vi.mock('$lib/editor/useTaskTitleDebounce', () => ({
-	flushAllTaskTitleUpdates: vi.fn().mockResolvedValue(undefined)
+	flushAllTaskTitleUpdates: () => flushAllTaskTitleUpdates()
 }));
 
 import { useContentSave } from './useContentSave';
@@ -42,6 +43,7 @@ describe('useContentSave conflict handling', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		saveContent.mockResolvedValue(undefined);
+		flushAllTaskTitleUpdates.mockResolvedValue(undefined);
 	});
 
 	it('persists the scheduled document under the scheduled page', async () => {
@@ -217,5 +219,18 @@ describe('useContentSave conflict handling', () => {
 
 			expect(saveContent).toHaveBeenLastCalledWith('page-B', { type: 'doc', text: 'b' });
 		});
+	});
+
+	// Editor.svelte opens the next page only after flushAll() settles. A task
+	// title write that fails must not reject it, or the next page never opens
+	// and the editor is left read-only on the previous page's content.
+	it('flushAll resolves and reports the error when a task title flush fails', async () => {
+		flushAllTaskTitleUpdates.mockRejectedValueOnce(new Error('network down'));
+		const handle = useContentSave();
+		handle.scheduleSave(fakeEditor('doc'), 'page-A');
+
+		await expect(handle.flushAll()).resolves.toBeUndefined();
+		expect(saveContent).toHaveBeenCalledWith('page-A', { type: 'doc', text: 'doc' });
+		expect(notifyError).toHaveBeenCalled();
 	});
 });
