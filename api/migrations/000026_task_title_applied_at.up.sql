@@ -1,0 +1,15 @@
+-- Which outside rename (tasks.title_renamed_at, 000025) a note task's bullet
+-- has caught up with (DI-29): the collab service sets it to title_renamed_at
+-- when it puts the title into the bullet, or finds it already there, in the
+-- same transaction as its log append. A rename is owed to the bullet while
+-- this is NULL or older than title_renamed_at. It is also settled when a new
+-- shared document is seeded from stored content written after the rename (a
+-- version restore, say): that whole-document write is newer.
+--
+-- Per task, not per note: the note's newest write says nothing about which
+-- bullet it touched.
+--
+-- Additive: API builds ignore it, collab builds that predate it never set it,
+-- and a collab build that starts before this migration has run falls back to
+-- comparing renames with the note's newest write.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS title_applied_at TIMESTAMPTZ;
