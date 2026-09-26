@@ -320,6 +320,18 @@ const pageSubtreeCTE = `
 // note is recoverable; the subtree's tasks are soft-deleted (other users'
 // folder-board tasks are only unfiled) and its shares deleted.
 func (s *pgPageStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
+	return s.deleteSubtree(ctx, id, userID, false)
+}
+
+// DeleteKeepingTasks is Delete, except that the tasks Delete would
+// soft-delete are detached instead: their source note, bullet and folder
+// board are cleared, and they live on as standalone tasks with everything
+// else intact (the "Keep Tasks" choice when deleting a note).
+func (s *pgPageStore) DeleteKeepingTasks(ctx context.Context, id, userID uuid.UUID) error {
+	return s.deleteSubtree(ctx, id, userID, true)
+}
+
+func (s *pgPageStore) deleteSubtree(ctx context.Context, id, userID uuid.UUID, keepTasks bool) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("page delete — begin: %w", err)
@@ -374,8 +386,17 @@ func (s *pgPageStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
 	// the deleter's here. Another user's task filed on the folder's board
 	// (an editor may file theirs there) isn't the deleter's to delete: the
 	// folder_id foreign key just unfiles it.
-	if _, err := tx.Exec(ctx,
-		`UPDATE tasks SET deleted_at = NOW(), deleted_reason = 'source_removed', updated_at = NOW()
+	// With keepTasks the same tasks are detached instead: standalone, off
+	// the deleted note (and its bullet) and the deleted folder board.
+	taskSQL := `UPDATE tasks SET deleted_at = NOW(), deleted_reason = 'source_removed', updated_at = NOW()`
+	if keepTasks {
+		taskSQL = `UPDATE tasks SET
+			source_node_id = CASE WHEN source_page_id = ANY($1) THEN NULL ELSE source_node_id END,
+			source_page_id = CASE WHEN source_page_id = ANY($1) THEN NULL ELSE source_page_id END,
+			folder_id = CASE WHEN folder_id = ANY($1) THEN NULL ELSE folder_id END,
+			updated_at = NOW()`
+	}
+	if _, err := tx.Exec(ctx, taskSQL+`
 		 WHERE deleted_at IS NULL
 		   AND (source_page_id = ANY($1) OR (folder_id = ANY($1) AND user_id = $2))`, ids, userID,
 	); err != nil {

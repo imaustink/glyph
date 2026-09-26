@@ -285,7 +285,21 @@ func (h *PageHandler) DeletePage(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only the owner can delete"})
 		return
 	}
-	if err := h.Pages.Delete(c.Request.Context(), id, user.ID); err != nil {
+	// The subtree's tasks are soft-deleted with it unless the caller opts to
+	// keep them (?keepTasks=true: "Keep Tasks" in the delete dialog), which
+	// detaches them into standalone tasks instead.
+	del := h.Pages.Delete
+	if keep := c.Query("keepTasks"); keep != "" {
+		k, err := strconv.ParseBool(keep)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "keepTasks must be true or false"})
+			return
+		}
+		if k {
+			del = h.Pages.DeleteKeepingTasks
+		}
+	}
+	if err := del(c.Request.Context(), id, user.ID); err != nil {
 		if errors.Is(err, store.ErrSubtreeNotOwned) {
 			// Deleting would cascade to pages other users created inside
 			// this folder. They must move or delete their pages first.
