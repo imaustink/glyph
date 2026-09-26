@@ -859,7 +859,9 @@ export class GlyphCollab implements Extension {
 	 * other replicas appended, on a scratch copy of the document; so when two
 	 * replicas holding the note both get the rename, the second finds the
 	 * title already there and writes nothing. Either way the bullets showing
-	 * their titles are recorded as caught up, in the same transaction. The appended row reaches this
+	 * their titles are recorded as caught up, in the same transaction. This
+	 * copy's unsaved edits (`pending`) go into the same row, since the title
+	 * edit is built on top of them. The appended row reaches this
 	 * copy (and its editors) through the normal catch-up. Serialised with the
 	 * document's other persistence work. Best effort: on failure it logs and
 	 * resolves false.
@@ -878,27 +880,44 @@ export class GlyphCollab implements Extension {
 
 	private async writeTitlesOnce(state: DocState, titles: { nodeId: string; title: string }[]): Promise<boolean> {
 		if (state.evicted || state.quarantined) return false;
-		const seq = await this.opts.persistence.appendExclusive(state.pageId, state.epoch, state.lastSeq, (rows) => {
-			for (const row of rows) {
-				Y.applyUpdate(state.document, row.data, DB_ORIGIN);
-				state.lastSeq = Math.max(state.lastSeq, row.seq);
-			}
-			const scratch = new Y.Doc();
-			try {
-				Y.applyUpdate(scratch, Y.encodeStateAsUpdate(state.document));
-				const before = Y.encodeStateVector(scratch);
-				let changed = false;
-				for (const t of titles) changed = setListItemText(scratch, t.nodeId, t.title, null) || changed;
-				return {
-					update: changed ? Y.encodeStateAsUpdate(scratch, before) : null,
-					// Recorded as applied with the append, so the next load
-					// doesn't owe these bullets the rename (see persistence.ts).
-					titlesShown: titles.filter((t) => listItemShowsText(scratch, t.nodeId, t.title))
-				};
-			} finally {
-				scratch.destroy();
-			}
-		});
+		// This copy's edits not yet in the log (waiting for the store
+		// debounce). The title edit is built on top of them, so it can depend
+		// on them: they go into the same row, or a crash before they were
+		// saved would leave a logged title no replica can integrate, with the
+		// rename already recorded as applied.
+		let batch: Uint8Array[] = [];
+		let changed = false;
+		let seq: number | null | 'stale';
+		try {
+			seq = await this.opts.persistence.appendExclusive(state.pageId, state.epoch, state.lastSeq, (rows) => {
+				for (const row of rows) {
+					Y.applyUpdate(state.document, row.data, DB_ORIGIN);
+					state.lastSeq = Math.max(state.lastSeq, row.seq);
+				}
+				batch = state.pending;
+				state.pending = [];
+				const scratch = new Y.Doc();
+				try {
+					Y.applyUpdate(scratch, Y.encodeStateAsUpdate(state.document));
+					const before = Y.encodeStateVector(scratch);
+					for (const t of titles) changed = setListItemText(scratch, t.nodeId, t.title, null) || changed;
+					const parts = changed ? [...batch, Y.encodeStateAsUpdate(scratch, before)] : batch;
+					return {
+						update: parts.length > 0 ? Y.mergeUpdates(parts) : null,
+						// Recorded as applied with the append, so the next load
+						// doesn't owe these bullets the rename (see persistence.ts).
+						titlesShown: titles.filter((t) => listItemShowsText(scratch, t.nodeId, t.title))
+					};
+				} finally {
+					scratch.destroy();
+				}
+			});
+		} catch (err) {
+			// Nothing was committed: the edits are retried like a failed
+			// append, and the renames stay owed.
+			if (batch.length > 0) this.returnBatch(state, batch);
+			throw err;
+		}
 		if (seq === 'stale') {
 			this.evict(state, CollabReason.Reset, 'epoch replaced');
 			return false;
@@ -910,7 +929,7 @@ export class GlyphCollab implements Extension {
 		await this.catchUpOnce(state);
 		// page_contents (search, the board, exports) gets the new text too.
 		void this.persist(state);
-		return true;
+		return changed;
 	}
 
 	/**
