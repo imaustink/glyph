@@ -21,7 +21,11 @@ export type ProseMirrorJSON = { type: string; attrs?: Record<string, unknown>; c
 export interface Inspection {
 	/** The document as ProseMirror JSON. */
 	json: ProseMirrorJSON;
-	/** Size of `json` serialised, in bytes (UTF-16 length; close enough for a limit). */
+	/**
+	 * Size of `json` serialised, in UTF-8 bytes — what the API counts. The
+	 * UTF-16 length undercounts CJK and emoji text by up to 3×, which let a
+	 * document pass here only for the API to refuse it and quarantine the page.
+	 */
 	bytes: number;
 	/**
 	 * Why the document is unacceptable, or null. Fatal problems are things a
@@ -48,7 +52,7 @@ export function toJSON(doc: Y.Doc): ProseMirrorJSON {
 export function inspect(doc: Y.Doc, schema: Schema, maxBytes: number): Inspection {
 	const json = toJSON(doc);
 	const serialised = JSON.stringify(json);
-	const bytes = serialised.length;
+	const bytes = Buffer.byteLength(serialised, 'utf8');
 	if (bytes > maxBytes) {
 		return { json, bytes, fatal: `document is ${bytes} bytes, over the ${maxBytes} byte limit`, contentError: null };
 	}
