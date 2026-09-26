@@ -27,6 +27,8 @@ export class FakeApi implements Api {
 	snapshots = new Map<string, { body: SnapshotBody; revision: number }[]>();
 	/** Called on each snapshot; return a result to override the default. */
 	onSnapshot: ((pageId: string, body: SnapshotBody) => SnapshotResult | undefined) | null = null;
+	/** Awaited before each snapshot is judged: lets a test hold one in flight. */
+	beforeSnapshot: ((pageId: string, body: SnapshotBody) => void | Promise<void>) | null = null;
 	private lastSeq = new Map<string, number>();
 
 	constructor(private readonly persistence: MemoryPersistence) {}
@@ -48,6 +50,7 @@ export class FakeApi implements Api {
 
 	/** Mirrors the API's WriteCollabSnapshot preconditions. */
 	async snapshot(pageId: string, body: SnapshotBody): Promise<SnapshotResult> {
+		await this.beforeSnapshot?.(pageId, body);
 		const override = this.onSnapshot?.(pageId, body);
 		if (override) return override;
 		if (!this.enabled) return { kind: 'disabled' };

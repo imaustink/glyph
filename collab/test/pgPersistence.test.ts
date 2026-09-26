@@ -116,6 +116,40 @@ describe.skipIf(!url)('PgPersistence (Postgres)', () => {
 		expect(toJSON(replay)).toEqual(toJSON(doc));
 	});
 
+	it('a reader that has seen a seq has seen every lower seq of the page [DI-11]', async () => {
+		// BIGSERIAL assigns seq when the row is inserted, not when it commits.
+		// An append that takes seq N and commits after another append took and
+		// committed N+1 is invisible to a reader that already moved past N+1
+		// (fetchSince is strictly seq > afterSeq), so that replica skips it
+		// forever. A trigger stands in for a slow commit: it sleeps, after the
+		// seq is assigned and before the statement commits, for one marked row.
+		await pool.query(`
+			CREATE OR REPLACE FUNCTION test_slow_append() RETURNS trigger AS $$
+			BEGIN
+				IF NEW.data = '\\xdead'::bytea THEN PERFORM pg_sleep(0.5); END IF;
+				RETURN NEW;
+			END $$ LANGUAGE plpgsql;
+			CREATE TRIGGER test_slow_append AFTER INSERT ON page_collab_updates
+				FOR EACH ROW EXECUTE FUNCTION test_slow_append();`);
+		try {
+			const loaded = await persistence.loadOrSeed(pageId, seeder, fingerprint);
+			const slow = persistence.append(pageId, loaded.epoch, new Uint8Array([0xde, 0xad]));
+			await new Promise((r) => setTimeout(r, 100)); // slow has its seq, not yet committed
+			await persistence.append(pageId, loaded.epoch, new Uint8Array([0, 0]));
+			const seen = await persistence.fetchSince(pageId, loaded.epoch, 0);
+			await slow;
+
+			const upTo = Math.max(...seen.map((u) => u.seq));
+			const later = await persistence.fetchSince(pageId, loaded.epoch, upTo);
+			const all = await persistence.fetchSince(pageId, loaded.epoch, 0);
+			// Everything in the log is reachable from what the reader saw.
+			const bySeq = (a: number, b: number) => a - b;
+			expect([...seen, ...later].map((u) => u.seq).sort(bySeq)).toEqual(all.map((u) => u.seq).sort(bySeq));
+		} finally {
+			await pool.query(`DROP TRIGGER test_slow_append ON page_collab_updates; DROP FUNCTION test_slow_append();`);
+		}
+	});
+
 	it('reseed only succeeds from the current epoch', async () => {
 		const loaded = await persistence.loadOrSeed(pageId, seeder, fingerprint);
 		const update = seedUpdate(schema, { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'v2' }] }] });

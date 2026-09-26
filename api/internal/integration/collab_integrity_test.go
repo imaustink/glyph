@@ -545,6 +545,10 @@ func TestCollabWritePath(t *testing.T) {
 
 			w := snapshot(t, h, page.ID, epoch, 5, doc("older"))
 			assert.Equal(t, http.StatusConflict, w.Code)
+			// "Behind" is not "replaced": another replica's newer snapshot
+			// landed first. A distinct code tells the collab service to catch
+			// up instead of evicting its editors (DI-11).
+			assert.Equal(t, "snapshot_behind", Decode[map[string]interface{}](t, w)["code"])
 			assert.Contains(t, string(currentContent(t, h, h.UserA.ID, page.ID).Content), "newer")
 		},
 

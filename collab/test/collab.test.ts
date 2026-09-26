@@ -47,6 +47,17 @@ function hold() {
 	return { wait: () => gate, release };
 }
 
+/**
+ * A valid update another replica could have appended: a paragraph inserted at
+ * the top of the document as it is currently stored.
+ */
+function foreignEdit(text: string): Uint8Array {
+	const foreign = persistence.replay(PAGE);
+	const before = Y.encodeStateVector(foreign);
+	foreign.getXmlFragment(COLLAB_FRAGMENT).insert(0, [paragraph(text)]);
+	return Y.encodeStateAsUpdate(foreign, before);
+}
+
 beforeEach(async () => {
 	persistence = new MemoryPersistence();
 	api = new FakeApi(persistence);
@@ -294,6 +305,62 @@ describe('convergence and persistence', () => {
 			'foreign append survived compaction in the snapshot'
 		);
 		await eventually(() => textOf(alice.doc).includes('from another replica'));
+	});
+
+	it('a foreign append between catch-up and append is not skipped [DI-11]', async () => {
+		// Replica A catches up to seq N; replica B appends N+1; A appends N+2.
+		// Jumping A's lastSeq to N+2 would make every later catch-up (strictly
+		// seq > lastSeq) skip B's row, and A's snapshots would drop B's edit.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		const foreign = foreignEdit('appended by another replica');
+		persistence.beforeAppend = (pageId, epoch) => {
+			persistence.beforeAppend = null;
+			persistence.injectRow(pageId, epoch, foreign);
+		};
+		alice.fragment.insert(alice.fragment.length, [paragraph('local edit')]);
+
+		await eventually(() => textOf(alice.doc).includes('appended by another replica'), 3000, 'foreign row reached the replica');
+		await eventually(
+			() => JSON.stringify(api.latest(PAGE) ?? '').includes('appended by another replica'),
+			3000,
+			'foreign row reached the snapshot'
+		);
+	});
+
+	it('a snapshot that loses the race to another replica\'s newer one does not evict [DI-11]', async () => {
+		// Two replicas snapshot concurrently: A's (for seq N) arrives after B's
+		// (for N+1) and is refused as behind. That is not a replaced document —
+		// A must catch up, not Reset its editors and drop their pending edits.
+		const other = await startServer(persistence, api);
+		try {
+			const a = open({ user: 'alice' });
+			const b = open({ user: 'bob' }, other);
+			await Promise.all([a.synced(), b.synced()]);
+
+			const gate = hold();
+			let held = false;
+			api.beforeSnapshot = async () => {
+				if (held) return;
+				held = true;
+				await gate.wait();
+			};
+			a.fragment.insert(a.fragment.length, [paragraph('via replica A')]);
+			await eventually(() => held, 3000, "A's snapshot in flight");
+			b.fragment.insert(b.fragment.length, [paragraph('via replica B')]);
+			await eventually(() => JSON.stringify(api.latest(PAGE) ?? '').includes('via replica B'), 3000, "B's newer snapshot accepted");
+			gate.release();
+			await sleep(200);
+			expect(a.closeReasons).not.toContain(CollabReason.Reset);
+
+			a.fragment.insert(a.fragment.length, [paragraph('A keeps editing')]);
+			await eventually(() => {
+				const snap = JSON.stringify(api.latest(PAGE));
+				return snap.includes('A keeps editing') && snap.includes('via replica A') && snap.includes('via replica B');
+			}, 5000, 'A persists again after losing the race');
+		} finally {
+			await other.stop();
+		}
 	});
 
 	it('replicas pick up each other\'s updates before snapshotting', async () => {
