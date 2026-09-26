@@ -22,6 +22,22 @@
 
   const taskId = $derived(page.params.taskId!);
   const task = $derived(tasksStore.getById(taskId));
+
+  // The store can lack a task storage still has: one restored after its
+  // bullet came back (the editor's own refresh is cancelled when opening the
+  // task navigates away), or one reached by URL before the store saw it.
+  // Look it up once before saying it doesn't exist.
+  let lookedUp = $state<string | null>(null);
+  $effect(() => {
+    const id = taskId;
+    if (task || lookedUp === id) return;
+    tasksStore
+      .refreshTask(id)
+      .catch((err) => console.warn('[TaskPage] Failed to look up task:', { id }, err))
+      .finally(() => {
+        if (taskId === id) lookedUp = id;
+      });
+  });
   const sourcePage = $derived(task?.sourcePageId ? pagesStore.getById(task.sourcePageId) : undefined);
   const hasLinkedNote = $derived(!!task?.sourcePageId && !!task?.sourceNodeId);
   const isOrphaned = $derived(hasLinkedNote && !sourcePage);
@@ -304,7 +320,9 @@
   </div>
 
   {#if !task}
-    <div class="not-found">Task not found.</div>
+    {#if lookedUp === taskId}
+      <div class="not-found">Task not found.</div>
+    {/if}
   {:else}
     <div class="detail-content">
       <!-- Title -->
