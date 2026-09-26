@@ -189,13 +189,14 @@ This starts an ephemeral Postgres (port 5433) and Go API (port 8083) in their ow
 
 `make test-e2e-k8s` runs the same specs against `helm/glyph` on a real cluster, so the chart itself is under test alongside the app — the CNPG database, the migration Job, the collab service, the Ingress, and the images built from `Dockerfile` / `api/Dockerfile` / `collab/Dockerfile`.
 
-The cluster is [ferry](https://github.com/imaustink/ferry) v0.10 or newer, which runs the Kubernetes control plane natively on macOS and each pod in its own VM:
+The cluster is [ferry](https://github.com/imaustink/ferry), which runs the Kubernetes control plane natively on macOS and each pod in its own VM:
 
 ```bash
-curl -sfL https://get.ferry.kurpuis.com | FERRY_VERSION=v0.10.0 sh -
 brew install buildkit    # `ferry image build` runs the builder; buildctl is the client
 make test-e2e-k8s
 ```
+
+The script uses the ferry you already have. If there is none on your `PATH`, it installs the latest release (without starting a cluster or registering a login agent). It never upgrades an existing install, since a ferry release carries its own Kubernetes; if yours lacks something the script needs (`ferry init`, the Traefik addon), it stops and tells you to upgrade with `curl -sfL https://get.ferry.kurpuis.com | sh -`.
 
 The script runs its own ferry cluster in a `glyph-e2e` profile — separate state, ports and pod network from any cluster you develop against. The first run writes that profile's config with `ferry init` (durability `process-crash`, machines off, every pod a `ferry-vm`) and starts it; later runs reuse it. It then enables ferry's Traefik addon, builds four images straight into the node's image store (no registry, no Docker), installs the CloudNativePG operator the chart depends on, deploys into the `glyph-e2e` namespace, and runs Playwright through the Ingress — the api project at `http://localhost:<port>`, the local project at `http://127.0.0.1:<port>`, with nothing port-forwarded — then tears the namespace down. The cluster stays up between runs; stop it with `FERRY_PROFILE=glyph-e2e ferry down` (add `--purge` to drop its data).
 

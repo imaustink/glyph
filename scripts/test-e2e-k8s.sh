@@ -2,13 +2,17 @@
 # scripts/test-e2e-k8s.sh — Run Playwright E2E tests against a local Kubernetes
 # cluster instead of the Docker Compose stack in scripts/test-e2e.sh.
 #
-# The cluster is ferry (https://github.com/imaustink/ferry) v0.10 or newer — a
-# macOS/Apple silicon distribution that runs the control plane natively and
-# each pod in its own VM. Anything that speaks the Kubernetes API works,
-# though: point KUBECONFIG at another cluster and set FERRY=0 to skip the
-# ferry-specific bits (see "Using a different cluster" below).
+# The cluster is ferry (https://github.com/imaustink/ferry) — a macOS/Apple
+# silicon distribution that runs the control plane natively and each pod in
+# its own VM. Anything that speaks the Kubernetes API works, though: point
+# KUBECONFIG at another cluster and set FERRY=0 to skip the ferry-specific
+# bits (see "Using a different cluster" below).
 #
 # What it does:
+#   0. Uses the ferry you have installed. With none on the PATH it installs
+#      the latest release (without starting a cluster or registering a login
+#      agent). An existing install is never upgraded — if it lacks something
+#      this script needs, the script says so and stops.
 #   1. Starts a ferry cluster in its own profile (glyph-e2e), with its own
 #      state, ports and pod network, so it never touches the default cluster
 #      you might develop against. The first run writes the profile's config
@@ -68,7 +72,7 @@ NAMESPACE="${NAMESPACE:-glyph-e2e}"
 RELEASE="glyph"
 CNPG_VERSION="1.30.0"
 FERRY="${FERRY:-1}"
-FERRY_MIN_VERSION="0.10.0"
+FERRY_INSTALL_URL="https://get.ferry.kurpuis.com"
 INGRESS_CLASS="${INGRESS_CLASS:-traefik}"
 export FERRY_PROFILE="${FERRY_PROFILE:-glyph-e2e}"
 
@@ -84,17 +88,29 @@ export FERRY_PROFILE="${FERRY_PROFILE:-glyph-e2e}"
 
 # ── Cluster ───────────────────────────────────────────────────────────────────
 if [[ "$FERRY" == "1" ]]; then
-  command -v ferry >/dev/null || {
-    echo "ferry not found. Install it with:"
-    echo "  curl -sfL https://get.ferry.kurpuis.com | FERRY_VERSION=v${FERRY_MIN_VERSION} sh -"
-    exit 1
-  }
-  # 0.9 brought `ferry init`/`ferry config`, RuntimeClasses and a real tmpfs
-  # for memory-backed emptyDirs; 0.10 the Traefik addon.
-  ferry_version="$(ferry version | awk 'NR==1 {sub(/^v/, "", $2); print $2}')"
-  if [[ "$(printf '%s\n%s\n' "$FERRY_MIN_VERSION" "$ferry_version" | sort -V | head -1)" != "$FERRY_MIN_VERSION" ]]; then
-    echo "ferry $ferry_version is too old; this needs v$FERRY_MIN_VERSION or newer. Upgrade with:"
-    echo "  curl -sfL https://get.ferry.kurpuis.com | FERRY_VERSION=v${FERRY_MIN_VERSION} sh -"
+  # Installing onto a machine with no ferry is harmless. Upgrading one is not
+  # this script's call: a release carries its own Kubernetes, so it would move
+  # the version under any cluster already running.
+  if ! command -v ferry >/dev/null; then
+    echo "▶ ferry not found — installing the latest release…"
+    curl -sfL "$FERRY_INSTALL_URL" | FERRY_SKIP_START=1 FERRY_SKIP_SERVICE=1 sh -
+    # The installer links into /usr/local/bin, else ~/.local/bin, which may
+    # not be on this shell's PATH yet.
+    export PATH="$PATH:/usr/local/bin:$HOME/.local/bin"
+    command -v ferry >/dev/null || { echo "ferry installed, but not found on PATH"; exit 1; }
+  fi
+  # Check for what this script uses rather than for a version number, so any
+  # release that has them works. Both checks run without a cluster.
+  # (Captured first: under pipefail, `ferry … | grep -q` can fail on a match,
+  # when grep exits early and ferry dies of SIGPIPE.)
+  missing=()
+  ferry_help="$(ferry help 2>&1 || true)"
+  ferry_addons="$(ferry addons list 2>&1 || true)"
+  grep -qE '^[[:space:]]+ferry init[[:space:]]' <<<"$ferry_help" || missing+=("ferry init")
+  grep -qw traefik <<<"$ferry_addons" || missing+=("the traefik addon")
+  if (( ${#missing[@]} )); then
+    echo "$(ferry version | head -1) is missing: $(printf '%s, ' "${missing[@]}" | sed 's/, $//'). Upgrade with:"
+    echo "  curl -sfL $FERRY_INSTALL_URL | sh -"
     exit 1
   fi
   command -v buildctl >/dev/null || {
