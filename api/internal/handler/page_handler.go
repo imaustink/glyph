@@ -364,12 +364,26 @@ func (h *PageHandler) UpsertPage(c *gin.Context) {
 		typeImmutable(c)
 		return
 	}
-	page, err := h.Pages.Upsert(c.Request.Context(), &body)
+	// Changing an existing page's org is PATCH's workspace move: the
+	// subtree and its tasks go along, in the same transaction, and a
+	// subtree holding other users' pages is refused. Upsert would move this
+	// row alone. The destination was checked above (the requester is the
+	// owner; token scope and membership for body.OrgID).
+	var page *model.Page
+	if existing != nil && !sameOrg(existing.OrgID, body.OrgID) {
+		page, err = h.Pages.UpdateFieldsMovingOrg(c.Request.Context(), &body, store.PageUpdateFields)
+	} else {
+		page, err = h.Pages.Upsert(c.Request.Context(), &body)
+	}
 	if err != nil {
 		// PUT shares PATCH's cycle check; the store runs it in the writing
 		// transaction under the tree-move lock.
 		if errors.Is(err, store.ErrCycle) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot move a node into one of its own descendants"})
+			return
+		}
+		if errors.Is(err, store.ErrSubtreeNotOwned) {
+			subtreeHasOtherOwners(c, err)
 			return
 		}
 		notFoundOrError(c, err)
