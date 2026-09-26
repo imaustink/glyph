@@ -86,3 +86,16 @@ test_deploy_uses_tree_hash_tags_and_atomic_upgrade() {
   assert_contains "$CALLS" "^helm upgrade .*api.image.tag=$tree" "deploys the tree-hash tag"
   assert_not_contains "$CALLS" 'rollout restart' "no extra restart"
 }
+
+# Review (PR #46): same policy as CD, no automatic rollback (see cd_test.sh).
+test_deploy_upgrade_does_not_roll_back_automatically() {
+  _deploy_repo
+  _run_deploy
+  assert_ok
+  assert_contains "$CALLS" '^helm upgrade glyph helm/glyph ' "upgrade ran"
+  assert_not_contains "$CALLS" '--atomic' "no automatic rollback"
+  assert_not_contains "$CALLS" '--rollback-on-failure' "nor its Helm 4 name"
+  assert_not_contains "$CALLS" '^helm rollback' "no scripted rollback"
+  assert_contains "$CALLS" '^helm upgrade .*--wait' "waits for the rollout"
+  assert_contains "$CALLS" '^helm upgrade .*--timeout' "bounded wait"
+}
