@@ -1,0 +1,2229 @@
+{
+ "_comment": [
+  "Shared TODO-derivation fixture. Consumed by BOTH",
+  "  api/internal/pmmd/todo_test.go (Go, content written outside the editor, e.g. MCP) and",
+  "  src/lib/editor/todoDerivation.test.ts (the editor).",
+  "detection: for each doc + trigger, 'want' lists the texts of the bullets that become tasks.",
+  "trigger null = the page has no trigger configured.",
+  "checked: how a linked task's status shows on its bullet.",
+  "Regex patterns must mean the same in JS and RE2: constructs only one dialect supports are refused by both."
+ ],
+ "detection": [
+  {
+   "name": "default heading",
+   "trigger": null,
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n1",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n2",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "b"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a",
+    "b"
+   ]
+  },
+  {
+   "name": "case-insensitive",
+   "trigger": null,
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 1
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "todo"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n3",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a"
+   ]
+  },
+  {
+   "name": "heading text is trimmed",
+   "trigger": null,
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "  TODO  "
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n4",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a"
+   ]
+  },
+  {
+   "name": "not under TODO",
+   "trigger": null,
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n5",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "Notes"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n6",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "b"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "section ends at the next trigger-type block",
+   "trigger": null,
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n7",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "Done"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n8",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "b"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a"
+   ]
+  },
+  {
+   "name": "a paragraph does not end the section",
+   "trigger": null,
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "some words"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n9",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a"
+   ]
+  },
+  {
+   "name": "nested bullets",
+   "trigger": null,
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n12",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         },
+         {
+          "type": "bulletList",
+          "content": [
+           {
+            "type": "listItem",
+            "attrs": {
+             "nodeId": "n11",
+             "taskId": null,
+             "checked": false,
+             "taskStatus": "todo"
+            },
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "a1"
+               }
+              ]
+             },
+             {
+              "type": "bulletList",
+              "content": [
+               {
+                "type": "listItem",
+                "attrs": {
+                 "nodeId": "n10",
+                 "taskId": null,
+                 "checked": false,
+                 "taskStatus": "todo"
+                },
+                "content": [
+                 {
+                  "type": "paragraph",
+                  "content": [
+                   {
+                    "type": "text",
+                    "text": "a2"
+                   }
+                  ]
+                 }
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a",
+    "a1",
+    "a2"
+   ]
+  },
+  {
+   "name": "ordered lists are ignored",
+   "trigger": null,
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "orderedList",
+      "attrs": {
+       "start": 1
+      },
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n13",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n14",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "b"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "linked bullets are skipped",
+   "trigger": null,
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n15",
+         "taskId": "t-1",
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "done already"
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n16",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "new"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "new"
+   ]
+  },
+  {
+   "name": "empty bullets are not tasks",
+   "trigger": null,
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n17",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": []
+         }
+        ]
+       },
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n18",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "   "
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n19",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "x"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "x"
+   ],
+   "note": "An empty bullet only becomes a task while the user is typing in it (editor UX); content alone never makes one."
+  },
+  {
+   "name": "bullet text is its own paragraphs, not nested lists",
+   "trigger": null,
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n21",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "parent"
+           }
+          ]
+         },
+         {
+          "type": "bulletList",
+          "content": [
+           {
+            "type": "listItem",
+            "attrs": {
+             "nodeId": "n20",
+             "taskId": null,
+             "checked": false,
+             "taskStatus": "todo"
+            },
+            "content": [
+             {
+              "type": "paragraph",
+              "content": [
+               {
+                "type": "text",
+                "text": "child"
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "parent",
+    "child"
+   ]
+  },
+  {
+   "name": "custom exact pattern",
+   "trigger": {
+    "pattern": "action items",
+    "matchMode": "exact",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "Action items"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n22",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n23",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "b"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a"
+   ]
+  },
+  {
+   "name": "empty pattern falls back to TODO",
+   "trigger": {
+    "pattern": "",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n24",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a"
+   ],
+   "note": "A stored trigger with an empty pattern means the default, not 'match nothing' (see DI-07)."
+  },
+  {
+   "name": "whitespace pattern falls back to TODO",
+   "trigger": {
+    "pattern": "   ",
+    "matchMode": "exact",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n25",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a"
+   ]
+  },
+  {
+   "name": "empty pattern keeps its block types",
+   "trigger": {
+    "pattern": "",
+    "matchMode": "exact",
+    "blockTypes": [
+     "paragraph"
+    ]
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n26",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a"
+   ]
+  },
+  {
+   "name": "regex",
+   "trigger": {
+    "pattern": "^Tasks",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "Tasks for Monday"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n27",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a"
+   ]
+  },
+  {
+   "name": "regex is unanchored",
+   "trigger": {
+    "pattern": "TODO",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "My TODO list"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n28",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a"
+   ]
+  },
+  {
+   "name": "regex is case-sensitive",
+   "trigger": {
+    "pattern": "^tasks",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "Tasks for Monday"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n29",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "regex named group (both dialects)",
+   "trigger": {
+    "pattern": "^(?<w>TODO)$",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n30",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a"
+   ]
+  },
+  {
+   "name": "invalid regex matches nothing",
+   "trigger": {
+    "pattern": "(",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n31",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "nested quantifier is refused",
+   "trigger": {
+    "pattern": "(a+)+",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "aaa"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n32",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "over-long pattern is refused",
+   "trigger": {
+    "pattern": "TODO|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n33",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "lookahead (JS only) is refused",
+   "trigger": {
+    "pattern": "^TODO(?= list)",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO list"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n34",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "backreference (JS only) is refused",
+   "trigger": {
+    "pattern": "^(TO)DO\\1$",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODOTO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n35",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "unicode escape \\u (JS only) is refused",
+   "trigger": {
+    "pattern": "^\\u0054ODO$",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n36",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "inline flags (RE2 only) are refused",
+   "trigger": {
+    "pattern": "(?i)^todo$",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n37",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "\\A anchor (RE2 only) is refused",
+   "trigger": {
+    "pattern": "\\ATODO",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n38",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "unicode class \\p (RE2 only) is refused",
+   "trigger": {
+    "pattern": "^\\p{Lu}+$",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n39",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "POSIX class (RE2 only) is refused",
+   "trigger": {
+    "pattern": "^[[:upper:]]+$",
+    "matchMode": "regex",
+    "blockTypes": null
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n40",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "paragraph trigger",
+   "trigger": {
+    "pattern": "TODO",
+    "matchMode": "exact",
+    "blockTypes": [
+     "paragraph"
+    ]
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n41",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a"
+   ]
+  },
+  {
+   "name": "heading is not a trigger type when only paragraphs are",
+   "trigger": {
+    "pattern": "TODO",
+    "matchMode": "exact",
+    "blockTypes": [
+     "paragraph"
+    ]
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "heading",
+      "attrs": {
+       "level": 2
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n42",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": []
+  },
+  {
+   "name": "any block type",
+   "trigger": {
+    "pattern": "TODO",
+    "matchMode": "exact",
+    "blockTypes": [
+     "any"
+    ]
+   },
+   "doc": {
+    "type": "doc",
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "intro"
+       }
+      ]
+     },
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "TODO"
+       }
+      ]
+     },
+     {
+      "type": "bulletList",
+      "content": [
+       {
+        "type": "listItem",
+        "attrs": {
+         "nodeId": "n43",
+         "taskId": null,
+         "checked": false,
+         "taskStatus": "todo"
+        },
+        "content": [
+         {
+          "type": "paragraph",
+          "content": [
+           {
+            "type": "text",
+            "text": "a"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "want": [
+    "a"
+   ]
+  }
+ ],
+ "checked": [
+  {
+   "status": "todo",
+   "checked": false
+  },
+  {
+   "status": "in-progress",
+   "checked": false
+  },
+  {
+   "status": "done",
+   "checked": true
+  },
+  {
+   "status": "cancelled",
+   "checked": true
+  }
+ ]
+}
