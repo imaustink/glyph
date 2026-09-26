@@ -5,6 +5,9 @@
 #   glyph-migrate.sh apply   Bring the schema up to this release's latest
 #                            migration. Run once per install/upgrade by the
 #                            migrate Job (a pre-upgrade hook on upgrades).
+#                            A schema *newer* than the shipped files (after a
+#                            rollback) is left alone with a warning; a dirty
+#                            one is refused (see docs/runbooks/migrations.md).
 #   glyph-migrate.sh wait    Check-only: block until the schema is at least
 #                            this release's latest migration. Run by each API
 #                            pod's init container; it never changes the schema.
@@ -17,6 +20,7 @@ MODE="${1:-}"
 DIR="${MIGRATIONS_DIR:-/migrations}"
 INTERVAL="${WAIT_INTERVAL_SECONDS:-2}"
 MAX_ATTEMPTS="${WAIT_MAX_ATTEMPTS:-0}"
+RUNBOOK="docs/runbooks/migrations.md in the glyph repo"
 
 log() { echo "glyph-migrate: $*" >&2; }
 
@@ -58,8 +62,26 @@ case "$MODE" in
       log "cannot read the schema version: $VERSION_ERROR"
       exit 1
     fi
+    if [ "$DIRTY" = true ]; then
+      # A migration failed part-way. Retrying `up` on top of that is never
+      # safe; a person has to look at what ran and decide.
+      log "schema version $CURRENT is dirty: a migration failed part-way."
+      log "Fix it by hand before deploying again — see $RUNBOOK"
+      exit 1
+    fi
+    if [ -n "$CURRENT" ] && [ "$CURRENT" -gt "$LATEST" ]; then
+      # After a rollback (or a deploy of an older tree) the database has
+      # migrations this release doesn't ship. `migrate up` would fail with
+      # "no migration found for version N"; the schema is already past what
+      # this release needs, so there is nothing to do.
+      log "WARNING: schema version $CURRENT is newer than this release's latest migration ($LATEST) — skipping. Expected after a rollback; this release must be compatible with the newer schema (expand/contract)."
+      exit 0
+    fi
     log "schema version ${CURRENT:-none}, this release ships up to $LATEST — applying"
-    migrate -path "$DIR" -database "$DATABASE_URL" up
+    if ! migrate -path "$DIR" -database "$DATABASE_URL" up; then
+      log "migration failed. If the schema is now dirty, see $RUNBOOK"
+      exit 1
+    fi
     ;;
 
   wait)
@@ -68,10 +90,18 @@ case "$MODE" in
       attempt=$((attempt + 1))
       if read_version; then
         if [ -n "$CURRENT" ] && [ "$DIRTY" = false ] && [ "$CURRENT" -ge "$LATEST" ]; then
-          log "schema version $CURRENT is ready (this release needs $LATEST)"
+          if [ "$CURRENT" -gt "$LATEST" ]; then
+            log "WARNING: schema version $CURRENT is newer than this release's latest migration ($LATEST) — starting anyway (expected after a rollback)"
+          else
+            log "schema version $CURRENT is ready"
+          fi
           exit 0
         fi
-        log "waiting for the schema: version ${CURRENT:-none}$( [ "$DIRTY" = true ] && echo ' (dirty)' ), need $LATEST"
+        if [ "$DIRTY" = true ]; then
+          log "waiting: schema version $CURRENT is dirty (a migration failed part-way) — see $RUNBOOK"
+        else
+          log "waiting for the schema: version ${CURRENT:-none}, need $LATEST"
+        fi
       else
         log "waiting for the database: $VERSION_ERROR"
       fi
