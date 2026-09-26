@@ -22,3 +22,19 @@ test_collab_grace_period_is_configurable() {
   assert_contains "$d" 'terminationGracePeriodSeconds: 120$' "grace period from values"
   assert_not_contains "$d" 'preStop:' "preStopSleepSeconds=0 disables the hook"
 }
+
+# DI-14 — turning collab off must not strand the draining collab pods: their
+# final snapshots authenticate with the service token, so the API keeps it
+# (and the chart keeps its Secret) while a token is still configured.
+test_api_keeps_collab_token_when_collab_is_turned_off() {
+  render --set collab.enabled=false --set collab.serviceToken=t
+  assert_ok
+  assert_contains "$(doc Deployment glyph-api)" 'name: COLLAB_SERVICE_TOKEN' "API keeps the collab token while collab is off"
+  assert_contains "$(doc Secret glyph-collab)" 'service-token:' "collab Secret is kept while a token is configured"
+}
+
+test_api_has_no_collab_token_when_none_is_configured() {
+  render --set collab.enabled=false
+  assert_ok
+  assert_not_contains "$(doc Deployment glyph-api)" 'name: COLLAB_SERVICE_TOKEN' "no token env without a token"
+}
