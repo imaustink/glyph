@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -154,9 +155,15 @@ func (h *LaneHandler) UpdateLane(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
-	req.ApplyTo(existing)
-	lane, err := h.Lanes.Update(c.Request.Context(), existing)
+	lane, err := h.Lanes.Patch(c.Request.Context(), existing.ID, user.ID, func(l *model.Lane) error {
+		req.ApplyTo(l)
+		return nil
+	})
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			notFoundOrError(c, err)
+			return
+		}
 		internalError(c, err)
 		return
 	}

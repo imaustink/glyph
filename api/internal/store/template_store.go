@@ -129,6 +129,44 @@ func (s *pgTemplateStore) Update(ctx context.Context, t *model.Template) (*model
 	))
 }
 
+// Patch locks the template, applies fn and writes it back in one
+// transaction, so a concurrent edit to another field is not overwritten.
+func (s *pgTemplateStore) Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Template) error) (*model.Template, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("patch template — begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	t, err := scanTemplate(tx.QueryRow(ctx,
+		`SELECT `+templateColumns+` FROM templates WHERE id = $1 AND user_id = $2 FOR UPDATE`, id, ownerID))
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(t); err != nil {
+		return nil, err
+	}
+	triggerJSON, err := marshalNullableJSON(t.TodoTrigger)
+	if err != nil {
+		return nil, err
+	}
+	out, err := scanTemplate(tx.QueryRow(ctx, `UPDATE templates
+		  SET name=$1, content=$2, title_template=$3, todo_trigger=$4, default_folder_id=$5, is_default=$6,
+		      org_id=$7, is_private=$8, updated_at=NOW()
+		  WHERE id=$9
+		  RETURNING `+templateColumns,
+		t.Name, t.Content, t.TitleTemplate, triggerJSON, t.DefaultFolderID, t.IsDefault,
+		t.OrgID, t.IsPrivate, id,
+	))
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("patch template — commit: %w", err)
+	}
+	return out, nil
+}
+
 func (s *pgTemplateStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
 	result, err := s.pool.Exec(ctx, `DELETE FROM templates WHERE id=$1 AND user_id=$2`, id, userID)
 	if err != nil {

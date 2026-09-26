@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -101,9 +102,15 @@ func (h *TemplateHandler) UpdateTemplate(c *gin.Context) {
 	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
 		return
 	}
-	req.ApplyTo(existing)
-	tmpl, err := h.Templates.Update(c.Request.Context(), existing)
+	tmpl, err := h.Templates.Patch(c.Request.Context(), id, existing.UserID, func(t *model.Template) error {
+		req.ApplyTo(t)
+		return nil
+	})
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			notFoundOrError(c, err)
+			return
+		}
 		internalError(c, err)
 		return
 	}

@@ -294,22 +294,31 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	if !ok {
 		return
 	}
-	statusBefore := existing.Status
 	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
 		return
 	}
-	req.ApplyTo(existing)
-	// ApplyTo can't tell an explicit null from an omitted field; honor
-	// {"dueDate": null} / {"link": null} as "clear it", which is how the web
-	// app removes a due date.
-	if raw, present := keys["dueDate"]; present && isJSONNull(raw) {
-		existing.DueDate = nil
-	}
-	if raw, present := keys["link"]; present && isJSONNull(raw) {
-		existing.Link = nil
-	}
-	task, err := h.Tasks.Update(c.Request.Context(), existing)
+	// Merge the patch into the row as it is under the lock, not into the copy
+	// read above: a concurrent PATCH to another field must not be undone.
+	var statusBefore model.TaskStatus
+	task, err := h.Tasks.Patch(c.Request.Context(), id, existing.UserID, func(t *model.Task) error {
+		statusBefore = t.Status
+		req.ApplyTo(t)
+		// ApplyTo can't tell an explicit null from an omitted field; honor
+		// {"dueDate": null} / {"link": null} as "clear it", which is how the
+		// web app removes a due date.
+		if raw, present := keys["dueDate"]; present && isJSONNull(raw) {
+			t.DueDate = nil
+		}
+		if raw, present := keys["link"]; present && isJSONNull(raw) {
+			t.Link = nil
+		}
+		return nil
+	})
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			notFoundOrError(c, err)
+			return
+		}
 		if errors.Is(err, store.ErrConflict) {
 			c.JSON(http.StatusConflict, gin.H{"error": "that bullet is already linked to another task", "code": "source_taken"})
 			return

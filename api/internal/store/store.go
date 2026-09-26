@@ -100,6 +100,13 @@ type TaskStore interface {
 	// to someone else the result is ErrConflict.
 	CreateLinked(ctx context.Context, t *model.Task) (task *model.Task, created bool, err error)
 	Update(ctx context.Context, t *model.Task) (*model.Task, error)
+	// Patch loads the live task id owned by ownerID, lets fn modify it, and
+	// saves the result, holding the row lock throughout, so concurrent
+	// patches to different fields don't undo each other. fn may change any
+	// field Update writes and also UserID (re-owning the task); an error from
+	// fn aborts without writing. ErrNotFound if the task is gone or no
+	// longer owned by ownerID.
+	Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error) (*model.Task, error)
 	Upsert(ctx context.Context, t *model.Task) (*model.Task, error)
 	// Delete soft-deletes a task.
 	Delete(ctx context.Context, id, userID uuid.UUID) error
@@ -122,8 +129,14 @@ type LaneStore interface {
 	Create(ctx context.Context, l *model.Lane) (*model.Lane, error)
 	BatchCreate(ctx context.Context, lanes []*model.Lane) ([]*model.Lane, error)
 	Update(ctx context.Context, l *model.Lane) (*model.Lane, error)
+	// Patch applies fn to the user's lane and saves it under a row lock (see
+	// TaskStore.Patch).
+	Patch(ctx context.Context, id, userID uuid.UUID, fn func(*model.Lane) error) (*model.Lane, error)
 	// UpdateByIDAndFolder updates a folder-scoped lane regardless of who created it.
 	UpdateByIDAndFolder(ctx context.Context, l *model.Lane, folderID uuid.UUID) (*model.Lane, error)
+	// PatchByIDAndFolder is Patch for a folder-scoped lane, regardless of who
+	// created it.
+	PatchByIDAndFolder(ctx context.Context, id, folderID uuid.UUID, fn func(*model.Lane) error) (*model.Lane, error)
 	Upsert(ctx context.Context, l *model.Lane) (*model.Lane, error)
 	ReorderAll(ctx context.Context, userID uuid.UUID, items []LaneReorderItem) error
 	Delete(ctx context.Context, id, userID uuid.UUID) error
@@ -137,6 +150,9 @@ type TemplateStore interface {
 	GetByID(ctx context.Context, id, userID uuid.UUID) (*model.Template, error)
 	Create(ctx context.Context, t *model.Template) (*model.Template, error)
 	Update(ctx context.Context, t *model.Template) (*model.Template, error)
+	// Patch applies fn to the template owned by ownerID and saves it under a
+	// row lock (see TaskStore.Patch).
+	Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Template) error) (*model.Template, error)
 	Upsert(ctx context.Context, t *model.Template) (*model.Template, error)
 	Delete(ctx context.Context, id, userID uuid.UUID) error
 }

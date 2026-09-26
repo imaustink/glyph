@@ -881,6 +881,30 @@ func (s *taskStore) Update(_ context.Context, t *model.Task) (*model.Task, error
 	return cloneTask(stored), nil
 }
 
+// Patch mirrors the Postgres implementation: read, modify and write under
+// the lock.
+func (s *taskStore) Patch(_ context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error) (*model.Task, error) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	existing, ok := s.r.tasks[id]
+	if !ok || existing.UserID != ownerID {
+		return nil, fmt.Errorf("tasks patch: %w", store.ErrNotFound)
+	}
+	t := cloneTask(existing)
+	if err := fn(t); err != nil {
+		return nil, err
+	}
+	t.ID = id
+	if s.r.sourceTaken(t, id) {
+		return nil, fmt.Errorf("%w: tasks_source_page_node_uniq", store.ErrConflict)
+	}
+	t.CreatedAt = existing.CreatedAt
+	t.UpdatedAt = time.Now()
+	stored := cloneTask(t)
+	s.r.tasks[id] = stored
+	return cloneTask(stored), nil
+}
+
 func (s *taskStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
@@ -1222,6 +1246,37 @@ func (s *laneStore) Update(_ context.Context, l *model.Lane) (*model.Lane, error
 	return cloneLane(stored), nil
 }
 
+func (s *laneStore) Patch(_ context.Context, id, userID uuid.UUID, fn func(*model.Lane) error) (*model.Lane, error) {
+	return s.patch(id, func(l *model.Lane) bool { return l.UserID == userID }, fn)
+}
+
+func (s *laneStore) PatchByIDAndFolder(_ context.Context, id, folderID uuid.UUID, fn func(*model.Lane) error) (*model.Lane, error) {
+	return s.patch(id, func(l *model.Lane) bool { return l.FolderID != nil && *l.FolderID == folderID }, fn)
+}
+
+// patch mirrors the Postgres implementation: only title, filters, sort and
+// order are writable.
+func (s *laneStore) patch(id uuid.UUID, match func(*model.Lane) bool, fn func(*model.Lane) error) (*model.Lane, error) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	existing, ok := s.r.lanes[id]
+	if !ok || !match(existing) {
+		return nil, fmt.Errorf("lanes patch: %w", store.ErrNotFound)
+	}
+	l := cloneLane(existing)
+	if err := fn(l); err != nil {
+		return nil, err
+	}
+	stored := cloneLane(existing)
+	stored.Title = l.Title
+	stored.FilterSet = l.FilterSet
+	stored.SortConfig = l.SortConfig
+	stored.Order = l.Order
+	stored.UpdatedAt = time.Now()
+	s.r.lanes[id] = stored
+	return cloneLane(stored), nil
+}
+
 func (s *laneStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
@@ -1362,6 +1417,24 @@ func (s *templateStore) Update(_ context.Context, t *model.Template) (*model.Tem
 	t.UpdatedAt = time.Now()
 	stored := cloneTemplate(t)
 	s.r.templates[stored.ID] = stored
+	return cloneTemplate(stored), nil
+}
+
+func (s *templateStore) Patch(_ context.Context, id, ownerID uuid.UUID, fn func(*model.Template) error) (*model.Template, error) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	existing, ok := s.r.templates[id]
+	if !ok || existing.UserID != ownerID {
+		return nil, fmt.Errorf("templates patch: %w", store.ErrNotFound)
+	}
+	t := cloneTemplate(existing)
+	if err := fn(t); err != nil {
+		return nil, err
+	}
+	t.ID, t.UserID, t.CreatedAt = id, existing.UserID, existing.CreatedAt
+	t.UpdatedAt = time.Now()
+	stored := cloneTemplate(t)
+	s.r.templates[id] = stored
 	return cloneTemplate(stored), nil
 }
 
