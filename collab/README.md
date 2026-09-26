@@ -114,6 +114,15 @@ wire protocol can't drift between the two.
 - No offline persistence in the browser: edits made while disconnected are kept
   in memory and sync on reconnect, but are lost if the tab is closed first
   (the app warns before unload while changes are unsynced).
+- **"Synced" is not "durable".** A client counts an edit as synced once the
+  collab service has applied it in memory (the Yjs sync ack); the service
+  appends it to the log only on its next debounced store, up to
+  `COLLAB_STORE_MAX_DEBOUNCE_MS` later, or longer during a database outage.
+  The service holds such edits through outages (retrying, deferring unload,
+  draining for `COLLAB_SHUTDOWN_DRAIN_MS` on shutdown), but a crash or `SIGKILL`
+  of the collab process in that window loses them, even though every editor
+  showed them as saved. Editors that are still connected re-send them on
+  reconnect; an editor that has already closed the note cannot.
 - Two people typing their very first character into the same *newly created*
   empty paragraph at the same instant can have one character land out of
   order (a y-prosemirror quirk). Seeded paragraphs, including the trailing

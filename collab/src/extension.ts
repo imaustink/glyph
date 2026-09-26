@@ -19,6 +19,13 @@
  *   eviction        when the API says the document was replaced, or a write
  *                   finds its epoch gone, every connection is closed with
  *                   Reset and the in-memory copy is discarded unsaved.
+ *
+ * Durability: Hocuspocus acks an update to its client as soon as it is applied
+ * in memory, before onStoreDocument has appended it to the log. Until then this
+ * process is the only copy the server side has — which is why unpersisted
+ * updates are never dropped while the process lives (retries, deferred unload,
+ * the shutdown drain), and why a crash in that window still loses them (see
+ * README, Known limitations).
  */
 import { randomUUID } from 'node:crypto';
 import * as Y from 'yjs';
