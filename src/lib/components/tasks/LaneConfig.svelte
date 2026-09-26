@@ -6,6 +6,7 @@
   import { pagesStore } from '$lib/stores/pages.svelte';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
   import { FILTER_FIELD_META } from '$lib/models/constants';
+  import { buildLaneSortConfig } from '$lib/utils/laneOrder';
 
   let {
     lane,
@@ -105,11 +106,9 @@
 
   async function save() {
     const filterSet: FilterSet = { conjunction, rules };
-    const sortConfig: SortConfig = {
-      mode: sortMode,
-      field: sortMode === 'field' ? sortField : undefined,
-      direction: sortMode === 'field' ? sortDir : undefined
-    };
+    // Carry the manual taskOrder over from the lane as it is now (it may have
+    // been reordered since this modal opened); this form has no UI for it.
+    const sortConfig: SortConfig = buildLaneSortConfig(sortMode, sortField, sortDir, lane.sortConfig);
     try {
       if (onupdate) {
         await onupdate(lane.id, { title, filterSet, sortConfig });
@@ -117,7 +116,9 @@
         await lanesStore.updateLane(lane.id, { title, filterSet, sortConfig });
       }
     } catch {
+      // Keep the modal open so the user's edits aren't thrown away.
       notificationsStore.error('Failed to save lane configuration.');
+      return;
     }
     onclose();
   }

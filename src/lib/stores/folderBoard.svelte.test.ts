@@ -343,7 +343,6 @@ describe('folderBoardStore', () => {
       let resolveA!: (t: Task[]) => void;
       vi.mocked(repo.getTasks)
         .mockImplementationOnce(() => new Promise<Task[]>((r) => { resolveA = r; }))
-        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([makeTask({ id: 'task-b' })]);
 
       const reload = store.reloadTasks();
