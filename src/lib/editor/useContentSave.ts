@@ -101,8 +101,18 @@ export function useContentSave(
 		}
 	}
 
+	/**
+	 * Never rejects: callers chain navigation onto it (the editor opens the
+	 * next page once it settles), so one failed write must not strand them.
+	 */
 	async function flushAll() {
-		await Promise.all([flushContentSave(), flushAllTaskTitleUpdates()]);
+		const results = await Promise.allSettled([flushContentSave(), flushAllTaskTitleUpdates()]);
+		for (const r of results) {
+			if (r.status === 'rejected') {
+				console.error('[Editor] Flushing pending writes failed:', r.reason);
+				notificationsStore.error('Some changes could not be saved.');
+			}
+		}
 	}
 
 	function scheduleSave(editor: Editor, pageId: string) {
