@@ -1,12 +1,19 @@
 import { repositories } from '$lib/storage/config';
-import { ApiError } from '$lib/storage/apiClient';
-import type { ITaskRepository, WriteOptions } from '$lib/storage/interfaces';
+import { ApiError, apiErrorCode } from '$lib/storage/apiClient';
+import type { ITaskRepository, TaskBullet, WriteOptions } from '$lib/storage/interfaces';
 import type { FilterContext } from '$lib/storage/filterUtils';
 import type { Task, FilterSet, Priority, TaskStatus, TreeNode } from '$lib/models/types';
 import { now, makeTimestamps } from '$lib/utils/time';
 import { nextOrder } from '$lib/utils/order';
 import { uuid } from '$lib/utils/uuid';
 import { createOptimisticWriter } from './optimisticWriter';
+
+/**
+ * The outcome of moving a task onto a pasted bullet (tasksStore.adoptTask):
+ * moved; still live on its own note (a copy — or a cut the server hasn't
+ * seen yet, so worth retrying); or refused for good.
+ */
+export type AdoptResult = { kind: 'moved'; task: Task } | { kind: 'live' } | { kind: 'refused' };
 
 export function createTasksStore(injectedRepo?: ITaskRepository) {
   const repo = injectedRepo ?? repositories.tasks;
@@ -170,6 +177,74 @@ export function createTasksStore(injectedRepo?: ITaskRepository) {
     return _writer.update(id, full, () => repo.update(id, full, opts), () => repo.getById(id));
   }
 
+  /**
+   * localStorage mode: tasks deleted because their bullet left its note
+   * (deleteRemovedBulletTask), kept for the life of this tab so the bullet
+   * pasted into another note — or back into its own — brings the task back
+   * with its id and everything else, as the API's soft delete does.
+   */
+  const _removedBulletTasks = new Map<string, Task>();
+
+  /**
+   * localStorage mode: delete a task whose bullet was removed from its note
+   * (not a user delete: see _removedBulletTasks).
+   */
+  async function deleteRemovedBulletTask(id: string): Promise<void> {
+    const task = await repo.getById(id);
+    await deleteTask(id);
+    if (task) _removedBulletTasks.set(id, task);
+  }
+
+  async function putBack(task: Task): Promise<Task> {
+    const saved = (await repo.create(task)) ?? task;
+    _removedBulletTasks.delete(task.id);
+    _forgotten.delete(task.id);
+    setTasks([...tasks.filter((t) => t.id !== saved.id), saved]);
+    return saved;
+  }
+
+  /**
+   * localStorage mode: the bullet of a task deleteRemovedBulletTask deleted
+   * is back on its note (a paste after leaving the note, an undo): restore
+   * the task. False if it isn't that task's bullet.
+   */
+  async function restoreRemovedBulletTask(id: string, nodeId: string): Promise<boolean> {
+    const task = _removedBulletTasks.get(id);
+    if (!task || task.sourceNodeId !== nodeId) return false;
+    await putBack(task);
+    return true;
+  }
+
+  /**
+   * Move task `id` onto a bullet pasted into another note — the task keeps
+   * its id, status, due date, description… — if its own bullet has left its
+   * note (a cut). A task whose bullet is still there (a copy) is 'live'.
+   * API mode asks the server, which decides atomically; localStorage mode
+   * moves a task deleteRemovedBulletTask set aside.
+   */
+  async function adoptTask(id: string, dest: TaskBullet): Promise<AdoptResult> {
+    if (repo.adopt) {
+      let task: Task;
+      try {
+        task = await repo.adopt(id, dest);
+      } catch (err) {
+        if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+          return apiErrorCode(err) === 'source_live' ? { kind: 'live' } : { kind: 'refused' };
+        }
+        throw err;
+      }
+      _forgotten.delete(id);
+      setTasks([...tasks.filter((t) => t.id !== id), task]);
+      return { kind: 'moved', task };
+    }
+    const removed = _removedBulletTasks.get(id);
+    if (removed) {
+      const task = await putBack({ ...removed, ...dest, updatedAt: now() });
+      return { kind: 'moved', task };
+    }
+    return (await repo.getById(id)) ? { kind: 'live' } : { kind: 'refused' };
+  }
+
   async function deleteTask(id: string): Promise<void> {
     try {
       await repo.delete(id);
@@ -193,6 +268,9 @@ export function createTasksStore(injectedRepo?: ITaskRepository) {
     createTask,
     updateTask,
     deleteTask,
+    deleteRemovedBulletTask,
+    restoreRemovedBulletTask,
+    adoptTask,
     forgetLocal,
     refreshTask,
     refreshForPage

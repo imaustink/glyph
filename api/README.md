@@ -148,6 +148,7 @@ All routes are prefixed with `/api/v1`. All request and response bodies are JSON
 | `POST` | `/tasks` | Create a task |
 | `GET` | `/tasks/:id` | Get a task by ID |
 | `PATCH` | `/tasks/:id` | Update a task |
+| `POST` | `/tasks/:id/adopt` | Move a task onto a bullet pasted into another note (`{sourcePageId, sourceNodeId}`). Only a task whose bullet left its note is moved; 409 `source_live` while the bullet is still there, 409 `not_movable` for a user-deleted task, 409 `source_taken` if the bullet already has a task |
 | `DELETE` | `/tasks/:id` | Delete a task |
 
 ### Lanes

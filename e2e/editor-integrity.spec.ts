@@ -281,12 +281,12 @@ test.describe('Editor data integrity', () => {
 
 		await inB.locator('.task-open-link').click();
 		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 15_000 });
-		expect(page.url()).toContain(taskId);
+		await expect(page).toHaveURL(new RegExp(taskId));
 		await expect(meta('Status')).toHaveValue('in-progress');
 		await expect(meta('Priority')).toHaveValue('high');
 		await page.locator('a.source-link').click();
+		await expect(page).toHaveURL(noteB, { timeout: 15_000 });
 		await waitForEditorReady(page);
-		expect(page.url()).toBe(noteB);
 
 		// One task, not two.
 		if (storageMode === 'api') {
@@ -294,7 +294,8 @@ test.describe('Editor data integrity', () => {
 			expect(all.filter((t) => t.title === 'Pack the tent').map((t) => t.id)).toEqual([taskId]);
 		}
 		await navigateToTaskBoard(page);
-		await expect(page.locator('.task-card:has-text("Pack the tent")')).toHaveCount(1, { timeout: 15_000 });
+		// The first lane is "All Tasks".
+		await expect(page.locator('.lane').first().locator('.task-card:has-text("Pack the tent")')).toHaveCount(1, { timeout: 15_000 });
 	});
 });
 

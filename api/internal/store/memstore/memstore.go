@@ -1124,6 +1124,63 @@ func (s *taskStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 	return nil
 }
 
+// GetForMove mirrors the Postgres implementation: live or soft-deleted, no
+// access check.
+func (s *taskStore) GetForMove(_ context.Context, id uuid.UUID) (*model.Task, error) {
+	s.r.mu.RLock()
+	defer s.r.mu.RUnlock()
+	if t, ok := s.r.tasks[id]; ok {
+		return cloneTask(t), nil
+	}
+	if d, ok := s.r.deletedTasks[id]; ok {
+		return cloneTask(d.task), nil
+	}
+	return nil, fmt.Errorf("tasks get for move: %w", store.ErrNotFound)
+}
+
+// MoveToBullet mirrors the Postgres implementation.
+func (s *taskStore) MoveToBullet(_ context.Context, id uuid.UUID, from store.TaskMoveFrom, dest store.TaskMove) (*model.Task, error) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	if t, ok := s.r.tasks[id]; ok {
+		if !store.MoveFromMatches(t, from) {
+			return nil, fmt.Errorf("%w: the task changed while it was being moved", store.ErrConflict)
+		}
+		if store.OnBullet(t, dest) {
+			return cloneTask(t), nil
+		}
+		return nil, store.ErrTaskLive
+	}
+	d, ok := s.r.deletedTasks[id]
+	if !ok {
+		return nil, fmt.Errorf("tasks move: %w", store.ErrNotFound)
+	}
+	if !store.MoveFromMatches(d.task, from) {
+		return nil, fmt.Errorf("%w: the task changed while it was being moved", store.ErrConflict)
+	}
+	if d.reason != deletedReasonSourceRemoved || d.task.SourceNodeID == nil {
+		return nil, store.ErrTaskNotMovable
+	}
+	moved := cloneTask(d.task)
+	pageID, nodeID := dest.PageID, dest.NodeID
+	moved.SourcePageID = &pageID
+	moved.SourceNodeID = &nodeID
+	moved.UserID = dest.OwnerID
+	moved.OrgID = nil
+	if dest.OrgID != nil {
+		orgID := *dest.OrgID
+		moved.OrgID = &orgID
+	}
+	moved.IsPrivate = dest.IsPrivate
+	if s.r.sourceTaken(moved, id) {
+		return nil, fmt.Errorf("%w: tasks_source_page_node_uniq", store.ErrConflict)
+	}
+	moved.UpdatedAt = time.Now()
+	s.r.tasks[id] = moved
+	delete(s.r.deletedTasks, id)
+	return cloneTask(moved), nil
+}
+
 func (s *taskStore) ListByFilter(ctx context.Context, userID uuid.UUID, fs model.FilterSet) ([]*model.Task, error) {
 	all, err := s.ListByUser(ctx, userID)
 	if err != nil {

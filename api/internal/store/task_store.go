@@ -305,6 +305,73 @@ func (s *pgTaskStore) CreateLinked(ctx context.Context, t *model.Task) (*model.T
 	return existing, false, nil
 }
 
+func (s *pgTaskStore) GetForMove(ctx context.Context, id uuid.UUID) (*model.Task, error) {
+	return scanTask(s.pool.QueryRow(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1`, id))
+}
+
+// MoveToBullet moves a task onto another bullet. See TaskStore.MoveToBullet.
+func (s *pgTaskStore) MoveToBullet(ctx context.Context, id uuid.UUID, from TaskMoveFrom, dest TaskMove) (*model.Task, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("move task — begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The row lock serialises this with the source note's reconcile (which
+	// soft-deletes or restores the task on each save of that note) and with
+	// any other move of the same task.
+	t, deleted, err := scanTaskWithDeleted(tx.QueryRow(ctx,
+		`SELECT `+taskColumns+`, deleted_at IS NOT NULL FROM tasks WHERE id = $1 FOR UPDATE`, id))
+	if err != nil {
+		return nil, err
+	}
+	if !MoveFromMatches(t, from) {
+		return nil, fmt.Errorf("%w: the task changed while it was being moved", ErrConflict)
+	}
+	if !deleted {
+		if OnBullet(t, dest) {
+			return t, nil
+		}
+		return nil, ErrTaskLive
+	}
+	var reason string
+	if err := tx.QueryRow(ctx, `SELECT deleted_reason FROM tasks WHERE id = $1`, id).Scan(&reason); err != nil {
+		return nil, fmt.Errorf("move task — deleted reason: %w", err)
+	}
+	if reason != "source_removed" || t.SourceNodeID == nil {
+		return nil, ErrTaskNotMovable
+	}
+	out, err := scanTask(tx.QueryRow(ctx,
+		`UPDATE tasks SET deleted_at = NULL, deleted_reason = NULL,
+		        source_page_id = $2, source_node_id = $3,
+		        user_id = $4, org_id = $5, is_private = $6, updated_at = NOW()
+		 WHERE id = $1
+		 RETURNING `+taskColumns,
+		id, dest.PageID, dest.NodeID, dest.OwnerID, dest.OrgID, dest.IsPrivate))
+	if err != nil {
+		return nil, mapUniqueViolation(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("move task — commit: %w", err)
+	}
+	return out, nil
+}
+
+// MoveFromMatches reports whether t still has the owner and source page a
+// move was authorized against.
+func MoveFromMatches(t *model.Task, from TaskMoveFrom) bool {
+	if t.UserID != from.OwnerID || (t.SourcePageID == nil) != (from.SourcePageID == nil) {
+		return false
+	}
+	return t.SourcePageID == nil || *t.SourcePageID == *from.SourcePageID
+}
+
+// OnBullet reports whether t is already linked to dest's bullet.
+func OnBullet(t *model.Task, dest TaskMove) bool {
+	return t.SourcePageID != nil && *t.SourcePageID == dest.PageID &&
+		t.SourceNodeID != nil && *t.SourceNodeID == dest.NodeID
+}
+
 func scanTaskWithDeleted(row interface{ Scan(...interface{}) error }) (*model.Task, bool, error) {
 	t := &model.Task{}
 	var (

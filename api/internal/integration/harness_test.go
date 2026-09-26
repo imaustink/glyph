@@ -240,6 +240,7 @@ func NewHarness(t *testing.T, b Backend) *Harness {
 		api.POST("/tasks/filter", taskH.FilterTasks)
 		api.GET("/tasks/:id", taskH.GetTask)
 		api.PATCH("/tasks/:id", taskH.UpdateTask)
+		api.POST("/tasks/:id/adopt", taskH.AdoptTask)
 		api.PUT("/tasks/:id", taskH.UpsertTask)
 		api.DELETE("/tasks/:id", taskH.DeleteTask)
 
