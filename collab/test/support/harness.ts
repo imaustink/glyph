@@ -60,7 +60,7 @@ export class FakeApi implements Api {
 		const list = this.snapshots.get(pageId) ?? [];
 		list.push({ body, revision: list.length + 1 });
 		this.snapshots.set(pageId, list);
-		this.persistence.pages.set(pageId, { content: body.content, schemaVersion: body.schemaVersion });
+		this.persistence.writeContent(pageId, body.content, body.schemaVersion);
 		// Like the API: the kill switch doesn't refuse snapshots of attached pages.
 		return this.enabled ? { kind: 'ok', revision: list.length } : { kind: 'ok', revision: list.length, disabled: true };
 	}

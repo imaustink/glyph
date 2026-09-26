@@ -251,6 +251,8 @@ describe.skipIf(!url)('PgPersistence (Postgres)', () => {
 			await addTask('never', 'never renamed');
 			const gone = await addTask('gone', 'gone');
 			await pause();
+			await pool.query(`UPDATE page_contents SET updated_at = NOW() WHERE page_id = $1`, [pageId]); // content written after "early"'s rename
+			await pause();
 			const loaded = await persistence.loadOrSeed(pageId, seeder, fingerprint);
 			expect(loaded.contentAsOf).not.toBeNull();
 			await pause();
@@ -258,7 +260,7 @@ describe.skipIf(!url)('PgPersistence (Postgres)', () => {
 			const later = await addTask('later', 'later');
 			await rename(later, 'renamed after the content');
 			await rename(gone, 'renamed, then deleted');
-			await pool.query(`UPDATE tasks SET deleted_at = NOW() WHERE id = $1`, [gone]);
+			await pool.query(`UPDATE tasks SET deleted_at = NOW(), deleted_reason = 'user' WHERE id = $1`, [gone]);
 			const elsewhere = randomUUID();
 			await pool.query(`INSERT INTO pages (id, user_id, type, title) VALUES ($1, $2, 'page', 'other')`, [elsewhere, userId]);
 			await rename(await addTask('later', 'on another page', elsewhere), 'renamed elsewhere');
