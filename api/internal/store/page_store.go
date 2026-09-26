@@ -1,10 +1,12 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/glyph/api/internal/model"
@@ -32,13 +34,19 @@ func scanPage(row interface {
 		}
 		return nil, err
 	}
-	if triggerJSON != nil {
+	if !isJSONNullOrEmpty(triggerJSON) {
 		p.TodoTrigger = &model.TodoTriggerConfig{}
 		if err := json.Unmarshal(triggerJSON, p.TodoTrigger); err != nil {
 			return nil, fmt.Errorf("unmarshal todo_trigger: %w", err)
 		}
 	}
 	return p, nil
+}
+
+// isJSONNullOrEmpty reports whether a scanned JSONB column holds no value:
+// SQL NULL, or a JSONB null left behind by the typed-nil bug (DI-07).
+func isJSONNullOrEmpty(b []byte) bool {
+	return b == nil || string(bytes.TrimSpace(b)) == "null"
 }
 
 const pageColumns = `id, user_id, type, title, parent_id, "order", tags, priority, todo_trigger, org_id, is_private, created_at, updated_at`
@@ -519,9 +527,16 @@ func (s *pgPageStore) ListContentVersions(ctx context.Context, pageID, userID uu
 	return out, nil
 }
 
-// marshalNullableJSON encodes v as JSON bytes, returning nil when v is nil.
+// marshalNullableJSON encodes v as JSON bytes, returning nil (SQL NULL) when
+// v is nil — including a typed nil pointer such as a nil *TodoTriggerConfig.
+// Wrapped in an interface{} that pointer is not == nil, and json.Marshal
+// turns it into the literal "null", which Postgres stores as a JSONB null
+// value rather than SQL NULL (DI-07).
 func marshalNullableJSON(v interface{}) ([]byte, error) {
 	if v == nil {
+		return nil, nil
+	}
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer && rv.IsNil() {
 		return nil, nil
 	}
 	b, err := jsonMarshal(v)

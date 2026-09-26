@@ -35,7 +35,7 @@ func scanTemplate(row interface{ Scan(...interface{}) error }) (*model.Template,
 		}
 		return nil, err
 	}
-	if triggerJSON != nil {
+	if !isJSONNullOrEmpty(triggerJSON) {
 		t.TodoTrigger = &model.TodoTriggerConfig{}
 		if err := unmarshalJSON(triggerJSON, t.TodoTrigger); err != nil {
 			return nil, err
