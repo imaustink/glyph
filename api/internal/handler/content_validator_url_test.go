@@ -90,11 +90,12 @@ func TestValidateProseMirrorContentStripsUnsafeURLs(t *testing.T) {
 	goodAttrs := goodMark["attrs"].(map[string]interface{})
 	assert.Equal(t, "https://example.com", goodAttrs["href"])
 
-	// Unsafe image src removed, safe one preserved.
-	badImg := content[1].(map[string]interface{})
-	if attrs, ok := badImg["attrs"].(map[string]interface{}); ok {
-		assert.NotContains(t, attrs, "src", "javascript: src must be stripped")
-	}
-	goodImg := content[2].(map[string]interface{})
-	assert.Equal(t, "https://example.com/i.png", goodImg["attrs"].(map[string]interface{})["src"])
+	// Images (not in the editor schema) become link paragraphs: an unsafe
+	// src is not turned into a link, a safe one is.
+	badImg := content[1].(map[string]interface{})["content"].([]interface{})[0].(map[string]interface{})
+	assert.Equal(t, "x", badImg["text"])
+	assert.NotContains(t, badImg, "marks", "javascript: src must not become a link")
+	goodImg := content[2].(map[string]interface{})["content"].([]interface{})[0].(map[string]interface{})
+	goodImgMark := goodImg["marks"].([]interface{})[0].(map[string]interface{})
+	assert.Equal(t, "https://example.com/i.png", goodImgMark["attrs"].(map[string]interface{})["href"])
 }

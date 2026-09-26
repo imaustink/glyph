@@ -291,6 +291,7 @@ func (h *PageHandler) GetPageContent(c *gin.Context) {
 		notFoundOrError(c, err)
 		return
 	}
+	content.Content = NormalizeStoredContent(content.Content)
 	c.JSON(http.StatusOK, content)
 }
 

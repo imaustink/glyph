@@ -209,7 +209,8 @@ func TestFromMarkdownStructure(t *testing.T) {
 			doc(quote(p(txt("a")), quote(p(txt("b"))), ul(li(p(txt("c"))))))},
 		{"bullets any marker", "- a\n- b", doc(ul(li(p(txt("a"))), li(p(txt("b")))))},
 		{"marker change starts new list", "- a\n* b", doc(ul(li(p(txt("a")))), ul(li(p(txt("b")))))},
-		{"ordered", "1. a\n2) b\n3) c", doc(ol(li(p(txt("a")))), ol(li(p(txt("b"))), li(p(txt("c")))))},
+		{"ordered", "1. a\n2) b\n3) c", doc(ol(li(p(txt("a")))),
+			`{"type":"orderedList","attrs":{"start":2},"content":[`+li(p(txt("b")))+`,`+li(p(txt("c")))+`]}`)},
 		{"loose list", "- a\n\n- b\n\n  second para", doc(ul(li(p(txt("a"))), li(p(txt("b")), p(txt("second para")))))},
 		{"nested 3 deep", "- a\n  - b\n    - c\n- d",
 			doc(ul(li(p(txt("a")), ul(li(p(txt("b")), ul(li(p(txt("c"))))))), li(p(txt("d")))))},
@@ -222,16 +223,29 @@ func TestFromMarkdownStructure(t *testing.T) {
 				`{"type":"listItem","attrs":{"checked":true},"content":[`+p(txt("closed"))+`]}`,
 				`{"type":"listItem","attrs":{"checked":true},"content":[`+p(txt("closed too"))+`]}`))},
 		{"empty item", "-\n- b", doc(ul(li(p()), li(p(txt("b")))))},
+		// The editor schema has no image node (DI-01): a block image becomes
+		// a paragraph linking to it.
 		{"image line", `![A cat](https://ex.com/c.png "Title")`,
-			doc(`{"type":"image","attrs":{"src":"https://ex.com/c.png","alt":"A cat","title":"Title"}}`)},
+			doc(p(txt("A cat", link("https://ex.com/c.png"))))},
+		{"image line without alt", `![](https://ex.com/c.png)`,
+			doc(p(txt("https://ex.com/c.png", link("https://ex.com/c.png"))))},
 		{"image interrupts paragraph", "text\n![a](/x.png)\nmore",
-			doc(p(txt("text")), `{"type":"image","attrs":{"src":"/x.png","alt":"a"}}`, p(txt("more")))},
+			doc(p(txt("text")), p(txt("a", link("/x.png"))), p(txt("more")))},
 		{"inline image becomes linked alt", "see ![pic](https://ex.com/p.png) here",
 			doc(p(txt("see "), txt("pic", link("https://ex.com/p.png")), txt(" here")))},
 		{"list after paragraph without blank", "intro\n- a", doc(p(txt("intro")), ul(li(p(txt("a")))))},
 		{"heading first in item gets empty paragraph", "- # h", doc(ul(li(p(), h(1, txt("h")))))},
 		{"html comment dropped", "a <!-- note --> b", doc(p(txt("a  b")))},
 		{"crlf", "# a\r\n\r\nb\r\n", doc(h(1, txt("a")), p(txt("b")))},
+		// DI-08 round-trip losses.
+		{"ordered list keeps its start", "3. a\n4. b",
+			doc(`{"type":"orderedList","attrs":{"start":3},"content":[` + li(p(txt("a"))) + `,` + li(p(txt("b"))) + `]}`)},
+		{"nbsp line is an empty paragraph", "a\n\n&nbsp;\n\n&nbsp;\n\nb", doc(p(txt("a")), p(), p(), p(txt("b")))},
+		{"setext h1", "Title\n=====", doc(h(1, txt("Title")))},
+		{"setext h2", "Sub\n---\nbody", doc(h(2, txt("Sub")), p(txt("body")))},
+		{"multi-line setext", "a\nb\n===", doc(h(1, txt("a b")))},
+		{"table keeps one line per row", "| a | **b** |\n|---|---|\n| 1 | 2 |\n\nafter",
+			doc(p(txt("| a | "), txt("b", mk("bold")), txt(" |"), mk("hardBreak"), txt("|---|---|"), mk("hardBreak"), txt("| 1 | 2 |")), p(txt("after")))},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -370,6 +384,9 @@ func TestToMarkdown(t *testing.T) {
 			"![A \\[x\\]](<https://ex.com/a b.png> \"say \\\"hi\\\"\")\n"},
 		{"ordered start", doc(`{"type":"orderedList","attrs":{"start":9},"content":[` + li(p(txt("a"))) + `,` + li(p(txt("b"))) + `]}`),
 			"9. a\n10. b\n"},
+		{"empty paragraphs between blocks", doc(p(txt("a")), p(), p(), p(txt("b"))), "a\n\n&nbsp;\n\n&nbsp;\n\nb\n"},
+		{"leading and trailing empty paragraphs", doc(p(), p(txt("a")), p()), "a\n"},
+		{"literal nbsp text", doc(p(txt("&nbsp;"))), "\\&nbsp;\n"},
 		{"nested lists", doc(ul(li(p(txt("a")), ol(li(p(txt("b")), ul(li(p(txt("c"))))))))),
 			"- a\n  1. b\n     - c\n"},
 		{"loose item", doc(ul(li(p(txt("a")), p(txt("b"))), li(p(txt("c"))))), "- a\n\n  b\n\n- c\n"},
@@ -428,12 +445,13 @@ func TestMarkdownRoundTripStable(t *testing.T) {
 		"> quote\n>\n> > nested\n>\n> - item\n",
 		"```markdown\n# heading\n- list\n**bold** <!-- task:" + taskA + " -->\n```\n",
 		"line one\\\nline two\n",
-		"![alt](https://ex.com/i.png \"t\")\n",
 		"a\n\n---\n\nb\n",
 		"\\# not heading\n\n\\- not list\n\n1\\. not ordered\n\n\\> not quote\n",
 		"snake_case and 2 \\* 3 and \\[brackets\\] and a\\\\b\n",
 		"- a\n\n  second paragraph\n\n- b\n",
 		"- item\n\n  ```go\n  fmt.Println(\"x\")\n\n  // blank above\n  ```\n",
+		"3. three\n4. four\n",
+		"a\n\n&nbsp;\n\nb\n",
 	}
 	for _, md := range cases {
 		t.Run(md, func(t *testing.T) {
@@ -463,6 +481,7 @@ func TestMarkdownRoundTripFixedPoint(t *testing.T) {
 		"1. a\n\n   b\n2. c",
 		"**unclosed *emphasis",
 		"x_y_z *a*b* [not](a link",
+		"![alt](https://ex.com/i.png \"t\")\n",
 	}
 	for _, md := range cases {
 		t.Run(md, func(t *testing.T) {
@@ -500,7 +519,7 @@ func TestDocRoundTrip(t *testing.T) {
 		{"bold across hard break", doc(p(txt("a", b), mk("hardBreak"), txt("b", b)))},
 		{"blockquote", doc(quote(p(txt("q")), quote(p(txt("nested"))), ul(li(p(txt("in quote"))))))},
 		{"code blocks", doc(code("go", "func main() {\n\tfmt.Println(\"**hi**\")\n}"), code("md", "# h\n- l\n> q\n```inner```\n~~~"))},
-		{"hr and image", doc(p(txt("a")), mk("horizontalRule"), `{"type":"image","attrs":{"src":"https://ex.com/x.png","alt":"x","title":"T"}}`)},
+		{"hr and link paragraph", doc(p(txt("a")), mk("horizontalRule"), p(txt("x", link("https://ex.com/x.png"))))},
 		{"nested lists 3 deep", doc(ul(
 			li(p(txt("l1")), ul(li(p(txt("l2")), ol(li(p(txt("l3a"))), li(p(txt("l3b"))))))),
 			li(p(txt("l1b"))),
@@ -538,6 +557,10 @@ func TestDocRoundTrip(t *testing.T) {
 		)},
 		{"escaping in list items", doc(ul(li(p(txt("[ ] not a task"))), li(p(txt("- dash"))), li(p(txt("<!-- task:"+taskA+" -->")))))},
 		{"heading marks", doc(h(2, txt("Big "), txt("bold", b), txt(" "), txt("code", c)))},
+		{"ordered list start", doc(`{"type":"orderedList","attrs":{"start":5},"content":[` + li(p(txt("five"))) + `,` + li(p(txt("six"))) + `]}`)},
+		{"empty paragraphs between blocks", doc(p(txt("a")), p(), p(), h(2, txt("h")), p(), quote(p(txt("q")), p(), p(txt("r"))))},
+		{"literal nbsp text", doc(p(txt("&nbsp;")), p(txt("a &nbsp; b")))},
+		{"setext-looking text", doc(p(txt("a"), mk("hardBreak"), txt("==="), mk("hardBreak"), txt("---")))},
 		{"unicode", doc(p(txt("héllo wörld — ✓ 日本語 "), txt("強調", b), txt(" "), txt("_x_", i), txt(" "), txt("*x*", b, i)))},
 	}
 	for _, tc := range cases {
