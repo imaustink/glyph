@@ -119,7 +119,9 @@ spec:
               value: {{ .Values.api.cookieSecure | quote }}
             - name: COLLAB_ENABLED
               value: {{ .Values.collab.enabled | quote }}
-            {{- if .Values.collab.enabled }}
+            {{- /* Also with collab off, while a token is configured: the API
+                   still accepts final snapshots from draining collab pods. */}}
+            {{- if or .Values.collab.enabled .Values.collab.serviceToken .Values.collab.existingSecret }}
             - name: COLLAB_SERVICE_TOKEN
               valueFrom:
                 secretKeyRef:
