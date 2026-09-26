@@ -278,7 +278,8 @@
       taskSync.syncLinkedTaskTitleRealtime(
         ed,
         () => pending,
-        (p) => { pending = p; }
+        (p) => { pending = p; },
+        transaction
       );
     }
     dismissPendingIfCursorLeft(ed);
