@@ -95,10 +95,44 @@ Secret holding the token the collab service uses on the API's /internal routes.
 {{- end }}
 
 {{/*
-CNPG cluster name
+CNPG cluster name. Defaults to <fullname>-db, which is what every existing
+install already has; set cnpg.clusterName to pin it so a change to the release
+name or fullnameOverride can't point the chart at a new, empty database.
 */}}
 {{- define "glyph.cnpg.clusterName" -}}
-{{- printf "%s-db" (include "glyph.fullname" .) }}
+{{- .Values.cnpg.clusterName | default (printf "%s-db" (include "glyph.fullname" .)) }}
+{{- end }}
+
+{{/*
+ScheduledBackup schedule. CNPG takes a six-field cron expression with seconds
+first (robfig/cron); a crontab-style five-field one is given "0" seconds.
+*/}}
+{{- define "glyph.cnpg.backupSchedule" -}}
+{{- $s := regexReplaceAll "\\s+" (trim .Values.cnpg.backup.schedule) " " }}
+{{- $n := len (splitList " " $s) }}
+{{- if eq $n 5 }}{{ printf "0 %s" $s }}
+{{- else if eq $n 6 }}{{ $s }}
+{{- else }}
+{{- fail (printf "cnpg.backup.schedule %q must be a six-field cron expression (seconds first), e.g. \"0 0 0 * * *\"" $s) }}
+{{- end }}
+{{- end }}
+
+{{/*
+Validates the backup settings. Included by the Cluster template.
+*/}}
+{{- define "glyph.cnpg.validateBackup" -}}
+{{- $b := .Values.cnpg.backup }}
+{{- if and $b.required (not $b.enabled) }}
+{{- fail "cnpg.backup.required is true but cnpg.backup.enabled is false: this deployment must not run without backups. Configure cnpg.backup (destinationPath and s3.secretName) and set cnpg.backup.enabled=true." }}
+{{- end }}
+{{- if $b.enabled }}
+{{- if not $b.destinationPath }}
+{{- fail "cnpg.backup.enabled is true but cnpg.backup.destinationPath is empty (expected s3://<bucket>/<prefix>)." }}
+{{- end }}
+{{- if not (or $b.s3.secretName $b.s3.inheritFromIAMRole) }}
+{{- fail "cnpg.backup.enabled is true but cnpg.backup.s3.secretName is empty (and s3.inheritFromIAMRole is false): WAL archiving would fail and WAL would fill the volume." }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{/*

@@ -51,8 +51,8 @@ test_cnpg_backup_with_iam_role_needs_no_secret() {
     --set cnpg.backup.s3.inheritFromIAMRole=true
   assert_ok
   local c; c="$(doc Cluster glyph-db)"
+  # CNPG puts inheritFromIAMRole under s3Credentials.
   assert_contains "$c" 'inheritFromIAMRole: true' "IAM role credentials rendered"
-  assert_not_contains "$c" 's3Credentials:\s*$' "no empty s3Credentials block"
   assert_not_contains "$c" 'accessKeyId:' "no secret-based credentials"
 }
 

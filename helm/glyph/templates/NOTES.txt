@@ -18,6 +18,13 @@ Your release is named: {{ .Release.Name }}
 3. Check migration job status:
   kubectl get jobs -l app.kubernetes.io/component=migrate -n {{ .Release.Namespace }}
 
+{{- if not .Values.cnpg.backup.enabled }}
+
+WARNING: Database backups are disabled (cnpg.backup.enabled=false). There is
+no point-in-time recovery. Configure cnpg.backup, and set
+cnpg.backup.required=true in production values so this can't regress.
+{{- end }}
+
 {{- if not .Values.api.oidc.enabled }}
 
 WARNING: OIDC authentication is disabled. The API is running in dev mode.
