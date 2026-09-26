@@ -300,6 +300,10 @@ func stripQuote(line string) string {
 
 // ---- images ----
 
+// parseImageLine turns a line holding only an image into its own paragraph
+// linking to the image. The editor schema has no image node — a doc with one
+// loads as a blank editor (DI-01) — so the alt text (or the URL) is kept as a
+// link instead, the same shape the API validator downgrades stored images to.
 func parseImageLine(line string) (*node, bool) {
 	t := strings.TrimSpace(line)
 	if !strings.HasPrefix(t, "![") {
@@ -310,14 +314,11 @@ func parseImageLine(line string) (*node, bool) {
 	if !ok || lk.end != len(rs) || lk.dest == "" || !isSafeURL(lk.dest) {
 		return nil, false
 	}
-	attrs := map[string]any{"src": lk.dest}
-	if alt := unescapeMD(lk.label); alt != "" {
-		attrs["alt"] = alt
+	text := unescapeMD(lk.label)
+	if text == "" {
+		text = lk.dest
 	}
-	if lk.title != "" {
-		attrs["title"] = lk.title
-	}
-	return &node{Type: "image", Attrs: attrs}, true
+	return &node{Type: "paragraph", Content: []*node{{Type: "text", Text: text, Marks: []mark{linkMark(lk.dest)}}}}, true
 }
 
 // ---- lists ----
