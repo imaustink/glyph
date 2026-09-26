@@ -222,10 +222,14 @@ func TestFromMarkdownStructure(t *testing.T) {
 				`{"type":"listItem","attrs":{"checked":true},"content":[`+p(txt("closed"))+`]}`,
 				`{"type":"listItem","attrs":{"checked":true},"content":[`+p(txt("closed too"))+`]}`))},
 		{"empty item", "-\n- b", doc(ul(li(p()), li(p(txt("b")))))},
+		// The editor schema has no image node (DI-01): a block image becomes
+		// a paragraph linking to it.
 		{"image line", `![A cat](https://ex.com/c.png "Title")`,
-			doc(`{"type":"image","attrs":{"src":"https://ex.com/c.png","alt":"A cat","title":"Title"}}`)},
+			doc(p(txt("A cat", link("https://ex.com/c.png"))))},
+		{"image line without alt", `![](https://ex.com/c.png)`,
+			doc(p(txt("https://ex.com/c.png", link("https://ex.com/c.png"))))},
 		{"image interrupts paragraph", "text\n![a](/x.png)\nmore",
-			doc(p(txt("text")), `{"type":"image","attrs":{"src":"/x.png","alt":"a"}}`, p(txt("more")))},
+			doc(p(txt("text")), p(txt("a", link("/x.png"))), p(txt("more")))},
 		{"inline image becomes linked alt", "see ![pic](https://ex.com/p.png) here",
 			doc(p(txt("see "), txt("pic", link("https://ex.com/p.png")), txt(" here")))},
 		{"list after paragraph without blank", "intro\n- a", doc(p(txt("intro")), ul(li(p(txt("a")))))},
@@ -428,7 +432,6 @@ func TestMarkdownRoundTripStable(t *testing.T) {
 		"> quote\n>\n> > nested\n>\n> - item\n",
 		"```markdown\n# heading\n- list\n**bold** <!-- task:" + taskA + " -->\n```\n",
 		"line one\\\nline two\n",
-		"![alt](https://ex.com/i.png \"t\")\n",
 		"a\n\n---\n\nb\n",
 		"\\# not heading\n\n\\- not list\n\n1\\. not ordered\n\n\\> not quote\n",
 		"snake_case and 2 \\* 3 and \\[brackets\\] and a\\\\b\n",
@@ -463,6 +466,7 @@ func TestMarkdownRoundTripFixedPoint(t *testing.T) {
 		"1. a\n\n   b\n2. c",
 		"**unclosed *emphasis",
 		"x_y_z *a*b* [not](a link",
+		"![alt](https://ex.com/i.png \"t\")\n",
 	}
 	for _, md := range cases {
 		t.Run(md, func(t *testing.T) {
@@ -500,7 +504,7 @@ func TestDocRoundTrip(t *testing.T) {
 		{"bold across hard break", doc(p(txt("a", b), mk("hardBreak"), txt("b", b)))},
 		{"blockquote", doc(quote(p(txt("q")), quote(p(txt("nested"))), ul(li(p(txt("in quote"))))))},
 		{"code blocks", doc(code("go", "func main() {\n\tfmt.Println(\"**hi**\")\n}"), code("md", "# h\n- l\n> q\n```inner```\n~~~"))},
-		{"hr and image", doc(p(txt("a")), mk("horizontalRule"), `{"type":"image","attrs":{"src":"https://ex.com/x.png","alt":"x","title":"T"}}`)},
+		{"hr and link paragraph", doc(p(txt("a")), mk("horizontalRule"), p(txt("x", link("https://ex.com/x.png"))))},
 		{"nested lists 3 deep", doc(ul(
 			li(p(txt("l1")), ul(li(p(txt("l2")), ol(li(p(txt("l3a"))), li(p(txt("l3b"))))))),
 			li(p(txt("l1b"))),
