@@ -183,6 +183,64 @@ func TestPageIntegrity(t *testing.T) {
 			require.NoError(t, rows.Err(), "DescendantPagesSQL on a cycle")
 			assert.Equal(t, 2, n)
 		},
+
+		// ── DI-02: folder delete must not destroy other users' work ──────
+		"DI02_DeleteFolderContainingOtherUsersPageRefused": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			f := createFolder(t, h, h.UserA.ID, "Alice's folder")
+			shareFolder(t, h, f.ID.String(), h.UserA.ID, h.UserB.ID, "editor")
+			sub := createChild(t, h, h.UserA.ID, f.ID, "folder", "Sub")
+			// The editor share lets Bob create his own page in Alice's folder.
+			bobs := createChild(t, h, h.UserB.ID, f.ID, "page", "Bob's page")
+
+			w := h.Do(t, "DELETE", "/api/v1/pages/"+f.ID.String(), nil, h.UserA.ID)
+			require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+			assert.Equal(t, "subtree_has_other_owners", Decode[map[string]interface{}](t, w)["code"])
+
+			// Nothing was deleted.
+			getPage(t, h, h.UserB.ID, bobs.ID)
+			getPage(t, h, h.UserA.ID, sub.ID)
+			getPage(t, h, h.UserA.ID, f.ID)
+		},
+
+		// Deleting a folder the caller wholly owns still removes the subtree.
+		"DI02_DeleteOwnFolderRemovesDescendants": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			f := createFolder(t, h, h.UserA.ID, "F")
+			child := createChild(t, h, h.UserA.ID, f.ID, "page", "Child")
+
+			w := h.Do(t, "DELETE", "/api/v1/pages/"+f.ID.String(), nil, h.UserA.ID)
+			require.Equal(t, http.StatusNoContent, w.Code, w.Body.String())
+			w = h.Do(t, "GET", "/api/v1/pages/"+child.ID.String(), nil, h.UserA.ID)
+			assert.Equal(t, http.StatusNotFound, w.Code, "descendant should be deleted with its folder")
+		},
+
+		// Content history outlives the page, and the page's last content is
+		// archived into it, so a deleted note stays recoverable.
+		"DI02_DeleteKeepsContentHistory": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			pool := rawPool(t, h)
+			f := createFolder(t, h, h.UserA.ID, "F")
+			p := createChild(t, h, h.UserA.ID, f.ID, "page", "Note")
+			_, pc := putContent(t, h, p.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("first")})
+			code, _ := putContent(t, h, p.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("second"), "expectedRevision": pc.Revision})
+			require.Equal(t, http.StatusOK, code)
+
+			w := h.Do(t, "DELETE", "/api/v1/pages/"+f.ID.String(), nil, h.UserA.ID)
+			require.Equal(t, http.StatusNoContent, w.Code, w.Body.String())
+
+			var texts []string
+			rows, err := pool.Query(context.Background(),
+				`SELECT content #>> '{content,0,content,0,text}' FROM page_content_versions WHERE page_id = $1 ORDER BY id`, p.ID)
+			require.NoError(t, err)
+			for rows.Next() {
+				var s string
+				require.NoError(t, rows.Scan(&s))
+				texts = append(texts, s)
+			}
+			rows.Close()
+			assert.Equal(t, []string{"first", "second"}, texts, "history and last content must survive the delete")
+		},
 	})
 }
 
