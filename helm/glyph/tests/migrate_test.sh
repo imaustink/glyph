@@ -94,6 +94,39 @@ test_migrate_script_wait_returns_once_schema_is_current() {
   assert_not_contains "$(cat "$WORK/calls")" ' up$' "wait never migrates"
 }
 
+# DI-18 — failure modes: a schema ahead of the shipped files (after a
+# rollback, or an older tree deployed), and a dirty schema.
+
+test_migrate_script_apply_skips_when_database_is_ahead() {
+  fake_migrate "5"
+  run_script apply
+  assert_ok
+  assert_contains "$OUT" 'newer than' "warns that the schema is ahead"
+  assert_not_contains "$(cat "$WORK/calls")" ' up$' "doesn't run up (it would fail: no migration found for version 5)"
+}
+
+test_migrate_script_wait_tolerates_database_ahead() {
+  fake_migrate "5"
+  run_script wait
+  assert_ok
+  assert_contains "$OUT" 'newer than' "warns that the schema is ahead"
+}
+
+test_migrate_script_apply_refuses_dirty_database() {
+  fake_migrate "3 (dirty)"
+  run_script apply
+  assert_render_fails 'dirty'
+  assert_contains "$OUT" 'docs/runbooks/migrations.md' "points at the runbook"
+  assert_not_contains "$(cat "$WORK/calls")" ' up$' "doesn't retry a failed migration on top of a dirty schema"
+}
+
+test_migrate_script_apply_failure_points_at_runbook() {
+  fake_migrate "1"
+  : >"$WORK/up-fails"
+  run_script apply
+  assert_render_fails 'docs/runbooks/migrations.md'
+}
+
 test_migrate_script_wait_keeps_waiting_while_behind() {
   fake_migrate "2"
   WAIT_MAX_ATTEMPTS=2 run_script wait
