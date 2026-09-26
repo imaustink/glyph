@@ -851,6 +851,7 @@ describe('task titles renamed while the note was closed (DI-29)', () => {
 		const run = bulletRun(alice);
 		run.delete(0, run.length);
 		run.insert(0, 'Buy soy milk');
+		persistence.titleFromBullet(PAGE, 'n1', 'Buy soy milk'); // the editor's debounced title sync
 		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy soy milk'));
 		alice.destroy();
 		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
@@ -858,6 +859,85 @@ describe('task titles renamed while the note was closed (DI-29)', () => {
 		const bob = open({ user: 'bob' });
 		await bob.synced();
 		expect(bulletText(bob)).toBe('Buy soy milk');
+		expect(occurrences(persistence.replay(PAGE), 'soy')).toBe(1);
+	});
+
+	/** Put a plain bullet "Call mom" (nodeId x) after the linked bullet n1. */
+	const withOtherBullet = (text: string) => bulletList([{ nodeId: 'n1', taskId: 't1', text }, { nodeId: 'x', text: 'Call mom' }]);
+	/** Retype the plain bullet x in a client's copy. */
+	const editOtherBullet = (c: TestClient, text: string) => {
+		const list = c.fragment.toArray().find((n) => n instanceof Y.XmlElement && n.nodeName === 'bulletList') as Y.XmlElement;
+		const run = ((list.get(1) as Y.XmlElement).get(0) as Y.XmlElement).get(0) as Y.XmlText;
+		run.delete(0, run.length);
+		run.insert(0, text);
+	};
+
+	it('applies a rename that missed the open note, even after another bullet was edited', async () => {
+		// The rename reached the open note only as a record (a missed
+		// notification, a collab build that predates live renames). Editing a
+		// different bullet afterwards makes the note newer than the rename, but
+		// says nothing about this bullet.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [withOtherBullet('Buy milk')]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Call mom'));
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+		editOtherBullet(alice, 'Call dad');
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Call dad'));
+		alice.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		expect(bulletText(bob)).toBe('Buy oat milk');
+		expect(occurrences(persistence.replay(PAGE), 'oat')).toBe(1);
+	});
+
+	it('applies a rename whose first load failed to apply it, even after another bullet was edited', async () => {
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [withOtherBullet('Buy milk')]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Call mom'));
+		alice.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+
+		// Reopened while renames can't be read: the note opens as it is…
+		persistence.failRenamedTitles = true;
+		const again = open({ user: 'alice' });
+		await again.synced();
+		expect(bulletText(again)).toBe('Buy milk');
+		editOtherBullet(again, 'Call dad');
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Call dad'));
+		again.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+
+		// …and the next load still owes the bullet its rename.
+		persistence.failRenamedTitles = false;
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		expect(bulletText(bob)).toBe('Buy oat milk');
+	});
+
+	it('a rename the bullet never showed wins over a bullet edit whose title never reached the task', async () => {
+		// Nothing records which bullet an edit touched, so an unapplied rename
+		// over a bullet that doesn't match the task looks the same whether or
+		// not the bullet was typed in; the task's title is the one on record.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [bulletList([{ nodeId: 'n1', taskId: 't1', text: 'Buy milk' }])]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy milk'));
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+		const run = bulletRun(alice);
+		run.delete(0, run.length);
+		run.insert(0, 'Buy soy milk'); // …and the tab closes before the title sync
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy soy milk'));
+		alice.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		expect(bulletText(bob)).toBe('Buy oat milk');
 	});
 
 	it('applies a rename newer than the stored content a note is seeded from, and only that', async () => {

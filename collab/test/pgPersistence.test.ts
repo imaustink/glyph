@@ -301,6 +301,19 @@ describe.skipIf(!url)('PgPersistence (Postgres)', () => {
 			expect(await persistence.renamedTaskTitles(pageId, edited.contentAsOf)).toEqual([]);
 		});
 
+		it('a rename stays owed to its bullet through later edits to the note (review)', async () => {
+			// An append after the rename is an edit somewhere in the note, not
+			// necessarily in this bullet: it doesn't settle the rename.
+			const id = await addTask('n1', 'Buy milk');
+			const first = await persistence.loadOrSeed(pageId, seeder, fingerprint);
+			await pause();
+			await rename(id, 'Buy oat milk');
+			await pause();
+			await persistence.append(pageId, first.epoch, new Uint8Array([0, 0]));
+			const edited = await persistence.loadOrSeed(pageId, seeder, fingerprint);
+			expect(await persistence.renamedTaskTitles(pageId, edited.contentAsOf)).toEqual([{ nodeId: 'n1', title: 'Buy oat milk' }]);
+		});
+
 		it('a schema reseed keeps the replaced log\'s content time', async () => {
 			const id = await addTask('n1', 'Buy milk');
 			const loaded = await persistence.loadOrSeed(pageId, seeder, 'old-build');

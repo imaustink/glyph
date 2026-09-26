@@ -64,6 +64,15 @@ export class MemoryPersistence implements Persistence {
 		this.renamedTasks.push({ pageId, nodeId, title, renamedAt: this.tick() });
 	}
 
+	/**
+	 * What PATCH /tasks/:id with `X-Glyph-Change-Source: bullet` does: the
+	 * editor gave the task its bullet's text. Not a rename (title_renamed_at
+	 * is left as it is).
+	 */
+	titleFromBullet(pageId: string, nodeId: string, title: string) {
+		for (const t of this.renamedTasks) if (t.pageId === pageId && t.nodeId === nodeId) t.title = title;
+	}
+
 	private takeLease(pageId: string, lease: Lease | undefined, epoch: number) {
 		if (lease) this.leases.set(`${pageId} ${lease.holder}`, { pageId, holder: lease.holder, epoch, expiresAt: Date.now() + lease.ttlMs });
 	}
