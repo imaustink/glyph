@@ -131,3 +131,152 @@ func TestPageWorkspaceMoveAuthorization(t *testing.T) {
 		},
 	})
 }
+
+// createOrgTask creates, as ownerID, a task in orgID visible to the org.
+func createOrgTask(t *testing.T, h *Harness, ownerID uuid.UUID, orgID string) model.Task {
+	t.Helper()
+	w := h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{"title": "Org task", "orgId": orgID, "isPrivate": false}, ownerID)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	return Decode[model.Task](t, w)
+}
+
+// createOrgTemplate creates, as ownerID, a template in orgID visible to the org.
+func createOrgTemplate(t *testing.T, h *Harness, ownerID uuid.UUID, orgID string) model.Template {
+	t.Helper()
+	w := h.Do(t, "POST", "/api/v1/templates", map[string]interface{}{"name": "Org template", "orgId": orgID, "isPrivate": false}, ownerID)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	return Decode[model.Template](t, w)
+}
+
+func getTemplate(t *testing.T, h *Harness, userID, id uuid.UUID) model.Template {
+	t.Helper()
+	w := h.Do(t, "GET", "/api/v1/templates/"+id.String(), nil, userID)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	return Decode[model.Template](t, w)
+}
+
+// TestTaskAndTemplateWorkspaceMoveAuthorization applies
+// TestPageWorkspaceMoveAuthorization's rule to every other write that can
+// change a task's or template's org: PATCH {"orgId": null} (or another
+// org), and PUT, which replaces the org with the body's (null when omitted).
+func TestTaskAndTemplateWorkspaceMoveAuthorization(t *testing.T) {
+	RunSpecs(t, map[string]func(t *testing.T, h *Harness){
+		"OrgEditorCannotMoveColleaguesTaskToPersonal": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			orgID := createOrgAs(t, h, h.UserA.ID, "Org")
+			addOrgMember(t, h, h.UserA.ID, orgID, h.UserB.ID, "editor")
+			task := createOrgTask(t, h, h.UserA.ID, orgID)
+
+			w := h.Do(t, "PATCH", "/api/v1/tasks/"+task.ID.String(), map[string]interface{}{"orgId": nil}, h.UserB.ID)
+			require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+			assertInOrg(t, orgID, getTask(t, h, h.UserA.ID, task.ID).OrgID, "an editor moved the owner's task out of the org")
+
+			w = h.Do(t, "PATCH", "/api/v1/tasks/"+task.ID.String(), map[string]interface{}{"title": "Renamed"}, h.UserB.ID)
+			assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		},
+
+		"OrgScopedTokenCannotMoveTaskToPersonal": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			orgID := createOrgAs(t, h, h.UserA.ID, "Org")
+			task := createOrgTask(t, h, h.UserA.ID, orgID)
+
+			w := h.DoAsToken(t, "PATCH", "/api/v1/tasks/"+task.ID.String(), map[string]interface{}{"orgId": nil}, h.UserA.ID, orgOnlyScope(orgID))
+			require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+			assertInOrg(t, orgID, getTask(t, h, h.UserA.ID, task.ID).OrgID, "an org-scoped token moved the task to Personal")
+		},
+
+		"PersonalScopedTokenCannotMoveTaskIntoOrg": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			orgID := createOrgAs(t, h, h.UserA.ID, "Org")
+			w := h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{"title": "Mine"}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+			task := Decode[model.Task](t, w)
+
+			w = h.DoAsToken(t, "PATCH", "/api/v1/tasks/"+task.ID.String(), map[string]interface{}{"orgId": orgID}, h.UserA.ID, personalOnlyScope())
+			require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+			assert.Nil(t, getTask(t, h, h.UserA.ID, task.ID).OrgID, "a Personal-only token moved the task into an org")
+		},
+
+		// PUT replaces the org: a token without the org in its grant must
+		// not rewrite (or take out of the org) a task that lives there.
+		"PersonalScopedTokenCannotPutOrgTaskToPersonal": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			orgID := createOrgAs(t, h, h.UserA.ID, "Org")
+			task := createOrgTask(t, h, h.UserA.ID, orgID)
+
+			w := h.DoAsToken(t, "PUT", "/api/v1/tasks/"+task.ID.String(), map[string]interface{}{"title": "Org task", "orgId": nil}, h.UserA.ID, personalOnlyScope())
+			require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+			assertInOrg(t, orgID, getTask(t, h, h.UserA.ID, task.ID).OrgID, "a Personal-only token PUT the org's task to Personal")
+		},
+
+		"OrgScopedTokenCannotPutOrgTaskToPersonal": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			orgID := createOrgAs(t, h, h.UserA.ID, "Org")
+			task := createOrgTask(t, h, h.UserA.ID, orgID)
+
+			w := h.DoAsToken(t, "PUT", "/api/v1/tasks/"+task.ID.String(), map[string]interface{}{"title": "Org task", "orgId": nil}, h.UserA.ID, orgOnlyScope(orgID))
+			require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+			assertInOrg(t, orgID, getTask(t, h, h.UserA.ID, task.ID).OrgID, "an org-scoped token PUT the task to Personal")
+		},
+
+		"OrgEditorCannotMoveColleaguesTemplateToPersonal": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			orgID := createOrgAs(t, h, h.UserA.ID, "Org")
+			addOrgMember(t, h, h.UserA.ID, orgID, h.UserB.ID, "editor")
+			tmpl := createOrgTemplate(t, h, h.UserA.ID, orgID)
+
+			w := h.Do(t, "PATCH", "/api/v1/templates/"+tmpl.ID.String(), map[string]interface{}{"orgId": nil}, h.UserB.ID)
+			require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+			assertInOrg(t, orgID, getTemplate(t, h, h.UserA.ID, tmpl.ID).OrgID, "an editor moved the owner's template out of the org")
+
+			w = h.Do(t, "PATCH", "/api/v1/templates/"+tmpl.ID.String(), map[string]interface{}{"name": "Renamed"}, h.UserB.ID)
+			assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		},
+
+		"OrgScopedTokenCannotMoveTemplateToPersonal": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			orgID := createOrgAs(t, h, h.UserA.ID, "Org")
+			tmpl := createOrgTemplate(t, h, h.UserA.ID, orgID)
+
+			w := h.DoAsToken(t, "PATCH", "/api/v1/templates/"+tmpl.ID.String(), map[string]interface{}{"orgId": nil}, h.UserA.ID, orgOnlyScope(orgID))
+			require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+			assertInOrg(t, orgID, getTemplate(t, h, h.UserA.ID, tmpl.ID).OrgID, "an org-scoped token moved the template to Personal")
+		},
+
+		"PersonalScopedTokenCannotPutOrgTemplateToPersonal": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			orgID := createOrgAs(t, h, h.UserA.ID, "Org")
+			tmpl := createOrgTemplate(t, h, h.UserA.ID, orgID)
+
+			w := h.DoAsToken(t, "PUT", "/api/v1/templates/"+tmpl.ID.String(), map[string]interface{}{"name": "Org template", "orgId": nil}, h.UserA.ID, personalOnlyScope())
+			require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+			assertInOrg(t, orgID, getTemplate(t, h, h.UserA.ID, tmpl.ID).OrgID, "a Personal-only token PUT the org's template to Personal")
+		},
+
+		// Pages' PUT already checked the stored org against the token.
+		"PersonalScopedTokenCannotPutOrgPageToPersonal": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			orgID := createOrgAs(t, h, h.UserA.ID, "Org")
+			f, _, _ := orgFolder(t, h, h.UserA.ID, orgID)
+
+			w := h.DoAsToken(t, "PUT", "/api/v1/pages/"+f.ID.String(), map[string]interface{}{"orgId": nil}, h.UserA.ID, personalOnlyScope())
+			require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+			assertInOrg(t, orgID, getPage(t, h, h.UserA.ID, f.ID).OrgID, "a Personal-only token PUT the org's folder to Personal")
+		},
+
+		// Session owners keep moving their own things to Personal.
+		"OwnerMovesTaskAndTemplateToPersonal": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			orgID := createOrgAs(t, h, h.UserA.ID, "Org")
+			task := createOrgTask(t, h, h.UserA.ID, orgID)
+			tmpl := createOrgTemplate(t, h, h.UserA.ID, orgID)
+
+			w := h.Do(t, "PATCH", "/api/v1/tasks/"+task.ID.String(), map[string]interface{}{"orgId": nil}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Nil(t, getTask(t, h, h.UserA.ID, task.ID).OrgID)
+			w = h.Do(t, "PATCH", "/api/v1/templates/"+tmpl.ID.String(), map[string]interface{}{"orgId": nil}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Nil(t, getTemplate(t, h, h.UserA.ID, tmpl.ID).OrgID)
+		},
+	})
+}
