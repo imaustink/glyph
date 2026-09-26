@@ -281,7 +281,7 @@ describe('TodoDetectionExtension — matchesTrigger modes', () => {
     expect(created).toHaveLength(0);
   });
 
-  it('empty pattern does not match anything', async () => {
+  it('empty pattern means the default TODO, so an empty heading opens no section', async () => {
     const created: CreatedTodo[] = [];
     const editor = createEditor(
       { pattern: '', matchMode: 'exact', blockTypes: ['heading'] },

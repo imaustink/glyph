@@ -3,7 +3,7 @@ import type { DetectedBullet } from '$lib/editor/extensions/TodoDetectionExtensi
 import { tasksStore } from '$lib/stores/tasks.svelte';
 import { uiStore } from '$lib/stores/ui.svelte';
 import { notificationsStore } from '$lib/stores/notifications.svelte';
-import { isCheckedStatus } from '$lib/editor/todoDerivation';
+import { isCheckedStatus, shouldCreateTaskFor } from '$lib/editor/todoDerivation';
 
 export interface PendingTaskDetails {
 	taskId: string;
@@ -78,6 +78,10 @@ export function useTaskCreation(
 			}
 			return existing.id;
 		}
+
+		// An empty bullet the user isn't typing in stays a plain bullet until it
+		// has text (it is detected again then). Matches Go (DI-27).
+		if (!shouldCreateTaskFor(params)) return null;
 
 		if (promptedNodeIds.has(params.nodeId)) return null;
 		promptedNodeIds.add(params.nodeId);

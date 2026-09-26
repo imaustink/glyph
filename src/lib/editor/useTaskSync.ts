@@ -4,6 +4,7 @@ import { tasksStore } from '$lib/stores/tasks.svelte';
 import { debouncedTaskTitleUpdate } from '$lib/editor/useTaskTitleDebounce';
 import { STATUS_CYCLE } from '$lib/models/constants';
 import type { PendingTaskDetails } from '$lib/editor/useTaskCreation';
+import { isCheckedStatus } from '$lib/editor/todoDerivation';
 
 export interface TaskSyncHandle {
 	/** Handle a status indicator click (cycle task status). */
@@ -33,7 +34,7 @@ export function useTaskSync(getEditor: () => Editor | null, getPageId: () => str
 
 	async function handleStatusCycled(nodeId: string, taskId: string, currentStatus: string) {
 		const newStatus = STATUS_CYCLE[currentStatus as TaskStatus] || 'todo';
-		const checked = newStatus === 'done' || newStatus === 'cancelled';
+		const checked = isCheckedStatus(newStatus);
 		const editor = getEditor();
 		editor?.commands.setCheckedForNode(nodeId, checked);
 		editor?.commands.setStatusForNode(nodeId, newStatus);
@@ -44,7 +45,7 @@ export function useTaskSync(getEditor: () => Editor | null, getPageId: () => str
 		const pageTasks = tasksStore.tasksByPage.get(pageId) ?? [];
 		for (const task of pageTasks) {
 			if (!task.sourceNodeId) continue;
-			const checked = task.status === 'done' || task.status === 'cancelled';
+			const checked = isCheckedStatus(task.status);
 			editor.commands.setCheckedForNode(task.sourceNodeId, checked);
 			editor.commands.setStatusForNode(task.sourceNodeId, task.status);
 		}
@@ -60,7 +61,7 @@ export function useTaskSync(getEditor: () => Editor | null, getPageId: () => str
 		for (const task of pageTasks) {
 			if (!task.sourceNodeId) continue;
 			if (prevTaskStatuses.get(task.id) === task.status) continue;
-			const checked = task.status === 'done' || task.status === 'cancelled';
+			const checked = isCheckedStatus(task.status);
 			editor.commands.setCheckedForNode(task.sourceNodeId, checked);
 			editor.commands.setStatusForNode(task.sourceNodeId, task.status);
 		}
