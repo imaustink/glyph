@@ -89,6 +89,9 @@ export async function startServer(
 		maxDocumentBytes?: number;
 		compactEvery?: number;
 		debounce?: number;
+		maxDebounce?: number;
+		/** The editor-schema fingerprint this server runs (default: the current one). Another value stands in for an older build. */
+		fingerprint?: string;
 		/** How long stop() may keep retrying unpersisted documents (default: short, for tests). */
 		shutdownDrainMs?: number;
 		log?: Logger;
@@ -98,7 +101,7 @@ export async function startServer(
 		persistence,
 		api,
 		schema,
-		fingerprint,
+		fingerprint: opts.fingerprint ?? fingerprint,
 		allowedOrigins: [],
 		maxDocumentBytes: opts.maxDocumentBytes ?? 5 * 1024 * 1024,
 		compactEvery: opts.compactEvery ?? 100,
@@ -111,7 +114,7 @@ export async function startServer(
 		quiet: true,
 		stopOnSignals: false,
 		debounce: opts.debounce ?? 50,
-		maxDebounce: 200,
+		maxDebounce: opts.maxDebounce ?? 200,
 		unloadImmediately: true,
 		extensions: [collab, http]
 	});

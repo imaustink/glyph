@@ -563,6 +563,37 @@ describe('epochs', () => {
 		expect(api.latest(PAGE) ? JSON.stringify(api.latest(PAGE)) : '').not.toContain('lost to the restore');
 	});
 
+	it('a schema upgrade does not reseed over another replica\'s unappended edits [DI-16]', async () => {
+		// Rolling deploy: a replica of the older build still has the note open,
+		// and its editor's latest edits are waiting out the store debounce.
+		// The first new-build editor, on a new replica, wants to re-seed the
+		// document for the new schema. Doing so replaces the epoch under the
+		// old replica: its append fails, it evicts, and those edits are gone.
+		const old = await startServer(persistence, api, { fingerprint: 'old-build', debounce: 1500, maxDebounce: 1500 });
+		try {
+			const alice = open({ user: 'alice', fingerprint: 'old-build' }, old);
+			await alice.synced();
+			alice.fragment.insert(alice.fragment.length, [paragraph('typed on the old build')]);
+			await sleep(100); // not yet appended by the old replica
+
+			const bob = open({ user: 'bob' }); // new build, new replica
+			await sleep(2000); // long enough for the old replica to have persisted
+			expect(alice.closeReasons).not.toContain(CollabReason.Reset);
+			expect(textOf(persistence.replay(PAGE))).toContain('typed on the old build');
+			bob.destroy();
+
+			// Once the old build's editor has gone, the upgrade goes ahead —
+			// and carries the edits over.
+			alice.destroy();
+			await sleep(300);
+			const later = open({ user: 'bob' });
+			await later.synced();
+			expect(textOf(later.doc)).toContain('typed on the old build');
+		} finally {
+			await old.stop();
+		}
+	});
+
 	it('re-seeds through JSON when the stored log predates the current schema', async () => {
 		const alice = open({ user: 'alice' });
 		await alice.synced();
