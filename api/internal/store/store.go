@@ -85,8 +85,8 @@ type PageStore interface {
 
 	// UpdateFieldsMovingOrg is UpdateFields for a write that changes p's org
 	// to p.OrgID (nil = personal): in the same transaction, under the
-	// tree-move lock, it moves p's descendants and the tasks sourced from
-	// any of them to that org. It returns ErrSubtreeNotOwned, changing
+	// tree-move lock, it moves p's descendants and the tasks sourced from,
+	// or on the folder board of, any of them to that org. It returns ErrSubtreeNotOwned, changing
 	// nothing, if the subtree holds a page not owned by p.UserID, and on any
 	// other failure (ErrCycle included) changes nothing either. Access
 	// control is the caller's.

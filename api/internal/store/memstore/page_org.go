@@ -12,7 +12,8 @@ import (
 
 // UpdateFieldsMovingOrg mirrors the Postgres implementation: it refuses a
 // subtree holding another owner's page (ErrSubtreeNotOwned) and otherwise
-// moves the page, its descendants and the tasks sourced from them to
+// moves the page, its descendants and their tasks (sourced from them or on
+// their folder boards) to
 // p.OrgID and writes the page's fields, all under the one lock, so a failed
 // write (ErrCycle) changes no org.
 func (s *pageStore) UpdateFieldsMovingOrg(_ context.Context, p *model.Page, fields []string) (*model.Page, error) {
@@ -43,18 +44,28 @@ func (s *pageStore) UpdateFieldsMovingOrg(_ context.Context, p *model.Page, fiel
 		pg.OrgID = copyUUIDPtr(p.OrgID)
 		pg.UpdatedAt = now
 	}
+	inSubtree := func(t *model.Task) bool {
+		return (t.SourcePageID != nil && subtree[*t.SourcePageID]) || (t.FolderID != nil && subtree[*t.FolderID])
+	}
 	for _, t := range s.r.tasks {
-		if t.SourcePageID != nil && subtree[*t.SourcePageID] {
+		if inSubtree(t) && !sameUUIDPtr(t.OrgID, p.OrgID) {
 			t.OrgID = copyUUIDPtr(p.OrgID)
 			t.UpdatedAt = now
 		}
 	}
 	for _, d := range s.r.deletedTasks {
-		if d.task.SourcePageID != nil && subtree[*d.task.SourcePageID] {
+		if inSubtree(d.task) {
 			d.task.OrgID = copyUUIDPtr(p.OrgID)
 		}
 	}
 	return s.updateFieldsLocked(p, fields)
+}
+
+func sameUUIDPtr(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func copyUUIDPtr(id *uuid.UUID) *uuid.UUID {

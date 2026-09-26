@@ -12,10 +12,12 @@ import (
 
 // UpdateFieldsMovingOrg is UpdateFields for a write that changes the page's
 // org to p.OrgID (nil = the personal workspace). A node's workspace is its
-// subtree's, so the page's descendants and every task sourced from any of
-// them move too. Changing only the root's org left the children and the
-// notes' tasks in the old workspace: visible to (and editable by) the old
-// org, and invisible to the new one.
+// subtree's, so the page's descendants move too, with every task sourced
+// from any of them or placed on one of their folder boards (folder_id), as
+// Delete matches them. Changing only the root's org left the children and
+// their tasks in the old workspace: visible to (and editable by) the old
+// org, and invisible to the new one. Lanes need nothing: they carry no org
+// (migration 000008 dropped lanes.org_id) and follow their folder.
 //
 // Like Delete, it refuses (ErrSubtreeNotOwned) a subtree holding pages owned
 // by anyone other than the root's owner: editor shares let other users
@@ -84,7 +86,7 @@ func (s *pgPageStore) UpdateFieldsMovingOrg(ctx context.Context, p *model.Page, 
 			RETURNING id
 		)
 		UPDATE tasks SET org_id = $2, updated_at = NOW()
-		WHERE source_page_id IN (SELECT id FROM moved_pages)
+		WHERE (source_page_id IN (SELECT id FROM moved_pages) OR folder_id IN (SELECT id FROM moved_pages))
 		  AND org_id IS DISTINCT FROM $2`, p.ID, p.OrgID,
 	); err != nil {
 		return nil, fmt.Errorf("page org move — cascade: %w", err)
