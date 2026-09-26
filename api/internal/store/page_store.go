@@ -187,17 +187,27 @@ func (s *pgPageStore) Update(ctx context.Context, p *model.Page) (*model.Page, e
 // request sent needs no read and no lock: each UPDATE is atomic, and fields
 // it doesn't name keep whatever the other writer committed.
 func (s *pgPageStore) UpdateFields(ctx context.Context, p *model.Page, fields []string) (*model.Page, error) {
-	triggerJSON, err := marshalNullableJSON(p.TodoTrigger)
+	q, args, parent, err := pageUpdateFieldsQuery(p, fields)
 	if err != nil {
 		return nil, err
+	}
+	return s.writeWithParent(ctx, p.ID, parent, q, args...)
+}
+
+// pageUpdateFieldsQuery builds UpdateFields' single-row UPDATE (returning
+// pageColumns). parent is the new parent_id when the write sets one, i.e.
+// when the write needs the cycle check.
+func pageUpdateFieldsQuery(p *model.Page, fields []string) (q string, args []any, parent *uuid.UUID, err error) {
+	triggerJSON, err := marshalNullableJSON(p.TodoTrigger)
+	if err != nil {
+		return "", nil, nil, err
 	}
 	if p.Priority == "" {
 		p.Priority = model.PriorityNone
 	}
-	args := []any{p.ID, p.UserID}
+	args = []any{p.ID, p.UserID}
 	sets := make([]string, 0, len(fields)+1)
 	seen := map[string]bool{}
-	var parent *uuid.UUID
 	set := func(col string, v any) {
 		args = append(args, v)
 		sets = append(sets, fmt.Sprintf("%s=$%d", col, len(args)))
@@ -228,10 +238,10 @@ func (s *pgPageStore) UpdateFields(ctx context.Context, p *model.Page, fields []
 		}
 	}
 	sets = append(sets, "updated_at=NOW()")
-	q := `UPDATE pages SET ` + strings.Join(sets, ", ") + `
+	q = `UPDATE pages SET ` + strings.Join(sets, ", ") + `
 		  WHERE id=$1 AND user_id=$2
 		  RETURNING ` + pageColumns
-	return s.writeWithParent(ctx, p.ID, parent, q, args...)
+	return q, args, parent, nil
 }
 
 // pageTreeMoveLockSQL serialises every write that sets a page's parent, so

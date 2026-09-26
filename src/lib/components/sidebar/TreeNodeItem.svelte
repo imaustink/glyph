@@ -40,8 +40,8 @@
   async function handleFolderVisibilityChange(newOrgId: string | null, newIsPrivate: boolean) {
     try {
       await pagesStore.updateNode(node.id, { orgId: newOrgId, isPrivate: newIsPrivate });
-    } catch {
-      notificationsStore.error('Failed to update visibility.');
+    } catch (err) {
+      notificationsStore.error(apiErrorMessage(err, 'Failed to update visibility.'));
     }
   }
 
