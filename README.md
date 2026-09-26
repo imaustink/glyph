@@ -66,6 +66,18 @@ The full stack includes the **collab service** (realtime collaborative editing),
 | localStorage | Clear browser storage (DevTools → Application → Local Storage → Clear all) |
 | Postgres | `docker compose … down -v` then `up` again (drops the volume; migrations re-run on next start) |
 
+## Container images
+
+CI publishes images to public Docker Hub repositories for pull requests from this repo and for every merge to `main`:
+
+| Image | Docker Hub |
+|---|---|
+| Frontend (SvelteKit, API mode) | [`docker.io/blackmarket/glyph-frontend`](https://hub.docker.com/r/blackmarket/glyph-frontend) |
+| Go API | [`docker.io/blackmarket/glyph-api`](https://hub.docker.com/r/blackmarket/glyph-api) |
+| Collab service | [`docker.io/blackmarket/glyph-collab`](https://hub.docker.com/r/blackmarket/glyph-collab) |
+
+Images are built for **linux/arm64** and tagged with the git tree hash of the commit they were built from (`git rev-parse HEAD^{tree}`); there is no `latest` tag. These are the default repositories in the Helm chart (`helm/glyph/values.yaml`).
+
 ## Desktop app
 
 Glyph also ships as a native desktop app for macOS and Linux (`src-tauri/`) — a thin window that connects to your self-hosted Glyph server, with automatic updates.
