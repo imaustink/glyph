@@ -42,6 +42,9 @@ type Registry struct {
 	// deletedTasks holds soft-deleted tasks. Keeping them out of `tasks`
 	// hides them from every read path without each one needing a check.
 	deletedTasks map[uuid.UUID]deletedTask
+	// titleRenamedAt mirrors tasks.title_renamed_at: when a note task was
+	// last renamed from outside its note.
+	titleRenamedAt map[uuid.UUID]time.Time
 
 	collab map[uuid.UUID]*collabDoc
 
@@ -68,6 +71,7 @@ func (r *Registry) init() {
 	r.versionSeq = 0
 	r.tasks = make(map[uuid.UUID]*model.Task)
 	r.deletedTasks = make(map[uuid.UUID]deletedTask)
+	r.titleRenamedAt = make(map[uuid.UUID]time.Time)
 	r.collab = make(map[uuid.UUID]*collabDoc)
 	r.lanes = make(map[uuid.UUID]*model.Lane)
 	r.templates = make(map[uuid.UUID]*model.Template)
@@ -1073,7 +1077,7 @@ func (s *taskStore) Update(_ context.Context, t *model.Task) (*model.Task, error
 
 // Patch mirrors the Postgres implementation: read, modify and write under
 // the lock.
-func (s *taskStore) Patch(_ context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error) (*model.Task, error) {
+func (s *taskStore) Patch(_ context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error, opts ...store.TaskPatchOptions) (*model.Task, error) {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
 	existing, ok := s.r.tasks[id]
@@ -1090,9 +1094,21 @@ func (s *taskStore) Patch(_ context.Context, id, ownerID uuid.UUID, fn func(*mod
 	}
 	t.CreatedAt = existing.CreatedAt
 	t.UpdatedAt = time.Now()
+	if store.IsExternalRename(opts, existing.Title, t) {
+		s.r.titleRenamedAt[id] = t.UpdatedAt
+	}
 	stored := cloneTask(t)
 	s.r.tasks[id] = stored
 	return cloneTask(stored), nil
+}
+
+// TitleRenamedAt reports when the task was last renamed from outside its
+// note (tasks.title_renamed_at). For tests.
+func (s *taskStore) TitleRenamedAt(id uuid.UUID) (time.Time, bool) {
+	s.r.mu.RLock()
+	defer s.r.mu.RUnlock()
+	at, ok := s.r.titleRenamedAt[id]
+	return at, ok
 }
 
 func (s *taskStore) Delete(_ context.Context, id, userID uuid.UUID) error {

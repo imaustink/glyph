@@ -89,6 +89,27 @@ type PageStore interface {
 	SetSubtreeOrg(ctx context.Context, pageID uuid.UUID, orgID *uuid.UUID) error
 }
 
+// TaskPatchOptions qualify a TaskStore.Patch.
+type TaskPatchOptions struct {
+	// ExternalTitle says a title change in this patch was made outside the
+	// task's note (the task page, MCP, an API client) rather than typed in
+	// its bullet. If the patch changes a note task's title, the store then
+	// records when (tasks.title_renamed_at, from the database clock), so the
+	// collab service can put the new title into the bullet when the note is
+	// next loaded (DI-29).
+	ExternalTitle bool
+}
+
+// IsExternalRename reports whether a patch that turned before into after is a
+// rename from outside the note under opts.
+func IsExternalRename(opts []TaskPatchOptions, before string, after *model.Task) bool {
+	external := false
+	for _, o := range opts {
+		external = external || o.ExternalTitle
+	}
+	return external && after.Title != before && after.SourcePageID != nil && after.SourceNodeID != nil
+}
+
 // TaskStore handles task persistence.
 type TaskStore interface {
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]*model.Task, error)
@@ -119,7 +140,7 @@ type TaskStore interface {
 	// field Update writes and also UserID (re-owning the task); an error from
 	// fn aborts without writing. ErrNotFound if the task is gone or no
 	// longer owned by ownerID.
-	Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error) (*model.Task, error)
+	Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error, opts ...TaskPatchOptions) (*model.Task, error)
 	Upsert(ctx context.Context, t *model.Task) (*model.Task, error)
 	// Delete soft-deletes a task.
 	Delete(ctx context.Context, id, userID uuid.UUID) error

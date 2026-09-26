@@ -42,6 +42,28 @@ func (h *TaskHandler) notifyStatusChange(c *gin.Context, before model.TaskStatus
 	}
 }
 
+// ChangeSourceHeader marks where a request's change comes from. The editor
+// sends "bullet" (ChangeSourceBullet) with the titles it derives from a
+// bullet's text: those are not renames, and must not be echoed back into the
+// note, where the bullet may already hold newer text. A title change without
+// it — the task page, MCP update_task, any other client — is a rename from
+// outside the note (DI-29).
+const (
+	ChangeSourceHeader = "X-Glyph-Change-Source"
+	ChangeSourceBullet = "bullet"
+)
+
+// notifyTitleChange tells open copies of the note about a task renamed from
+// outside it, if the title changed and the task comes from a bullet.
+func (h *TaskHandler) notifyTitleChange(c *gin.Context, external bool, before string, task *model.Task) {
+	if h.Collab == nil || !external || task == nil || task.Title == before || task.SourcePageID == nil || task.SourceNodeID == nil {
+		return
+	}
+	if err := h.Collab.TaskTitleChanged(c.Request.Context(), *task.SourcePageID, *task.SourceNodeID, task.Title); err != nil {
+		slog.Warn("could not notify collab service of task title", "task_id", task.ID, "err", err)
+	}
+}
+
 // resolveSourcePage loads the page a task is (to be) created from and checks
 // that userID may edit it. On failure it writes the response and returns ok
 // = false.
@@ -334,9 +356,14 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	}
 	// Merge the patch into the row as it is under the lock, not into the copy
 	// read above: a concurrent PATCH to another field must not be undone.
-	var statusBefore model.TaskStatus
+	var (
+		statusBefore model.TaskStatus
+		titleBefore  string
+	)
+	externalTitle := c.GetHeader(ChangeSourceHeader) != ChangeSourceBullet
 	task, err := h.Tasks.Patch(c.Request.Context(), id, existing.UserID, func(t *model.Task) error {
 		statusBefore = t.Status
+		titleBefore = t.Title
 		req.ApplyTo(t)
 		// {"orgId": null} moves the task to the personal workspace.
 		if raw, present := keys["orgId"]; present && isJSONNull(raw) {
@@ -357,7 +384,7 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 			t.Link = nil
 		}
 		return nil
-	})
+	}, store.TaskPatchOptions{ExternalTitle: externalTitle})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			notFoundOrError(c, err)
@@ -371,6 +398,7 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 		return
 	}
 	h.notifyStatusChange(c, statusBefore, task)
+	h.notifyTitleChange(c, externalTitle, titleBefore, task)
 	c.JSON(http.StatusOK, task)
 }
 

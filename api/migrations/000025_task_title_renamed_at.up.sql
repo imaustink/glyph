@@ -1,0 +1,13 @@
+-- When a note task's title was last changed from outside its note: the task
+-- page, MCP update_task, any API client (DI-29). Titles the editor sends from
+-- the bullet's own text don't set it.
+--
+-- The collab service reads it when it loads a note's shared document: a task
+-- renamed after the document was last written has its title put into the
+-- bullet, since the note wasn't open to receive the rename live (and editors
+-- can't do it themselves without duplicating text). NULL: never renamed
+-- outside the note.
+--
+-- Additive: API and collab builds that predate it ignore it, and a collab
+-- build that starts before this migration has run skips the check.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS title_renamed_at TIMESTAMPTZ;

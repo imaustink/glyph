@@ -365,7 +365,7 @@ func (s *pgTaskStore) Update(ctx context.Context, t *model.Task) (*model.Task, e
 // Patch is the read-modify-write behind PATCH /tasks/:id, done under a row
 // lock: reading outside the lock let two PATCHes to different fields each
 // write back the other's field with its old value.
-func (s *pgTaskStore) Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error) (*model.Task, error) {
+func (s *pgTaskStore) Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error, opts ...TaskPatchOptions) (*model.Task, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("patch task — begin: %w", err)
@@ -379,6 +379,7 @@ func (s *pgTaskStore) Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(
 	if err != nil {
 		return nil, err
 	}
+	titleBefore := t.Title
 	if err := fn(t); err != nil {
 		return nil, err
 	}
@@ -386,15 +387,18 @@ func (s *pgTaskStore) Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(
 	if t.Link != nil {
 		linkJSON, _ = json.Marshal(t.Link)
 	}
+	// title_renamed_at comes from the database clock: the collab service
+	// compares it with its own log's write times.
 	out, err := scanTask(tx.QueryRow(ctx, `UPDATE tasks
 		  SET user_id=$1, title=$2, description=$3, status=$4, priority=$5, tags=$6,
 		      due_date=$7, source_page_id=$8, source_node_id=$9, link=$10, "order"=$11,
-		      org_id=$12, is_private=$13, folder_id=$14, updated_at=NOW()
+		      org_id=$12, is_private=$13, folder_id=$14, updated_at=NOW(),
+		      title_renamed_at = CASE WHEN $16 THEN NOW() ELSE title_renamed_at END
 		  WHERE id=$15
 		  RETURNING `+taskColumns,
 		t.UserID, t.Title, t.Description, t.Status, t.Priority, t.Tags,
 		t.DueDate, t.SourcePageID, t.SourceNodeID, linkJSON, t.Order,
-		t.OrgID, t.IsPrivate, t.FolderID, id,
+		t.OrgID, t.IsPrivate, t.FolderID, id, IsExternalRename(opts, titleBefore, t),
 	))
 	if err != nil {
 		return nil, mapUniqueViolation(err)
