@@ -3,8 +3,8 @@
 # frontend against Postgres. VITE_STORAGE_MODE is baked in at build time, so
 # local mode needs its own image and its own Deployment alongside the release.
 #
-# `__ORIGIN__` is substituted by scripts/test-e2e-k8s.sh with the host port it
-# forwards this Service to.
+# `__ORIGIN__` is substituted by scripts/test-e2e-k8s.sh with the origin the
+# suite reaches this app at through the Ingress below.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -94,3 +94,26 @@ spec:
   selector:
     app.kubernetes.io/name: glyph
     app.kubernetes.io/component: frontend-local
+---
+# No host: every request that does not name `localhost` (the chart's Ingress
+# for the api-mode app) lands here. The suite reaches it as 127.0.0.1, which
+# needs no DNS — and an Ingress host cannot be an IP address.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: glyph-frontend-local
+  labels:
+    app.kubernetes.io/name: glyph
+    app.kubernetes.io/component: frontend-local
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: glyph-frontend-local
+                port:
+                  name: http

@@ -2,7 +2,7 @@
 # scripts/test-e2e-k8s.sh — Run Playwright E2E tests against a local Kubernetes
 # cluster instead of the Docker Compose stack in scripts/test-e2e.sh.
 #
-# The cluster is ferry (https://github.com/imaustink/ferry) v0.9 or newer — a
+# The cluster is ferry (https://github.com/imaustink/ferry) v0.10 or newer — a
 # macOS/Apple silicon distribution that runs the control plane natively and
 # each pod in its own VM. Anything that speaks the Kubernetes API works,
 # though: point KUBECONFIG at another cluster and set FERRY=0 to skip the
@@ -16,16 +16,18 @@
 #      recreated, not precious), machines off, defaultRuntime ferry-vm (every
 #      pod its own VM on the Mac — the chart names no RuntimeClass).
 #      The cluster is left running between runs; see "Stopping it" below.
-#   2. Builds glyph-api / glyph-frontend-api / glyph-frontend-local /
+#   2. Enables ferry's Traefik addon, the cluster's Ingress controller.
+#   3. Builds glyph-api / glyph-frontend-api / glyph-frontend-local /
 #      glyph-collab into the node's image store (`ferry image build`, a
 #      buildkit pod — no Docker).
-#   3. Installs the CloudNativePG operator, which helm/glyph's Cluster needs.
-#   4. Installs the chart with e2e/k8s/values.e2e.yaml (collab on), plus the
-#      local-mode frontend from e2e/k8s/frontend-local.yaml and the
-#      same-origin edge proxy from e2e/k8s/edge.yaml.
-#   5. Forwards the Services to loopback ports and runs Playwright against
-#      them. Playwright's `reuseExistingServer` sees the forwards already
-#      listening and starts nothing of its own.
+#   4. Installs the CloudNativePG operator, which helm/glyph's Cluster needs.
+#   5. Installs the chart with e2e/k8s/values.e2e.yaml — collab and the
+#      chart's own Ingress on — plus the local-mode frontend and its Ingress
+#      from e2e/k8s/frontend-local.yaml.
+#   6. Runs Playwright through the Ingress: the api project at
+#      http://localhost:<port>, the local project at http://127.0.0.1:<port>.
+#      TEST_API_UI_URL / TEST_LOCAL_URL tell playwright.config.ts to start
+#      no servers of its own. Nothing is port-forwarded.
 #
 # Usage:
 #   ./scripts/test-e2e-k8s.sh            # both projects (local + api)
@@ -37,18 +39,23 @@
 #   KEEP=1           leave the namespace running after the tests (to debug)
 #   NAMESPACE=...    override the namespace (default: glyph-e2e)
 #   FERRY_PROFILE=.. the ferry profile to run in (default: glyph-e2e)
-#   FERRY=0          skip `ferry up` / `ferry image build`; bring your own
-#                    cluster and load the four :e2e images into it yourself
+#   FERRY=0          skip the ferry steps; bring your own cluster, Ingress
+#                    controller and the four :e2e images
+#   INGRESS_CLASS=.. the IngressClass to use (default: traefik)
+#   INGRESS_PORT=..  the port the Ingress controller answers on at localhost
+#                    (default: Traefik's node port with ferry, 80 without)
 #
 # Stopping it:
 #   FERRY_PROFILE=glyph-e2e ferry down           # stop; the next run resumes
 #   FERRY_PROFILE=glyph-e2e ferry down --purge   # and drop its data
 #
 # Using a different cluster (kind, k3d, Docker Desktop, a remote cluster):
-#   FERRY=0 KUBECONFIG=~/.kube/config ./scripts/test-e2e-k8s.sh
+#   FERRY=0 KUBECONFIG=~/.kube/config INGRESS_CLASS=nginx \
+#     ./scripts/test-e2e-k8s.sh
 #   …after building the images and loading them however that cluster expects
-#   (e.g. `kind load docker-image glyph-api:e2e`). Everything else — the
-#   operator, the chart, the port-forwards — is plain Kubernetes.
+#   (e.g. `kind load docker-image glyph-api:e2e`), with an Ingress controller
+#   reachable at localhost:$INGRESS_PORT. Everything else — the operator, the
+#   chart, the Ingresses — is plain Kubernetes.
 
 set -euo pipefail
 
@@ -61,7 +68,8 @@ NAMESPACE="${NAMESPACE:-glyph-e2e}"
 RELEASE="glyph"
 CNPG_VERSION="1.30.0"
 FERRY="${FERRY:-1}"
-FERRY_MIN_VERSION="0.9.0"
+FERRY_MIN_VERSION="0.10.0"
+INGRESS_CLASS="${INGRESS_CLASS:-traefik}"
 export FERRY_PROFILE="${FERRY_PROFILE:-glyph-e2e}"
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
@@ -81,8 +89,8 @@ if [[ "$FERRY" == "1" ]]; then
     echo "  curl -sfL https://get.ferry.kurpuis.com | FERRY_VERSION=v${FERRY_MIN_VERSION} sh -"
     exit 1
   }
-  # 0.9 is the first with `ferry init`/`ferry config` and RuntimeClasses, and
-  # the first whose memory-backed emptyDir is a real tmpfs.
+  # 0.9 brought `ferry init`/`ferry config`, RuntimeClasses and a real tmpfs
+  # for memory-backed emptyDirs; 0.10 the Traefik addon.
   ferry_version="$(ferry version | awk 'NR==1 {sub(/^v/, "", $2); print $2}')"
   if [[ "$(printf '%s\n%s\n' "$FERRY_MIN_VERSION" "$ferry_version" | sort -V | head -1)" != "$FERRY_MIN_VERSION" ]]; then
     echo "ferry $ferry_version is too old; this needs v$FERRY_MIN_VERSION or newer. Upgrade with:"
@@ -106,6 +114,8 @@ if [[ "$FERRY" == "1" ]]; then
   if ! kubectl get --raw /readyz >/dev/null 2>&1; then
     ferry up
   fi
+  # A no-op once enabled; it waits until Traefik actually serves.
+  ferry addons enable traefik
 fi
 
 kubectl cluster-info >/dev/null 2>&1 || {
@@ -142,22 +152,26 @@ if ! kubectl get deploy cnpg-controller-manager -n cnpg-system >/dev/null 2>&1; 
 fi
 kubectl -n cnpg-system rollout status deploy/cnpg-controller-manager --timeout=300s
 
-# ── Allocate host ports for this run ──────────────────────────────────────────
-# Same trick as scripts/test-e2e.sh: ask the OS for a free ephemeral port and
-# release it. Ports are picked before `helm install` because ORIGIN/FRONTEND_URL
-# are baked into the deployment's environment.
-free_port() {
-  node -e "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"
-}
-export TEST_API_PORT="$(free_port)"
-export TEST_LOCAL_PORT="$(free_port)"
-export TEST_API_UI_PORT="$(free_port)"
-export TEST_COLLAB_PORT="$(free_port)"
 
-API_UI_ORIGIN="http://localhost:$TEST_API_UI_PORT"
-LOCAL_ORIGIN="http://localhost:$TEST_LOCAL_PORT"
+# ── Ingress ───────────────────────────────────────────────────────────────────
+# ferry's Traefik answers on the Mac's port 80 — unless another ferry cluster
+# on this Mac already holds it, in which case it says PortInUse (as an Event,
+# nowhere a script can check reliably) and answers only on its node port. The
+# node port is in this profile's own range, so it is always ours: use it, and
+# a second cluster with Traefik on 80 can never quietly take the suite's
+# traffic.
+if [[ "$FERRY" == "1" && -z "${INGRESS_PORT:-}" ]]; then
+  INGRESS_PORT="$(kubectl -n traefik get svc traefik \
+    -o jsonpath='{.spec.ports[?(@.name=="web")].nodePort}')"
+fi
+INGRESS_PORT="${INGRESS_PORT:-80}"
 
-echo "▶ Ports: api=$TEST_API_PORT collab=$TEST_COLLAB_PORT local-ui=$TEST_LOCAL_PORT api-ui=$TEST_API_UI_PORT"
+# The api-mode app is the chart's Ingress for host `localhost`; the local-mode
+# app takes every other host. Neither name needs DNS or /etc/hosts.
+API_UI_ORIGIN="http://localhost:$INGRESS_PORT"
+LOCAL_ORIGIN="http://127.0.0.1:$INGRESS_PORT"
+
+echo "▶ Ingress: api-ui=$API_UI_ORIGIN local-ui=$LOCAL_ORIGIN"
 
 # ── Deploy ────────────────────────────────────────────────────────────────────
 # The chart reads migrations from helm/glyph/migrations (gitignored); keep it in
@@ -167,44 +181,12 @@ cp -r api/migrations helm/glyph/migrations
 
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-echo "▶ Installing chart…"
-helm upgrade --install "$RELEASE" helm/glyph \
-  -n "$NAMESPACE" \
-  -f e2e/k8s/values.e2e.yaml \
-  --set "frontend.origin=$API_UI_ORIGIN" \
-  --set "api.frontendUrl=$API_UI_ORIGIN" \
-  --set "collab.allowedOrigins=$API_UI_ORIGIN" \
-  --wait --timeout 10m
-
-echo "▶ Deploying edge proxy…"
-kubectl apply -n "$NAMESPACE" -f e2e/k8s/edge.yaml >/dev/null
-# nginx reads its config once, so a namespace kept from an earlier run
-# (KEEP=1) would go on serving the old one.
-kubectl -n "$NAMESPACE" rollout restart deploy/glyph-edge >/dev/null
-kubectl -n "$NAMESPACE" rollout status deploy/glyph-edge --timeout=5m
-
-echo "▶ Deploying local-mode frontend…"
-sed "s|__ORIGIN__|$LOCAL_ORIGIN|" e2e/k8s/frontend-local.yaml | kubectl apply -n "$NAMESPACE" -f - >/dev/null
-kubectl -n "$NAMESPACE" rollout status deploy/glyph-frontend-local --timeout=5m
-
-# ── Port-forward ──────────────────────────────────────────────────────────────
-# kubectl port-forward drops its tunnel on an upstream reset, which a 20-minute
-# suite will hit. Each forward runs in a respawn loop and is torn down on exit.
-PF_PIDS=()
-
 cleanup() {
   # The EXIT trap's own status becomes the script's status, so a hiccup while
   # tearing down would otherwise mask (or invent) a test failure.
   local status=$?
-  for pid in "${PF_PIDS[@]:-}"; do
-    # Kill the respawn loop first, then the kubectl it is currently supervising
-    # — killing only the subshell leaves an orphaned port-forward holding the
-    # port.
-    kill "$pid" 2>/dev/null || true
-    pkill -P "$pid" 2>/dev/null || true
-  done
   if [[ "${KEEP:-}" == "1" ]]; then
-    echo "▶ KEEP=1 — namespace $NAMESPACE left running."
+    echo "▶ KEEP=1 — namespace $NAMESPACE left running at $API_UI_ORIGIN and $LOCAL_ORIGIN."
     echo "  Clean up with: helm uninstall $RELEASE -n $NAMESPACE && kubectl delete ns $NAMESPACE"
   else
     echo "▶ Tearing down ${NAMESPACE}…"
@@ -215,63 +197,43 @@ cleanup() {
 }
 trap cleanup EXIT
 
-forward() {
-  local svc="$1" host_port="$2" svc_port="$3"
-  (
-    # Kill the kubectl this loop is supervising when the loop itself is
-    # signalled. Without the trap, terminating the subshell just reparents
-    # kubectl to init and it keeps holding the port after the run.
-    kpid=""
-    trap 'kill "$kpid" 2>/dev/null; exit 0' TERM INT
-    while true; do
-      kubectl -n "$NAMESPACE" port-forward "svc/$svc" "$host_port:$svc_port" >/dev/null 2>&1 &
-      kpid=$!
-      wait "$kpid" || true
-      sleep 1
-    done
-  ) &
-  PF_PIDS+=($!)
-}
+echo "▶ Installing chart…"
+helm upgrade --install "$RELEASE" helm/glyph \
+  -n "$NAMESPACE" \
+  -f e2e/k8s/values.e2e.yaml \
+  --set "ingress.className=$INGRESS_CLASS" \
+  --set "frontend.origin=$API_UI_ORIGIN" \
+  --set "api.frontendUrl=$API_UI_ORIGIN" \
+  --set "collab.allowedOrigins=$API_UI_ORIGIN" \
+  --wait --timeout 10m
 
-wait_for_port() {
-  local port="$1" name="$2"
+echo "▶ Deploying local-mode frontend…"
+sed -e "s|__ORIGIN__|$LOCAL_ORIGIN|" -e "s|ingressClassName: traefik|ingressClassName: $INGRESS_CLASS|" \
+  e2e/k8s/frontend-local.yaml | kubectl apply -n "$NAMESPACE" -f - >/dev/null
+kubectl -n "$NAMESPACE" rollout status deploy/glyph-frontend-local --timeout=5m
+
+# Pods being Ready is not the same as the controller having picked up the
+# Ingresses, so wait until each app answers at its own origin.
+wait_for_url() {
+  local url="$1"
   for _ in $(seq 1 60); do
-    if nc -z 127.0.0.1 "$port" 2>/dev/null; then return 0; fi
+    if curl -fsS -o /dev/null "$url" 2>/dev/null; then return 0; fi
     sleep 1
   done
-  echo "timed out waiting for $name on port $port"
+  echo "timed out waiting for $url"
   return 1
 }
-
-echo "▶ Forwarding services…"
-forward glyph-api "$TEST_API_PORT" 8080
-wait_for_port "$TEST_API_PORT" "glyph-api"
-
-if [[ -z "$PROJECT" || "$PROJECT" == "api" ]]; then
-  # The browser goes through the edge proxy, so /collab is same-origin. The
-  # collab Service is forwarded as well only so Playwright's collab webServer
-  # entry finds its health check answered and starts nothing.
-  forward glyph-edge "$TEST_API_UI_PORT" 8080
-  wait_for_port "$TEST_API_UI_PORT" "glyph-edge"
-  forward glyph-collab "$TEST_COLLAB_PORT" 1235
-  wait_for_port "$TEST_COLLAB_PORT" "glyph-collab"
-fi
-
-if [[ -z "$PROJECT" || "$PROJECT" == "local" ]]; then
-  forward glyph-frontend-local "$TEST_LOCAL_PORT" 3000
-  wait_for_port "$TEST_LOCAL_PORT" "glyph-frontend-local"
-fi
+wait_for_url "$API_UI_ORIGIN/health"
+wait_for_url "$LOCAL_ORIGIN/"
 
 # ── Run Playwright ────────────────────────────────────────────────────────────
-# REUSE_API_SERVER makes the api webServer entry reuse whatever already listens
-# on TEST_API_PORT (the forward) instead of running `go run ./cmd/api` locally;
-# the two frontend entries reuse by default outside CI.
+export TEST_API_UI_URL="$API_UI_ORIGIN"
+export TEST_LOCAL_URL="$LOCAL_ORIGIN"
 EXIT_CODE=0
 if [[ -n "$PROJECT" ]]; then
-  REUSE_API_SERVER=true PLAYWRIGHT_PROJECT="$PROJECT" \
-    pnpm exec playwright test --project="$PROJECT" || EXIT_CODE=$?
+  PLAYWRIGHT_PROJECT="$PROJECT" pnpm exec playwright test --project="$PROJECT" || EXIT_CODE=$?
 else
-  REUSE_API_SERVER=true pnpm exec playwright test || EXIT_CODE=$?
+  pnpm exec playwright test || EXIT_CODE=$?
 fi
 
 exit "$EXIT_CODE"
