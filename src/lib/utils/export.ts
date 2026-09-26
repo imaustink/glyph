@@ -2,7 +2,8 @@
  * Data export/import utilities for localStorage mode.
  *
  * Exports all glyph:* keys as a single JSON blob that can be saved as a file.
- * Import restores from the same format.
+ * (There is deliberately no import: writing keys behind the repositories' backs
+ * would leave their in-memory caches and the open stores stale.)
  */
 
 const GLYPH_PREFIX = 'glyph:';
@@ -50,34 +51,6 @@ export function downloadExport(): void {
   // Defer revoke to give the browser time to start the download.
   // Revoking synchronously after click() can silently cancel the download in some browsers.
   setTimeout(() => URL.revokeObjectURL(url), 100);
-}
-
-/**
- * Import data from a previously exported JSON blob.
- * Overwrites any existing keys that conflict.
- */
-export function importData(exportData: ExportData): { imported: number; errors: string[] } {
-  if (exportData.version !== 1) {
-    return { imported: 0, errors: [`Unsupported export version: ${exportData.version}`] };
-  }
-
-  const errors: string[] = [];
-  let imported = 0;
-
-  for (const [key, value] of Object.entries(exportData.data)) {
-    if (!key.startsWith(GLYPH_PREFIX)) {
-      errors.push(`Skipped non-glyph key: ${key}`);
-      continue;
-    }
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-      imported++;
-    } catch (e) {
-      errors.push(`Failed to write ${key}: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
-  return { imported, errors };
 }
 
 /**

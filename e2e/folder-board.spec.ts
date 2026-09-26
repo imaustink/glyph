@@ -117,3 +117,28 @@ test.describe('Folder Board (api)', () => {
 	});
 });
 
+test.describe('Folder Board lane integrity [DI-25]', () => {
+	// Folder-board lane renames went through the global lanes store, which
+	// doesn't hold folder lanes in API mode, so the rename was silently dropped.
+	test('renaming a folder-board lane persists across reload', async ({ page }) => {
+		await createNewFolder(page);
+		await openFolderBoard(page);
+		await waitForBoardLoad(page);
+
+		await page.locator('.add-lane-btn').click();
+		const lane = page.locator('.lane').first();
+		await expect(lane).toBeVisible({ timeout: 8_000 });
+
+		await lane.locator('.lane-title').dblclick();
+		const input = lane.locator('.lane-title-input');
+		await input.fill('Renamed Lane');
+		await input.press('Enter');
+		await expect(lane.locator('.lane-title')).toHaveText('Renamed Lane');
+		await expect(page.locator('.toast')).toHaveCount(0);
+
+		await page.reload();
+		await waitForBoardLoad(page);
+		await expect(page.locator('.lane .lane-title').first()).toHaveText('Renamed Lane', { timeout: 10_000 });
+	});
+});
+

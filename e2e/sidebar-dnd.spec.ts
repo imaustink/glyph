@@ -157,6 +157,43 @@ test.describe('Drag and drop in sidebar', () => {
 		await expect(page.locator('.node-label:has-text("Second")')).toBeVisible();
 	});
 
+	// DI-13: the sibling reorder used to send a fractional `order`, which the
+	// API rejects (Order is an int), so in API mode the reorder silently
+	// snapped back. Reload proves the new order was persisted.
+	test('sibling reorder persists across reload [DI-13]', async ({ page }) => {
+		async function namePage(title: string) {
+			const input = page.locator('input.title-edit');
+			if ((await input.count()) === 0) await page.locator('.page-title').click();
+			await input.fill(title);
+			await input.press('Enter');
+			await expect(page.locator('.page-title')).toHaveText(title);
+		}
+
+		await namePage('Alpha');
+		await createNewPage(page);
+		await namePage('Bravo');
+		await createNewPage(page);
+		await namePage('Charlie');
+
+		const rootOrder = async () => {
+			const labels = await page.locator('.node-label').allInnerTexts();
+			return labels.map((l) => l.trim()).filter((l) => ['Alpha', 'Bravo', 'Charlie'].includes(l));
+		};
+		await expect.poll(rootOrder).toEqual(['Alpha', 'Bravo', 'Charlie']);
+
+		const rowFor = (title: string) =>
+			page.locator('.node-row', { has: page.locator(`.node-label:text-is("${title}")`) });
+
+		// Drop Charlie on Alpha → Charlie lands right after Alpha.
+		await robustDragTo(page, rowFor('Charlie'), rowFor('Alpha'));
+		await expect.poll(rootOrder).toEqual(['Alpha', 'Charlie', 'Bravo']);
+		await expect(page.locator('.toast')).toHaveCount(0);
+
+		await page.reload();
+		await expect(page.locator('.node-label:text-is("Alpha")')).toBeVisible({ timeout: 10_000 });
+		await expect.poll(rootOrder).toEqual(['Alpha', 'Charlie', 'Bravo']);
+	});
+
 	test('pages are draggable (draggable attribute present)', async ({ page }) => {
 		const nodeRow = page.locator('.node-row').first();
 		const draggable = await nodeRow.getAttribute('draggable');

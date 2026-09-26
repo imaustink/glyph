@@ -225,6 +225,45 @@ describe('templatesStore', () => {
       // Both are already in correct state, so no update calls needed
       expect(repo.update).not.toHaveBeenCalled();
     });
+
+    // [Low] setDefault used to fire one update per template in parallel; a
+    // partial failure left zero or two defaults while the store showed one.
+    it('uses a single batch write when the repository supports it [Low]', async () => {
+      const t1 = makeTemplate({ id: 't1', isDefault: true });
+      const t2 = makeTemplate({ id: 't2', isDefault: false });
+      const updateMany = vi.fn().mockResolvedValue(undefined);
+      repo = createMockRepo({ updateMany, getAll: vi.fn().mockResolvedValue([t1, t2]) });
+      store = createTemplatesStore(repo);
+      await store.load();
+
+      await store.setDefault('t2');
+
+      expect(updateMany).toHaveBeenCalledTimes(1);
+      const patches = updateMany.mock.calls[0][0] as Map<string, Partial<NoteTemplate>>;
+      expect(patches.get('t1')).toMatchObject({ isDefault: false });
+      expect(patches.get('t2')).toMatchObject({ isDefault: true });
+      expect(repo.update).not.toHaveBeenCalled();
+      expect(store.templates.filter((t) => t.isDefault).map((t) => t.id)).toEqual(['t2']);
+    });
+
+    it('reloads from the repository when one of the per-template writes fails [Low]', async () => {
+      const t1 = makeTemplate({ id: 't1', isDefault: true });
+      const t2 = makeTemplate({ id: 't2', isDefault: false });
+      // The server state after t2's write landed and t1's failed.
+      const afterPartial = [makeTemplate({ id: 't1', isDefault: true }), makeTemplate({ id: 't2', isDefault: true })];
+      repo = createMockRepo({
+        getAll: vi.fn().mockResolvedValueOnce([t1, t2]).mockResolvedValueOnce(afterPartial),
+        update: vi.fn().mockImplementation(async (id: string, patch: Partial<NoteTemplate>) => {
+          if (id === 't1') throw new Error('fail');
+          return { ...makeTemplate({ id }), ...patch };
+        })
+      });
+      store = createTemplatesStore(repo);
+      await store.load();
+
+      await expect(store.setDefault('t2')).rejects.toThrow('fail');
+      expect(store.templates).toEqual(afterPartial);
+    });
   });
 
   // ─── deleteTemplate ──────────────────────────────────────────────────────

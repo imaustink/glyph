@@ -55,7 +55,8 @@ describe('PageRepository', () => {
       const result = await repo.getContent('p1');
       expect(result).toEqual({
         ...content,
-        schemaVersion: expect.any(Number)
+        schemaVersion: expect.any(Number),
+        revision: 1
       });
     });
 

@@ -8,6 +8,7 @@
   import { autoSortProvider } from '$lib/sort/AutoSortProvider';
   import { fieldSortProvider } from '$lib/sort/FieldSortProvider';
   import { isValidTaskStatus } from '$lib/models/constants';
+  import { mergeTaskOrder } from '$lib/utils/laneOrder';
 
   import { dndzone, dragHandle, TRIGGERS, type DndEvent } from 'svelte-dnd-action';
   import TaskCard from './TaskCard.svelte';
@@ -16,13 +17,19 @@
     lane,
     filteredTasks,
     onconfig,
-    readonly = false
+    readonly = false,
+    onupdatelane = (id, patch) => lanesStore.updateLane(id, patch),
+    onupdatetask = (id, patch) => tasksStore.updateTask(id, patch)
   }: {
     lane: Lane;
     filteredTasks: Task[];
     onconfig: () => void;
     /** When true, hides add-task and disables lane config/drag for read-only viewers. */
     readonly?: boolean;
+    /** Persists a lane change. Defaults to the global lanes store; the folder board passes its own. */
+    onupdatelane?: (id: string, patch: Partial<Omit<Lane, 'id' | 'createdAt'>>) => Promise<void>;
+    /** Persists a task change from a drop. Defaults to the global tasks store; the folder board passes its own. */
+    onupdatetask?: (id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>) => Promise<void>;
   } = $props();
 
   let sortedTasks = $state<Task[]>([]);
@@ -164,7 +171,7 @@
         const targetStatus = inferStatusFromFilter(lane.filterSet);
         if (targetStatus && item.task.status !== targetStatus) {
           try {
-            await tasksStore.updateTask(taskId, { status: targetStatus });
+            await onupdatetask(taskId, { status: targetStatus });
             item.task = { ...item.task, status: targetStatus };
           } catch {
             notificationsStore.error('Failed to update task status.');
@@ -174,11 +181,14 @@
       }
     }
 
-    // Persist task order for manual sort mode
+    // Persist task order for manual sort mode. With a search or filter
+    // active only some tasks are visible, so merge their new order into the
+    // lane's full order instead of replacing it.
     if (lane.sortConfig.mode === 'manual') {
-      const newOrder = dndItems.map(item => extractTaskId(item.id));
+      const visibleOrder = dndItems.map(item => extractTaskId(item.id));
+      const newOrder = mergeTaskOrder(lane.sortConfig.taskOrder, visibleOrder);
       try {
-        await lanesStore.updateLane(lane.id, {
+        await onupdatelane(lane.id, {
           sortConfig: { ...lane.sortConfig, taskOrder: newOrder }
         });
       } catch {
@@ -198,7 +208,7 @@
     editingTitle = false;
     if (titleValue.trim()) {
       try {
-        await lanesStore.updateLane(lane.id, { title: titleValue.trim() });
+        await onupdatelane(lane.id, { title: titleValue.trim() });
       } catch {
         notificationsStore.error('Failed to rename lane.');
       }

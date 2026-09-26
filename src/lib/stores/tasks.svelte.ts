@@ -1,11 +1,12 @@
 import { repositories } from '$lib/storage/config';
 import { ApiError } from '$lib/storage/apiClient';
-import type { ITaskRepository } from '$lib/storage/interfaces';
+import type { ITaskRepository, WriteOptions } from '$lib/storage/interfaces';
 import type { FilterContext } from '$lib/storage/filterUtils';
 import type { Task, FilterSet, Priority, TaskStatus, TreeNode } from '$lib/models/types';
 import { now, makeTimestamps } from '$lib/utils/time';
 import { nextOrder } from '$lib/utils/order';
 import { uuid } from '$lib/utils/uuid';
+import { createOptimisticWriter } from './optimisticWriter';
 
 export function createTasksStore(injectedRepo?: ITaskRepository) {
   const repo = injectedRepo ?? repositories.tasks;
@@ -150,34 +151,23 @@ export function createTasksStore(injectedRepo?: ITaskRepository) {
     return tasks.filter((t) => t.sourcePageId && pageIds.has(t.sourcePageId));
   }
 
-  /** Per-task write serialization to prevent concurrent update race conditions. */
-  const _taskWriteLocks = new Map<string, Promise<void>>();
+  /**
+   * Per-task serialized, sequenced optimistic writes: a stale response never
+   * overwrites a newer patch, and a failure refetches instead of restoring a
+   * snapshot (see optimisticWriter).
+   */
+  const _writer = createOptimisticWriter<Task>({
+    get: (id) => _idIndex.get(id),
+    replace: (task) => setTasks(tasks.map((t) => (t.id === task.id ? task : t)))
+  });
 
-  async function updateTask(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Promise<void> {
-    // Optimistic update: apply immediately (synchronously) for responsive UI
-    const prev = _idIndex.get(id);
-    if (!prev) return;
-    const optimistic = { ...prev, ...patch, updatedAt: now() };
-    setTasks(tasks.map(t => t.id === id ? optimistic : t));
-
-    // Serialize the backend write per task ID to prevent concurrent overwrites
-    const prevLock = _taskWriteLocks.get(id) ?? Promise.resolve();
-    const current = (async () => {
-      await prevLock;
-      try {
-        const updated = await repo.update(id, { ...patch, updatedAt: now() });
-        if (updated) {
-          setTasks(tasks.map(t => t.id === id ? updated : t));
-        }
-      } catch (err) {
-        // Rollback on failure
-        setTasks(tasks.map(t => t.id === id ? prev : t));
-        throw err;
-      }
-    })();
-    // Keep the queue alive but don't let failures block future writes
-    _taskWriteLocks.set(id, current.catch(() => {}));
-    return current;
+  async function updateTask(
+    id: string,
+    patch: Partial<Omit<Task, 'id' | 'createdAt'>>,
+    opts?: WriteOptions
+  ): Promise<void> {
+    const full = { ...patch, updatedAt: now() };
+    return _writer.update(id, full, () => repo.update(id, full, opts), () => repo.getById(id));
   }
 
   async function deleteTask(id: string): Promise<void> {

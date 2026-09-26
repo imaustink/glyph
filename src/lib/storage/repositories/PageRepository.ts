@@ -1,6 +1,7 @@
 import { Repository } from '$lib/storage/Repository';
 import type { StorageAdapter, TreeNode, PageContent, ProseMirrorJSONNode } from '$lib/models/types';
 import { applyMigrations, CURRENT_SCHEMA_VERSION } from '$lib/editor/migrations';
+import { ApiError } from '$lib/storage/apiClient';
 
 /**
  * Atomic content storage format — a single localStorage key per page
@@ -12,6 +13,12 @@ interface ContentBlob {
   content: Record<string, unknown>;
   updatedAt: string;
   schemaVersion: number;
+  /**
+   * Incremented on every content save, mirroring the API's revision so two
+   * tabs can't silently overwrite each other's edits. Absent on blobs written
+   * before revisions existed (treated as 0).
+   */
+  revision?: number;
 }
 
 /**
@@ -59,7 +66,8 @@ export class PageRepository extends Repository<TreeNode> {
         pageId,
         content,
         updatedAt: blob.updatedAt,
-        schemaVersion: blob.schemaVersion ?? 0
+        schemaVersion: blob.schemaVersion ?? 0,
+        revision: blob.revision ?? 0
       };
       // Clean up any leftover legacy meta key
       /* c8 ignore next -- remove() never throws in tests */
@@ -67,7 +75,7 @@ export class PageRepository extends Repository<TreeNode> {
       // Persist the parsed object so future reads don't re-parse
       if (legacyStringMigrated) {
         /* c8 ignore next -- stored.schemaVersion is always set from blob.schemaVersion ?? 0 above */
-        await this.writeContentAtomic(stored.pageId, stored.content, stored.updatedAt, stored.schemaVersion ?? 0);
+        await this.writeContentAtomic(stored.pageId, stored.content, stored.updatedAt, stored.schemaVersion ?? 0, stored.revision);
       }
       return this.migrateIfNeeded(stored);
     }
@@ -93,7 +101,8 @@ export class PageRepository extends Repository<TreeNode> {
         pageId,
         content,
         updatedAt: meta.updatedAt,
-        schemaVersion: meta.schemaVersion ?? 0
+        schemaVersion: meta.schemaVersion ?? 0,
+        revision: 0
       };
       // Migrate to new atomic format on read
       /* c8 ignore next -- stored.schemaVersion is always set from meta.schemaVersion ?? 0 above */
@@ -117,24 +126,49 @@ export class PageRepository extends Repository<TreeNode> {
     // Migrate to new atomic format on read
     /* c8 ignore next -- legacy.schemaVersion is always set from the blob or ?? 0 above */
     await this.writeContentAtomic(legacy.pageId, legacy.content, legacy.updatedAt, legacy.schemaVersion ?? 0);
-    return this.migrateIfNeeded(legacy);
+    return this.migrateIfNeeded({ ...legacy, revision: 0 });
   }
 
-  async saveContent(content: PageContent): Promise<void> {
+  /**
+   * Save content. With `expectedRevision` set, the save is refused with the
+   * same 409 `stale_revision` error the API returns when the stored revision
+   * has moved on (another tab saved since this one read), so the editor
+   * reloads instead of overwriting that tab's edits. Returns the stored
+   * record with its new revision.
+   */
+  async saveContent(content: PageContent): Promise<PageContent> {
+    const current = await this.contentAdapter.get<ContentBlob>(this.contentKey(content.pageId));
+    const currentRevision =
+      current && typeof current === 'object' && typeof current.revision === 'number' ? current.revision : 0;
+    if (content.expectedRevision !== undefined && current && content.expectedRevision !== currentRevision) {
+      throw new ApiError(409, 'PUT', `localStorage:${this.contentKey(content.pageId)}`, {
+        code: 'stale_revision',
+        error: 'content changed since it was read'
+      });
+    }
+    const revision = currentRevision + 1;
     await this.writeContentAtomic(
       content.pageId,
       content.content,
       content.updatedAt,
-      CURRENT_SCHEMA_VERSION
+      CURRENT_SCHEMA_VERSION,
+      revision
     );
+    return {
+      pageId: content.pageId,
+      content: content.content,
+      updatedAt: content.updatedAt,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      revision
+    };
   }
 
   /**
    * Atomic single-key write: content + metadata in one localStorage call.
    * Also removes legacy meta key if present.
    */
-  private async writeContentAtomic(pageId: string, content: Record<string, unknown>, updatedAt: string, schemaVersion: number): Promise<void> {
-    const blob: ContentBlob = { content, updatedAt, schemaVersion };
+  private async writeContentAtomic(pageId: string, content: Record<string, unknown>, updatedAt: string, schemaVersion: number, revision?: number): Promise<void> {
+    const blob: ContentBlob = { content, updatedAt, schemaVersion, ...(revision !== undefined ? { revision } : {}) };
     await this.contentAdapter.set(this.contentKey(pageId), blob);
     // Clean up legacy meta key (best-effort)
     /* c8 ignore next -- remove() never throws in tests */
@@ -152,7 +186,7 @@ export class PageRepository extends Repository<TreeNode> {
           content: migrated as unknown as Record<string, unknown>,
           schemaVersion: version,
         };
-        await this.writeContentAtomic(stored.pageId, upgraded.content, upgraded.updatedAt, version);
+        await this.writeContentAtomic(stored.pageId, upgraded.content, upgraded.updatedAt, version, stored.revision);
         return upgraded;
       } catch (err) {
         console.error(
@@ -180,27 +214,44 @@ export class PageRepository extends Repository<TreeNode> {
   /**
    * Delete a subtree (root node + all descendants) in a single batch.
    *
-   * The tree nodes are removed in one read-modify-write cycle (atomic at the
-   * localStorage level). Content keys are removed individually — if they fail,
-   * we get orphaned content keys but no orphaned tree nodes, which is the
-   * safer failure mode.
+   * The descendants are worked out from storage as it is now, inside the
+   * serialized write, not only from `descendantIds`: the caller's list comes
+   * from its in-memory tree, which misses children another tab created since,
+   * and those would otherwise be left orphaned. Tree nodes are removed in one
+   * read-modify-write cycle; content keys are removed individually afterwards
+   * (a failure there leaves orphaned content, never orphaned tree nodes).
    *
    * @param id           - The root node to delete.
-   * @param descendantIds - All descendant IDs collected before calling this method.
+   * @param descendantIds - Descendants the caller knows about.
+   * @returns Every id that was deleted.
    */
-  async deleteSubtree(id: string, descendantIds: string[]): Promise<void> {
-    const allIds = [...descendantIds, id];
-    // Remove content keys. Each is a separate localStorage key — errors here
-    // leave orphaned content but don't corrupt the tree, so we don't abort.
-    for (const pageId of allIds) {
+  async deleteSubtree(id: string, descendantIds: string[]): Promise<string[]> {
+    const deleted = await this.serializeWrite(async () => {
+      const items = await this.readFresh();
+      const ids = new Set([id, ...descendantIds]);
+      const visited = new Set<string>([id]);
+      const queue = [id];
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        for (const n of items) {
+          if (n.parentId === current && !visited.has(n.id)) {
+            visited.add(n.id);
+            ids.add(n.id);
+            queue.push(n.id);
+          }
+        }
+      }
+      await this.writeAll(items.filter((n) => !ids.has(n.id)));
+      return [...ids];
+    });
+    for (const pageId of deleted) {
       try {
         await this.deleteContent(pageId);
       } catch {
         // Best-effort content removal; tree integrity takes priority.
       }
     }
-    // Single atomic batch delete from the tree array.
-    await this.deleteMany(allIds);
+    return deleted;
   }
 
   getTree(nodes: TreeNode[]): TreeNode[] {

@@ -12,7 +12,7 @@
   import { evaluateTitleTemplate, evaluateContentTemplate } from '$lib/utils/titleTemplate';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { storageMode } from '$lib/storage/config';
-  import { API_BASE, handleAuthError } from '$lib/storage/apiClient';
+  import { API_BASE, handleAuthError, apiErrorMessage } from '$lib/storage/apiClient';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
   import { estimateStorageUsage, downloadExport } from '$lib/utils/export';
   import Sidebar from '$lib/components/sidebar/Sidebar.svelte';
@@ -72,11 +72,19 @@
       }
     }
 
-    // Seed defaults after all loads complete (idempotent)
-    await Promise.all([
+    // Seed defaults after all loads complete (idempotent). A refusal here
+    // (e.g. corrupt local data that must not be overwritten) is reported, not
+    // fatal.
+    const seeded = await Promise.allSettled([
       lanesStore.seedDefaults(),
       templatesStore.seedDefaults()
     ]);
+    for (const r of seeded) {
+      if (r.status === 'rejected') {
+        console.error('[layout] seeding defaults failed:', r.reason);
+        notificationsStore.error(apiErrorMessage(r.reason, 'Failed to set up default lanes and templates.'));
+      }
+    }
 
     // Check localStorage quota (local mode only) — drives the persistent banner
     if (storageMode === 'local') {
@@ -88,8 +96,12 @@
       if (pages.length === 0) {
         const template = templatesStore.defaultTemplate;
         const content = template?.content ? evaluateContentTemplate(template.content) : undefined;
-        const newPage = await pagesStore.createPage(null, 'Getting Started', content, template?.todoTrigger);
-        goto(`/notes/${newPage.id}`);
+        try {
+          const newPage = await pagesStore.createPage(null, 'Getting Started', content, template?.todoTrigger);
+          goto(`/notes/${newPage.id}`);
+        } catch (err) {
+          notificationsStore.error(apiErrorMessage(err, 'Failed to create a page.'));
+        }
       } else {
         goto(`/notes/${pages[0].id}`);
       }

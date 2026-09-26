@@ -1,5 +1,6 @@
 import { api } from '$lib/storage/apiClient';
 import type { FilterContext } from '$lib/storage/filterUtils';
+import type { WriteOptions } from '$lib/storage/interfaces';
 import type { Task, FilterSet } from '$lib/models/types';
 
 /**
@@ -18,8 +19,8 @@ export class ApiTaskRepository {
 		return api.post<Task>('/api/v1/tasks', item);
 	}
 
-	async update(id: string, patch: Partial<Omit<Task, 'id'>>): Promise<Task | null> {
-		return api.patch<Task>(`/api/v1/tasks/${id}`, patch);
+	async update(id: string, patch: Partial<Omit<Task, 'id'>>, opts?: WriteOptions): Promise<Task | null> {
+		return api.patch<Task>(`/api/v1/tasks/${id}`, patch, opts);
 	}
 
 	async delete(id: string): Promise<boolean> {
