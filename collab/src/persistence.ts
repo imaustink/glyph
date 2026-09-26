@@ -97,6 +97,23 @@ export interface Persistence {
 	releaseLease(pageId: string, holder: string, epoch: number): Promise<void>;
 	/** Append an update. Returns its seq, or null if the epoch is no longer current and attached. */
 	append(pageId: string, epoch: number, data: Uint8Array): Promise<number | null>;
+	/**
+	 * Append an update built from the latest log, holding the page's log
+	 * lock from reading it to committing: `build` gets the epoch's rows after
+	 * `afterSeq` (to apply before deciding) and returns the update to append,
+	 * or null for none. Two replicas making the same server edit therefore
+	 * run one after the other, and the second sees the first's row — so an
+	 * edit that must happen once (a task title put into its bullet: made
+	 * twice, the text would merge into a duplicate) happens once. Returns the
+	 * appended seq, null if `build` returned null, or 'stale' (build not
+	 * called) if the epoch is no longer current and attached.
+	 */
+	appendExclusive(
+		pageId: string,
+		epoch: number,
+		afterSeq: number,
+		build: (rows: StoredUpdate[]) => Uint8Array | null
+	): Promise<number | null | 'stale'>;
 	/** Updates in the epoch with seq > afterSeq, in seq order. */
 	fetchSince(pageId: string, epoch: number, afterSeq: number): Promise<StoredUpdate[]>;
 	/** Merge the epoch's log into one row. Returns the merged row's seq, or null if nothing to do. */
@@ -309,6 +326,33 @@ export class PgPersistence implements Persistence {
 			[pageId, epoch, Buffer.from(data)]
 		);
 		return rows.length ? Number(rows[0].seq) : null;
+	}
+
+	async appendExclusive(
+		pageId: string,
+		epoch: number,
+		afterSeq: number,
+		build: (rows: StoredUpdate[]) => Uint8Array | null
+	): Promise<number | null | 'stale'> {
+		return this.tx(async (c) => {
+			// The seq-order lock (see the header), held to commit.
+			const live = await c.query(
+				`SELECT 1 FROM page_collab_docs WHERE page_id = $1 AND epoch = $2 AND attached FOR UPDATE`,
+				[pageId, epoch]
+			);
+			if (live.rowCount === 0) return 'stale';
+			const { rows } = await c.query(
+				`SELECT seq, data FROM page_collab_updates WHERE page_id = $1 AND epoch = $2 AND seq > $3 ORDER BY seq`,
+				[pageId, epoch, afterSeq]
+			);
+			const update = build(rows.map(toStoredUpdate));
+			if (!update) return null;
+			const ins = await c.query(
+				`INSERT INTO page_collab_updates (page_id, epoch, data) VALUES ($1, $2, $3) RETURNING seq`,
+				[pageId, epoch, Buffer.from(update)]
+			);
+			return Number(ins.rows[0].seq);
+		});
 	}
 
 	async fetchSince(pageId: string, epoch: number, afterSeq: number): Promise<StoredUpdate[]> {

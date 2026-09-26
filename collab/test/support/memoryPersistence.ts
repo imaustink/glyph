@@ -153,6 +153,28 @@ export class MemoryPersistence implements Persistence {
 		return seq;
 	}
 
+	appendExclusive(
+		pageId: string,
+		epoch: number,
+		afterSeq: number,
+		build: (rows: StoredUpdate[]) => Uint8Array | null
+	): Promise<number | null | 'stale'> {
+		return this.locked(pageId, async () => {
+			await this.beforeAppend?.(pageId, epoch);
+			if (this.failAppends > 0) {
+				this.failAppends--;
+				throw new Error('simulated database outage');
+			}
+			const d = this.docs.get(pageId);
+			if (!d || d.epoch !== epoch || !d.attached) return 'stale';
+			const update = build(this.rowsFor(pageId, epoch, afterSeq));
+			if (!update) return null;
+			const seq = ++this.seq;
+			this.rows.push({ pageId, epoch, seq, data: update });
+			return seq;
+		});
+	}
+
 	async fetchSince(pageId: string, epoch: number, afterSeq: number): Promise<StoredUpdate[]> {
 		return this.rowsFor(pageId, epoch, afterSeq);
 	}

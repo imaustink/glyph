@@ -57,7 +57,7 @@ import {
 import type { Api, CollabSession } from './api.js';
 import type { Lease, Persistence, StoredPageContent } from './persistence.js';
 import { NotFoundError } from './persistence.js';
-import { inspect, repair, seedUpdate, setListItemStatus, toJSON, type ProseMirrorJSON } from './documentRules.js';
+import { inspect, repair, seedUpdate, setListItemStatus, setListItemText, toJSON, type ProseMirrorJSON } from './documentRules.js';
 import type { TaskStatus } from '$lib/models/types';
 import type { Logger } from './log.js';
 import { originAllowed } from './origin.js';
@@ -794,6 +794,78 @@ export class GlyphCollab implements Extension {
 		const changed = setListItemStatus(state.document, nodeId, status, REPAIR_ORIGIN);
 		if (changed) this.opts.log.info('applied task status to bullet', { pageId, nodeId, status });
 		return changed;
+	}
+
+	/**
+	 * A note task was renamed outside the editor (the task page, MCP, an API
+	 * client): put the title into its bullet in the live document, so every
+	 * open copy shows it and the next keystroke there doesn't push the stale
+	 * text back as the title (DI-29). Only the server makes this edit — editors
+	 * each making it would merge into duplicated text — and see writeTitles
+	 * for how replicas avoid making it twice. A note that isn't open picks the
+	 * rename up when it is next loaded. Resolves to whether anything changed.
+	 */
+	async onTaskTitle(pageId: string, nodeId: string, title: string): Promise<boolean> {
+		const state = this.docs.get(collabDocumentName(pageId));
+		if (!state || state.evicted || state.quarantined) return false;
+		const changed = await this.writeTitles(state, [{ nodeId, title }]);
+		if (changed) this.opts.log.info('applied task title to bullet', { pageId, nodeId });
+		return changed;
+	}
+
+	/**
+	 * Put task titles into their bullets, as one update appended to the log
+	 * under the page's log lock (Persistence.appendExclusive). The edit is
+	 * built from the log as it is inside that lock, after applying whatever
+	 * other replicas appended, on a scratch copy of the document; so when two
+	 * replicas holding the note both get the rename, the second finds the
+	 * title already there and writes nothing. The appended row reaches this
+	 * copy (and its editors) through the normal catch-up. Serialised with the
+	 * document's other persistence work. Best effort: on failure it logs and
+	 * resolves false.
+	 */
+	private writeTitles(state: DocState, titles: { nodeId: string; title: string }[]): Promise<boolean> {
+		const run = state.chain.then(() => this.writeTitlesOnce(state, titles));
+		state.chain = run.then(
+			() => {},
+			() => {}
+		);
+		return run.catch((err) => {
+			this.opts.log.warn('failed to apply task titles to bullets', { pageId: state.pageId, err });
+			return false;
+		});
+	}
+
+	private async writeTitlesOnce(state: DocState, titles: { nodeId: string; title: string }[]): Promise<boolean> {
+		if (state.evicted || state.quarantined) return false;
+		const seq = await this.opts.persistence.appendExclusive(state.pageId, state.epoch, state.lastSeq, (rows) => {
+			for (const row of rows) {
+				Y.applyUpdate(state.document, row.data, DB_ORIGIN);
+				state.lastSeq = Math.max(state.lastSeq, row.seq);
+			}
+			const scratch = new Y.Doc();
+			try {
+				Y.applyUpdate(scratch, Y.encodeStateAsUpdate(state.document));
+				const before = Y.encodeStateVector(scratch);
+				let changed = false;
+				for (const t of titles) changed = setListItemText(scratch, t.nodeId, t.title, null) || changed;
+				return changed ? Y.encodeStateAsUpdate(scratch, before) : null;
+			} finally {
+				scratch.destroy();
+			}
+		});
+		if (seq === 'stale') {
+			this.evict(state, CollabReason.Reset, 'epoch replaced');
+			return false;
+		}
+		if (seq === null) return false;
+		state.appendsSinceCompact++;
+		// Our own row, and anything that committed before it: applied as DB
+		// replays, broadcast to every editor, never re-appended.
+		await this.catchUpOnce(state);
+		// page_contents (search, the board, exports) gets the new text too.
+		void this.persist(state);
+		return true;
 	}
 
 	/**
