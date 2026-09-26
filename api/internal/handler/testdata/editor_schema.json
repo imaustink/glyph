@@ -1,0 +1,41 @@
+{
+	"nodes": {
+		"blockquote": [],
+		"bulletList": [],
+		"codeBlock": [
+			"language"
+		],
+		"doc": [],
+		"hardBreak": [],
+		"heading": [
+			"level"
+		],
+		"horizontalRule": [],
+		"listItem": [
+			"checked",
+			"nodeId",
+			"taskId",
+			"taskStatus"
+		],
+		"orderedList": [
+			"start",
+			"type"
+		],
+		"paragraph": [],
+		"text": []
+	},
+	"marks": {
+		"bold": [],
+		"code": [],
+		"italic": [],
+		"link": [
+			"class",
+			"href",
+			"rel",
+			"target",
+			"title"
+		],
+		"strike": [],
+		"underline": []
+	}
+}
