@@ -48,12 +48,64 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  # The image for this commit's content was usually built and pushed by
+  # ci.yml's build-and-push job when it ran on the PR that got merged —
+  # tagged by git tree hash rather than commit SHA, since the PR branch's
+  # commit SHA and this merge commit's SHA differ (unless every merge is
+  # a fast-forward), but the tree hash is identical on both as long as
+  # the file contents are unchanged. So deploy just references that tag.
+  #
+  # ...but not always: a PR from a fork gets no secrets on `pull_request`,
+  # so ci.yml skips build-and-push there and the tag is missing. Build it
+  # here instead, one job per image so they run in parallel. Fork code only
+  # ever reaches a registry credential after a maintainer has reviewed and
+  # merged it. The matrix must stay in sync with ci.yml's build-and-push so
+  # both paths produce the same image.
+  build-missing:
     if: github.repository == 'imaustink/glyph'
     runs-on: arc-runner-set
-    # Must match ci.yml's build-and-push: one repo, component as tag prefix.
-    env:
-      IMAGE_REPO: docker.io/blackmarket/glyph
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: frontend
+            dockerfile: Dockerfile
+            context: .
+            build-args: --build-arg VITE_STORAGE_MODE=api --build-arg VITE_API_URL=
+          - image: api
+            dockerfile: api/Dockerfile
+            context: api/
+          - image: collab
+            dockerfile: collab/Dockerfile
+            context: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker login
+        run: |
+          echo "$REGISTRY_PASSWORD" | docker login docker.io \
+            -u "$REGISTRY_USERNAME" --password-stdin
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build & push ${{ matrix.image }} if missing
+        run: |
+          ref="docker.io/blackmarket/glyph-${{ matrix.image }}:$(git rev-parse HEAD^{tree})"
+          if docker manifest inspect "$ref" >/dev/null 2>&1; then
+            echo "$ref already in registry"
+          else
+            echo "$ref missing — building"
+            docker build ${{ matrix.build-args }} \
+              -t "$ref" \
+              -f ${{ matrix.dockerfile }} ${{ matrix.context }}
+            docker push "$ref"
+          fi
+
+  deploy:
+    needs: build-missing
+    if: github.repository == 'imaustink/glyph'
+    runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
 
@@ -87,83 +139,25 @@ jobs:
           rm -rf helm/glyph/migrations
           cp -r api/migrations helm/glyph/migrations
 
-      # The image for this commit's content was usually built and pushed by
-      # ci.yml's build-and-push job when it ran on the PR that got merged —
-      # tagged by git tree hash rather than commit SHA, since the PR branch's
-      # commit SHA and this merge commit's SHA differ (unless every merge is
-      # a fast-forward), but the tree hash is identical on both as long as
-      # the file contents are unchanged. So deploy just references that tag.
       - name: Resolve image tag
         id: image
         run: echo "tag=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
 
-      - name: Docker login
-        run: |
-          echo "$REGISTRY_PASSWORD" | docker login docker.io \
-            -u "$REGISTRY_USERNAME" --password-stdin
-        env:
-          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
-          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
-
-      # ...but not always: a PR from a fork gets no secrets on `pull_request`,
-      # so ci.yml skips build-and-push there and the tag is missing. Build it
-      # here instead. Fork code only ever reaches a registry credential after
-      # a maintainer has reviewed and merged it. Build args must stay in sync
-      # with ci.yml's build-and-push so both paths produce the same image.
-      - name: Build & push missing images
-        run: |
-          tag=${{ steps.image.outputs.tag }}
-
-          if docker manifest inspect \
-            "$IMAGE_REPO:frontend-$tag" >/dev/null 2>&1; then
-            echo "frontend:$tag already in registry"
-          else
-            echo "frontend:$tag missing — building"
-            docker build \
-              --build-arg VITE_STORAGE_MODE=api \
-              --build-arg VITE_API_URL= \
-              -t "$IMAGE_REPO:frontend-$tag" \
-              -f Dockerfile .
-            docker push "$IMAGE_REPO:frontend-$tag"
-          fi
-
-          if docker manifest inspect \
-            "$IMAGE_REPO:api-$tag" >/dev/null 2>&1; then
-            echo "api:$tag already in registry"
-          else
-            echo "api:$tag missing — building"
-            docker build \
-              -t "$IMAGE_REPO:api-$tag" \
-              -f api/Dockerfile api/
-            docker push "$IMAGE_REPO:api-$tag"
-          fi
-
-          if docker manifest inspect \
-            "$IMAGE_REPO:collab-$tag" >/dev/null 2>&1; then
-            echo "collab:$tag already in registry"
-          else
-            echo "collab:$tag missing — building"
-            docker build \
-              -t "$IMAGE_REPO:collab-$tag" \
-              -f collab/Dockerfile .
-            docker push "$IMAGE_REPO:collab-$tag"
-          fi
-
       # collab.image.tag is set unconditionally; the collab Deployment only
       # exists once collab.enabled is turned on in the production values.
-      # The repository is set here too (overriding the production values) so
-      # it can't drift from the repo the images above were pushed to.
+      # The repositories are set here too (overriding the production values)
+      # so they can't drift from where build-missing / ci.yml pushed.
       - name: Helm upgrade
         run: |
           tag=${{ steps.image.outputs.tag }}
           helm upgrade glyph helm/glyph \
             -f homelab/kubernetes/helm/deployments/glyph/values-production.yaml \
-            --set frontend.image.repository="$IMAGE_REPO" \
-            --set frontend.image.tag="frontend-$tag" \
-            --set api.image.repository="$IMAGE_REPO" \
-            --set api.image.tag="api-$tag" \
-            --set collab.image.repository="$IMAGE_REPO" \
-            --set collab.image.tag="collab-$tag" \
+            --set frontend.image.repository=docker.io/blackmarket/glyph-frontend \
+            --set frontend.image.tag="$tag" \
+            --set api.image.repository=docker.io/blackmarket/glyph-api \
+            --set api.image.tag="$tag" \
+            --set collab.image.repository=docker.io/blackmarket/glyph-collab \
+            --set collab.image.tag="$tag" \
             -n glyph --timeout 5m
 
       - name: Rollout restart
