@@ -4,12 +4,14 @@
  * counter like the BIGSERIAL.
  */
 import * as Y from 'yjs';
-import type { CollabDocState, Lease, LoadedDoc, Persistence, Seeder, StoredUpdate } from '../../src/persistence.js';
+import type { CollabDocState, Lease, LoadedDoc, Persistence, Seeder, StoredUpdate, TaskTitle } from '../../src/persistence.js';
 import { NotFoundError } from '../../src/persistence.js';
 
 interface Row extends StoredUpdate {
 	pageId: string;
 	epoch: number;
+	/** created_at: when the newest content in the row was written (logical clock). */
+	at: number;
 }
 
 interface DocRow {
@@ -22,6 +24,8 @@ interface DocRow {
 
 export class MemoryPersistence implements Persistence {
 	pages = new Map<string, { content: unknown; schemaVersion: number } | null>();
+	/** page_contents.updated_at (logical clock). */
+	contentAt = new Map<string, number>();
 	docs = new Map<string, DocRow>();
 	rows: Row[] = [];
 	seedCount = 0;
@@ -37,8 +41,28 @@ export class MemoryPersistence implements Persistence {
 	beforeAppend: ((pageId: string, epoch: number) => void | Promise<void>) | null = null;
 	/** page_collab_leases: `${pageId} ${holder}` → lease. */
 	leases = new Map<string, { pageId: string; holder: string; epoch: number; expiresAt: number }>();
+	/**
+	 * Note tasks renamed outside the editor (tasks.title_renamed_at), stamped
+	 * with the logical clock below.
+	 */
+	renamedTasks: { pageId: string; nodeId: string; title: string; renamedAt: number }[] = [];
+	/** Set to make reading renamed task titles throw. */
+	failRenamedTitles = false;
 	private seq = 0;
+	/** A logical clock standing in for the database's NOW(). */
+	private clock = 0;
 	private locks = new Map<string, Promise<void>>();
+
+	/** The next moment of the logical clock. */
+	tick(): number {
+		return ++this.clock;
+	}
+
+	/** What PATCH /tasks/:id does for a rename from outside the note. */
+	renameTask(pageId: string, nodeId: string, title: string) {
+		this.renamedTasks = this.renamedTasks.filter((t) => !(t.pageId === pageId && t.nodeId === nodeId));
+		this.renamedTasks.push({ pageId, nodeId, title, renamedAt: this.tick() });
+	}
 
 	private takeLease(pageId: string, lease: Lease | undefined, epoch: number) {
 		if (lease) this.leases.set(`${pageId} ${lease.holder}`, { pageId, holder: lease.holder, epoch, expiresAt: Date.now() + lease.ttlMs });
@@ -47,20 +71,27 @@ export class MemoryPersistence implements Persistence {
 	/** Test helper: append a row directly, as if a foreign replica had. */
 	injectRow(pageId: string, epoch: number, data: Uint8Array): number {
 		const seq = ++this.seq;
-		this.rows.push({ pageId, epoch, seq, data });
+		this.rows.push({ pageId, epoch, seq, data, at: this.tick() });
 		return seq;
 	}
 
 	/** Create a page, optionally with stored content. */
 	addPage(pageId: string, content: unknown = null, schemaVersion = 1) {
-		this.pages.set(pageId, content === null ? null : { content, schemaVersion });
+		this.pages.set(pageId, null);
+		if (content !== null) this.writeContent(pageId, content, schemaVersion);
+	}
+
+	/** Write page_contents, as the API does (REST save, snapshot, restore). */
+	writeContent(pageId: string, content: unknown, schemaVersion = 1) {
+		this.pages.set(pageId, { content, schemaVersion });
+		this.contentAt.set(pageId, this.tick());
 	}
 
 	/** What the API does on a version restore / REST write while disabled. */
 	detach(pageId: string, content?: unknown) {
 		const d = this.docs.get(pageId);
 		if (d) d.attached = false;
-		if (content !== undefined) this.pages.set(pageId, { content, schemaVersion: 1 });
+		if (content !== undefined) this.writeContent(pageId, content);
 	}
 
 	private async locked<T>(pageId: string, fn: () => T | Promise<T>): Promise<T> {
@@ -98,14 +129,22 @@ export class MemoryPersistence implements Persistence {
 					quarantined: d.quarantined,
 					schemaFingerprint: d.schemaFingerprint,
 					seeded: false,
-					updates: this.rowsFor(pageId, d.epoch, 0)
+					updates: this.rowsFor(pageId, d.epoch, 0),
+					contentAsOf: this.contentAsOf(pageId, d.epoch)
 				};
 			}
 			const initial = seed(this.pages.get(pageId) ?? null);
 			this.seedCount++;
-			const seq = this.startEpoch(pageId, d, d.epoch + 1, initial, fingerprint);
+			const seq = this.startEpoch(pageId, d, d.epoch + 1, initial, fingerprint, this.contentAt.get(pageId) ?? this.tick());
 			this.takeLease(pageId, lease, d.epoch);
-			return { epoch: d.epoch, quarantined: false, schemaFingerprint: fingerprint, seeded: true, updates: [{ seq, data: initial }] };
+			return {
+				epoch: d.epoch,
+				quarantined: false,
+				schemaFingerprint: fingerprint,
+				seeded: true,
+				updates: [{ seq, data: initial }],
+				contentAsOf: this.contentAsOf(pageId, d.epoch)
+			};
 		});
 	}
 
@@ -117,7 +156,8 @@ export class MemoryPersistence implements Persistence {
 			for (const l of this.leases.values()) {
 				if (l.pageId === pageId && l.epoch === fromEpoch && l.holder !== lease?.holder && l.expiresAt > now) return 'held';
 			}
-			this.startEpoch(pageId, d, fromEpoch + 1, update, fingerprint);
+			const logAt = Math.max(...this.rows.filter((r) => r.pageId === pageId).map((r) => r.at));
+			this.startEpoch(pageId, d, fromEpoch + 1, update, fingerprint, logAt);
 			this.takeLease(pageId, lease, d.epoch);
 			return d.epoch;
 		});
@@ -132,10 +172,10 @@ export class MemoryPersistence implements Persistence {
 		if (this.leases.get(key)?.epoch === epoch) this.leases.delete(key);
 	}
 
-	private startEpoch(pageId: string, d: DocRow, epoch: number, initial: Uint8Array, fingerprint: string): number {
+	private startEpoch(pageId: string, d: DocRow, epoch: number, initial: Uint8Array, fingerprint: string, at: number): number {
 		this.rows = this.rows.filter((r) => r.pageId !== pageId);
 		const seq = ++this.seq;
-		this.rows.push({ pageId, epoch, seq, data: initial });
+		this.rows.push({ pageId, epoch, seq, data: initial, at });
 		Object.assign(d, { epoch, attached: true, quarantined: false, quarantineReason: null, schemaFingerprint: fingerprint });
 		return seq;
 	}
@@ -149,8 +189,30 @@ export class MemoryPersistence implements Persistence {
 		const d = this.docs.get(pageId);
 		if (!d || d.epoch !== epoch || !d.attached) return null;
 		const seq = ++this.seq;
-		this.rows.push({ pageId, epoch, seq, data });
+		this.rows.push({ pageId, epoch, seq, data, at: this.tick() });
 		return seq;
+	}
+
+	appendExclusive(
+		pageId: string,
+		epoch: number,
+		afterSeq: number,
+		build: (rows: StoredUpdate[]) => Uint8Array | null
+	): Promise<number | null | 'stale'> {
+		return this.locked(pageId, async () => {
+			await this.beforeAppend?.(pageId, epoch);
+			if (this.failAppends > 0) {
+				this.failAppends--;
+				throw new Error('simulated database outage');
+			}
+			const d = this.docs.get(pageId);
+			if (!d || d.epoch !== epoch || !d.attached) return 'stale';
+			const update = build(this.rowsFor(pageId, epoch, afterSeq));
+			if (!update) return null;
+			const seq = ++this.seq;
+			this.rows.push({ pageId, epoch, seq, data: update, at: this.tick() });
+			return seq;
+		});
 	}
 
 	async fetchSince(pageId: string, epoch: number, afterSeq: number): Promise<StoredUpdate[]> {
@@ -165,9 +227,23 @@ export class MemoryPersistence implements Persistence {
 			const seq = ++this.seq;
 			const ids = new Set(merged.map((r) => r.seq));
 			this.rows = this.rows.filter((r) => !ids.has(r.seq));
-			this.rows.push({ pageId, epoch, seq, data: Y.mergeUpdates(merged.map((r) => r.data)) });
+			this.rows.push({ pageId, epoch, seq, data: Y.mergeUpdates(merged.map((r) => r.data)), at: Math.max(...merged.map((r) => r.at)) });
 			return seq;
 		});
+	}
+
+	async renamedTaskTitles(pageId: string, since: string | null): Promise<TaskTitle[]> {
+		if (this.failRenamedTitles) throw new Error('simulated database outage');
+		const after = since === null ? -Infinity : Number(since);
+		return this.renamedTasks
+			.filter((t) => t.pageId === pageId && t.renamedAt > after)
+			.sort((a, b) => a.renamedAt - b.renamedAt)
+			.map(({ nodeId, title }) => ({ nodeId, title }));
+	}
+
+	private contentAsOf(pageId: string, epoch: number): string | null {
+		const times = this.rows.filter((r) => r.pageId === pageId && r.epoch === epoch).map((r) => r.at);
+		return times.length ? String(Math.max(...times)) : null;
 	}
 
 	async quarantine(pageId: string, epoch: number, reason: string): Promise<void> {

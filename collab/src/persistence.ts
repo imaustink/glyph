@@ -28,6 +28,16 @@
  *    (api/migrations/000024_page_collab_leases.up.sql). Loading takes a lease
  *    under the page_collab_docs row lock; re-seeding checks for other
  *    holders' unexpired leases under the same lock.
+ *
+ *  - A log row's created_at is when the newest content it holds was
+ *    written, so the log's newest created_at says how recent the document
+ *    is (DI-29: a task renamed after that is put into its bullet on load).
+ *    An appended row is stamped when appended; the row that starts an epoch
+ *    carries the time of what it was built from (page_contents.updated_at
+ *    for a seed, the replaced log's newest time for a schema re-seed); a
+ *    compacted row the newest time of the rows it merged. (Collab builds
+ *    from before this stamp seeds and compactions with NOW(), which only
+ *    makes an older rename look already applied.)
  */
 import * as Y from 'yjs';
 import pg from 'pg';
@@ -52,6 +62,18 @@ export interface LoadedDoc {
 	/** True if this call created the epoch (seeded from page_contents). */
 	seeded: boolean;
 	updates: StoredUpdate[];
+	/**
+	 * When the newest content in `updates` was written (see the header), as
+	 * a database timestamp: opaque, only ever passed back to
+	 * renamedTaskTitles, which compares it in the database at full precision.
+	 */
+	contentAsOf: string | null;
+}
+
+/** A note task's title, to show in the bullet with this nodeId. */
+export interface TaskTitle {
+	nodeId: string;
+	title: string;
 }
 
 export interface StoredPageContent {
@@ -97,10 +119,33 @@ export interface Persistence {
 	releaseLease(pageId: string, holder: string, epoch: number): Promise<void>;
 	/** Append an update. Returns its seq, or null if the epoch is no longer current and attached. */
 	append(pageId: string, epoch: number, data: Uint8Array): Promise<number | null>;
+	/**
+	 * Append an update built from the latest log, holding the page's log
+	 * lock from reading it to committing: `build` gets the epoch's rows after
+	 * `afterSeq` (to apply before deciding) and returns the update to append,
+	 * or null for none. Two replicas making the same server edit therefore
+	 * run one after the other, and the second sees the first's row — so an
+	 * edit that must happen once (a task title put into its bullet: made
+	 * twice, the text would merge into a duplicate) happens once. Returns the
+	 * appended seq, null if `build` returned null, or 'stale' (build not
+	 * called) if the epoch is no longer current and attached.
+	 */
+	appendExclusive(
+		pageId: string,
+		epoch: number,
+		afterSeq: number,
+		build: (rows: StoredUpdate[]) => Uint8Array | null
+	): Promise<number | null | 'stale'>;
 	/** Updates in the epoch with seq > afterSeq, in seq order. */
 	fetchSince(pageId: string, epoch: number, afterSeq: number): Promise<StoredUpdate[]>;
 	/** Merge the epoch's log into one row. Returns the merged row's seq, or null if nothing to do. */
 	compact(pageId: string, epoch: number): Promise<number | null>;
+	/**
+	 * The page's live tasks renamed outside the editor (tasks.title_renamed_at)
+	 * after `since` (a LoadedDoc.contentAsOf; null = any time). Empty while the
+	 * database predates that column.
+	 */
+	renamedTaskTitles(pageId: string, since: string | null): Promise<TaskTitle[]>;
 	/** Mark the page quarantined (read-only for collaborators) in the given epoch. */
 	quarantine(pageId: string, epoch: number, reason: string): Promise<void>;
 	close(): Promise<void>;
@@ -112,6 +157,9 @@ export class NotFoundError extends Error {
 		this.name = 'NotFoundError';
 	}
 }
+
+/** Postgres SQLSTATE undefined_column. */
+const UNDEFINED_COLUMN = '42703';
 
 const UPSERT_LEASE = `
 	INSERT INTO page_collab_leases (page_id, holder, epoch, expires_at)
@@ -200,7 +248,8 @@ export class PgPersistence implements Persistence {
 					quarantined: st.quarantined,
 					schemaFingerprint: st.schema_fingerprint,
 					seeded: false,
-					updates: updates.rows.map(toStoredUpdate)
+					updates: updates.rows.map(toStoredUpdate),
+					contentAsOf: await this.contentAsOf(c, pageId, st.epoch)
 				};
 			}
 
@@ -212,9 +261,16 @@ export class PgPersistence implements Persistence {
 				content.rowCount ? { content: content.rows[0].content, schemaVersion: content.rows[0].schema_version } : null
 			);
 			const epoch = st.epoch + 1;
-			const seq = await this.startEpoch(c, pageId, epoch, initial, schemaFingerprint);
+			const seq = await this.startEpoch(c, pageId, epoch, initial, schemaFingerprint, 'page_contents');
 			if (lease && (await this.leasesAvailable(c))) await c.query(UPSERT_LEASE, [pageId, lease.holder, epoch, lease.ttlMs]);
-			return { epoch, quarantined: false, schemaFingerprint, seeded: true, updates: [{ seq, data: initial }] };
+			return {
+				epoch,
+				quarantined: false,
+				schemaFingerprint,
+				seeded: true,
+				updates: [{ seq, data: initial }],
+				contentAsOf: await this.contentAsOf(c, pageId, epoch)
+			};
 		});
 	}
 
@@ -242,7 +298,7 @@ export class PgPersistence implements Persistence {
 				if (held.rowCount) return 'held';
 			}
 			const epoch = fromEpoch + 1;
-			await this.startEpoch(c, pageId, epoch, update, schemaFingerprint);
+			await this.startEpoch(c, pageId, epoch, update, schemaFingerprint, 'log');
 			if (leasing && lease) await c.query(UPSERT_LEASE, [pageId, lease.holder, epoch, lease.ttlMs]);
 			return epoch;
 		});
@@ -274,15 +330,31 @@ export class PgPersistence implements Persistence {
 		await this.pool.query(`DELETE FROM page_collab_leases WHERE page_id = $1 AND holder = $2 AND epoch = $3`, [pageId, holder, epoch]);
 	}
 
-	/** Replace the log with a single initial update under a new epoch. Caller holds the locks. */
-	private async startEpoch(c: pg.PoolClient, pageId: string, epoch: number, initial: Uint8Array, fingerprint: string): Promise<number> {
-		// Earlier epochs are dead: no client may ever sync into them again, and
-		// their content is preserved in page_content_versions.
-		await c.query(`DELETE FROM page_collab_updates WHERE page_id = $1`, [pageId]);
+	/**
+	 * Replace the log with a single initial update under a new epoch, stamped
+	 * with the time of the content it was built from (see the header): the
+	 * stored page content, or the log it replaces. Caller holds the locks.
+	 */
+	private async startEpoch(
+		c: pg.PoolClient,
+		pageId: string,
+		epoch: number,
+		initial: Uint8Array,
+		fingerprint: string,
+		builtFrom: 'page_contents' | 'log'
+	): Promise<number> {
+		const contentTime =
+			builtFrom === 'page_contents'
+				? `(SELECT updated_at FROM page_contents WHERE page_id = $1)`
+				: `(SELECT max(created_at) FROM page_collab_updates WHERE page_id = $1)`;
 		const ins = await c.query(
-			`INSERT INTO page_collab_updates (page_id, epoch, data) VALUES ($1, $2, $3) RETURNING seq`,
+			`INSERT INTO page_collab_updates (page_id, epoch, data, created_at)
+			 VALUES ($1, $2, $3, COALESCE(${contentTime}, NOW())) RETURNING seq`,
 			[pageId, epoch, Buffer.from(initial)]
 		);
+		// Earlier epochs are dead: no client may ever sync into them again, and
+		// their content is preserved in page_content_versions.
+		await c.query(`DELETE FROM page_collab_updates WHERE page_id = $1 AND seq <> $2`, [pageId, ins.rows[0].seq]);
 		await c.query(
 			`UPDATE page_collab_docs
 			 SET epoch = $2, attached = true, schema_fingerprint = $3, snapshot_seq = 0,
@@ -311,6 +383,33 @@ export class PgPersistence implements Persistence {
 		return rows.length ? Number(rows[0].seq) : null;
 	}
 
+	async appendExclusive(
+		pageId: string,
+		epoch: number,
+		afterSeq: number,
+		build: (rows: StoredUpdate[]) => Uint8Array | null
+	): Promise<number | null | 'stale'> {
+		return this.tx(async (c) => {
+			// The seq-order lock (see the header), held to commit.
+			const live = await c.query(
+				`SELECT 1 FROM page_collab_docs WHERE page_id = $1 AND epoch = $2 AND attached FOR UPDATE`,
+				[pageId, epoch]
+			);
+			if (live.rowCount === 0) return 'stale';
+			const { rows } = await c.query(
+				`SELECT seq, data FROM page_collab_updates WHERE page_id = $1 AND epoch = $2 AND seq > $3 ORDER BY seq`,
+				[pageId, epoch, afterSeq]
+			);
+			const update = build(rows.map(toStoredUpdate));
+			if (!update) return null;
+			const ins = await c.query(
+				`INSERT INTO page_collab_updates (page_id, epoch, data) VALUES ($1, $2, $3) RETURNING seq`,
+				[pageId, epoch, Buffer.from(update)]
+			);
+			return Number(ins.rows[0].seq);
+		});
+	}
+
 	async fetchSince(pageId: string, epoch: number, afterSeq: number): Promise<StoredUpdate[]> {
 		const { rows } = await this.pool.query(
 			`SELECT seq, data FROM page_collab_updates WHERE page_id = $1 AND epoch = $2 AND seq > $3 ORDER BY seq`,
@@ -331,15 +430,46 @@ export class PgPersistence implements Persistence {
 			);
 			if (rows.length < 2) return null;
 			const merged = Y.mergeUpdates(rows.map((r) => new Uint8Array(r.data)));
+			// Stamped with the newest merged row's time: compacting is not
+			// writing content (see the header).
 			const ins = await c.query(
-				`INSERT INTO page_collab_updates (page_id, epoch, data) VALUES ($1, $2, $3) RETURNING seq`,
-				[pageId, epoch, Buffer.from(merged)]
+				`INSERT INTO page_collab_updates (page_id, epoch, data, created_at)
+				 SELECT $1, $2, $3, max(created_at) FROM page_collab_updates WHERE seq = ANY($4::bigint[])
+				 RETURNING seq`,
+				[pageId, epoch, Buffer.from(merged), rows.map((r) => r.seq)]
 			);
 			// Delete exactly the rows merged — never a range, which could catch
 			// a concurrent append that committed after our SELECT.
 			await c.query(`DELETE FROM page_collab_updates WHERE seq = ANY($1::bigint[])`, [rows.map((r) => r.seq)]);
 			return Number(ins.rows[0].seq);
 		});
+	}
+
+	/** The newest created_at of the epoch's log, as text (full precision; see LoadedDoc.contentAsOf). */
+	private async contentAsOf(c: pg.PoolClient, pageId: string, epoch: number): Promise<string | null> {
+		const { rows } = await c.query(
+			`SELECT max(created_at)::text AS at FROM page_collab_updates WHERE page_id = $1 AND epoch = $2`,
+			[pageId, epoch]
+		);
+		return rows[0]?.at ?? null;
+	}
+
+	async renamedTaskTitles(pageId: string, since: string | null): Promise<TaskTitle[]> {
+		try {
+			const { rows } = await this.pool.query(
+				`SELECT source_node_id, title FROM tasks
+				 WHERE source_page_id = $1 AND source_node_id IS NOT NULL AND deleted_at IS NULL
+				   AND title_renamed_at IS NOT NULL AND ($2::timestamptz IS NULL OR title_renamed_at > $2::timestamptz)
+				 ORDER BY title_renamed_at`,
+				[pageId, since]
+			);
+			return rows.map((r) => ({ nodeId: r.source_node_id, title: r.title }));
+		} catch (err) {
+			// The API's migration adding the column hasn't run yet (rollouts can
+			// start this build first): nothing can have been recorded.
+			if ((err as { code?: string }).code === UNDEFINED_COLUMN) return [];
+			throw err;
+		}
 	}
 
 	async quarantine(pageId: string, epoch: number, reason: string): Promise<void> {

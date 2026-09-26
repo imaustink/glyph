@@ -8,7 +8,7 @@ editing it together.
 ```
 browser ── wss /collab ──▶ collab service ──▶ Postgres (page_collab_* : append-only Yjs log)
    │                         │   ▲
-   │                         │   └── LISTEN glyph_collab ("reset" on version restore / detach)
+   │                         │   └── LISTEN glyph_collab ("reset" on version restore / detach; task status/title)
    │                         ├── GET  /api/v1/pages/:id/collab      (who may join; cookie forwarded)
    │                         └── PUT  /internal/collab/pages/:id/snapshot  (service token)
    └── REST /api ───────────▶ Go API ──▶ page_contents (derived snapshot), tasks, history
@@ -38,7 +38,8 @@ Each one is enforced in code and covered by a test.
    the forwarded cookie). Viewers are admitted read-only.
 3. `onLoadDocument` loads the log, seeding a new epoch from `page_contents` if
    the page isn't attached (giving every list item a `nodeId`, and every empty
-   text block a shared text node).
+   text block a shared text node). `afterLoadDocument` makes server repairs
+   and applies task titles renamed while the note was closed (see below).
 4. `beforeSync` binds the connection to the epoch and sends it to the client
    *before* any content. Every change message is validated on a shadow doc.
 5. `onStoreDocument` (debounced, and on last disconnect): pull other replicas'
@@ -128,13 +129,62 @@ wire protocol can't drift between the two.
   order (a y-prosemirror quirk). Seeded paragraphs, including the trailing
   one, are immune. Nothing is lost either way.
 
-## Task status on bullets
+## Task status and titles on bullets
 
-When a note task's status changes outside the editor (the board, the task
-page, an API client), the API sends `NOTIFY glyph_collab
-{"type":"task-status", pageId, nodeId, status}`. Every replica with that note
-loaded sets the bullet's `taskStatus`/`checked` attributes in the shared
+When a note task's status changes outside the editor (on the board, on the
+task page, or from an API client), the API sends `NOTIFY glyph_collab
+{"type":"task-status", pageId, nodeId, status}`. Every replica that has the
+note loaded sets the bullet's `taskStatus`/`checked` attributes in the shared
 document (`onTaskStatus` → `setListItemStatus`), so all open editors update
 live. The server is the only writer of this edit, so editors never race to
-write it. Notes nobody has open are left alone; editors sync statuses from
-the task list when they open a note.
+write it. Notes nobody has open are left alone, because editors sync statuses
+from the task list when they open a note.
+
+**Titles (DI-29).** A task can also be renamed outside the note, on the task
+page or with MCP `update_task`. If the bullet kept its old text, the next
+keystroke in it would push that text back as the title. Editors can't sync
+titles into a shared document: each one would make the same text edit, and
+Yjs would merge them into duplicated text. So the collab service writes the
+title, on two paths:
+
+- **The note is open.** A `PATCH /tasks/:id` whose title changes, without
+  `X-Glyph-Change-Source: bullet`, sends `{"type":"task-title", pageId,
+  nodeId, title}`. The editor sends that header with the titles it takes from
+  bullet text, and those are never echoed back into the note, because the
+  bullet may already hold newer text. `onTaskTitle` makes the linked bullet's
+  first paragraph read the title (`setListItemText`). Text that stays the same
+  at either end keeps its formatting, and new text takes the formatting of the
+  character before it.
+- **The note is closed.** The same PATCH sets `tasks.title_renamed_at`. When a
+  document loads, `afterLoadDocument` applies the titles of tasks renamed after
+  the loaded content was written, before any editor syncs. A bullet edited
+  after the rename is newer, so it keeps its text. "When the content was
+  written" is the newest `created_at` in the epoch's log, and a row's
+  `created_at` is when the newest content in it was written:
+  - an appended row is stamped when it is appended;
+  - a seed row carries `page_contents.updated_at`;
+  - a schema re-seed row carries the replaced log's newest time;
+  - a compacted row carries the newest time of the rows it merged.
+
+Either way the edit is written once, even when several replicas hold the
+note. It is built and appended under the page's log lock from the latest log
+(`appendExclusive`). A replica that finds the title already there writes
+nothing.
+
+This is best effort, like status. If a notification is missed while the note
+is open, the title arrives on the next load, unless the bullet was edited
+first. Some races remain:
+
+- Someone types in the bullet within the editor's title debounce (500 ms) of
+  a rename. Their debounced title can then land after the rename, so the task
+  keeps their text while the bullet shows the rename.
+- `PUT /tasks/:id` (full upsert, which neither the app nor MCP uses) doesn't
+  count as a rename.
+
+**Rollout.** All of this is additive:
+
+- API pods from before this change never send `task-title` or set the column.
+- Collab pods from before it ignore the notification. They also stamp seed and
+  compacted rows with `NOW()`, which can only make an older rename look
+  already applied. It never applies a rename over newer text.
+- A collab pod that starts before migration 000025 has run finds no renames.

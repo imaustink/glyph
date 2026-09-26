@@ -11,10 +11,10 @@ All findings below were fixed on branch `data-integrity`. Each fix has a failing
 - **DI-19:** not reproducible as written. Migration 000013 keeps the column NOT NULL, so no NULL can reach 000017. The real failure was 000013 itself aborting on a legacy `''` row, and that is what was fixed.
 - **Memstore `CreateLinked` divergence:** not reproducible. A regression test was added instead.
 - **Nothing to fix:** `importData` was deleted because nothing called it. The Go validator already counted UTF-8 bytes, so it got a regression guard only.
+- **DI-29 in collab mode:** editors can't write a task's title into a collaborative note (each one would make the same text edit, and Yjs would merge them into duplicated text), so the collab service does it. The API treats a title change without `X-Glyph-Change-Source: bullet` as a rename from outside the note: it records `tasks.title_renamed_at` and sends a `task-title` notification. Open notes get the title at once. A note that was closed gets it when it is next loaded, if the rename is newer than the note's content. See the collab README, "Task status and titles on bullets".
 - **Deferred and follow-ups:**
   - No trash UI. DI-02 refuses the delete and keeps version history instead.
   - No atomic folder-lane reorder endpoint. The client refetches when a reorder fails.
-  - Task→bullet title sync in collab mode needs a counterpart in the collab service.
   - Markdown can't express some formatting, and it is kept only for blocks an MCP replace leaves unchanged.
 
 ## Method

@@ -15,6 +15,13 @@ import type { FilterContext } from '$lib/storage/filterUtils';
 export interface WriteOptions {
   /** Send so it survives the page unloading (API: fetch keepalive). */
   keepalive?: boolean;
+  /**
+   * Where the change comes from. 'bullet': a task title taken from its
+   * bullet's text. The API treats any other title change as a rename from
+   * outside the note and puts it into the bullet (DI-29); an echo of the
+   * bullet's own text could overwrite what was typed since.
+   */
+  source?: 'bullet';
 }
 
 export interface IRepository<T extends { id: string }> {

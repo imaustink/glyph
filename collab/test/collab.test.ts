@@ -728,6 +728,182 @@ describe('task status from outside the editor', () => {
 	});
 });
 
+describe('task titles from outside the editor (DI-29)', () => {
+	/** The text of the linked bullet n1 in a client's copy. */
+	const bulletText = (c: TestClient) =>
+		(toJSON(c.doc).content!.find((n) => n.type === 'bulletList')?.content?.[0].content?.[0].content ?? []).map((n) => n.text).join('');
+	const occurrences = (doc: Y.Doc, text: string) => textOf(doc).split(text).length - 1;
+
+	it('puts a rename made on the task page into the bullet in every open copy, live', async () => {
+		const alice = open({ user: 'alice' });
+		const bob = open({ user: 'bob' });
+		await Promise.all([alice.synced(), bob.synced()]);
+		alice.fragment.insert(alice.fragment.length, [bulletList([{ nodeId: 'n1', taskId: 't1', text: 'Buy milk' }])]);
+		await eventually(() => bulletText(bob) === 'Buy milk');
+
+		expect(await server.collab.onTaskTitle(PAGE, 'n1', 'Buy oat milk')).toBe(true);
+		for (const c of [alice, bob]) await eventually(() => bulletText(c) === 'Buy oat milk', 3000, 'title reached client');
+		// …and it's in the log, for whoever opens the note next.
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy oat milk'));
+
+		// Repeating it is a no-op, not another write.
+		expect(await server.collab.onTaskTitle(PAGE, 'n1', 'Buy oat milk')).toBe(false);
+		expect(occurrences(persistence.replay(PAGE), 'oat')).toBe(1);
+	});
+
+	it('leaves bullets without a task, notes nobody has open, and quarantined notes alone', async () => {
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [
+			bulletList([
+				{ nodeId: 'plain', text: 'no task' },
+				{ nodeId: 'n1', taskId: 't1', text: 'Buy milk' }
+			])
+		]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy milk'));
+		expect(await server.collab.onTaskTitle(PAGE, 'plain', 'renamed')).toBe(false);
+		expect(await server.collab.onTaskTitle('22222222-2222-4222-8222-222222222222', 'n1', 'renamed')).toBe(false);
+
+		api.onSnapshot = () => ({ kind: 'invalid', message: 'refused' });
+		alice.fragment.insert(alice.fragment.length, [paragraph('trigger a snapshot')]);
+		await eventually(() => persistence.docs.get(PAGE)!.quarantined);
+		expect(await server.collab.onTaskTitle(PAGE, 'n1', 'renamed')).toBe(false);
+		expect(textOf(persistence.replay(PAGE))).not.toContain('renamed');
+	});
+
+	it('two replicas with the note open write the rename once, not twice', async () => {
+		// Both replicas get the notification. Each making the text edit on its
+		// own copy would merge into "Buy oat oat milk".
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [bulletList([{ nodeId: 'n1', taskId: 't1', text: 'Buy milk' }])]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy milk'));
+		const other = await startServer(persistence, api);
+		try {
+			const bob = open({ user: 'bob' }, other);
+			await bob.synced();
+			expect(bulletText(bob)).toBe('Buy milk');
+
+			const changed = await Promise.all([server.collab.onTaskTitle(PAGE, 'n1', 'Buy oat milk'), other.collab.onTaskTitle(PAGE, 'n1', 'Buy oat milk')]);
+			expect(changed.filter(Boolean)).toHaveLength(1);
+			server.collab.catchUpAll();
+			other.collab.catchUpAll();
+			for (const c of [alice, bob]) await eventually(() => bulletText(c) === 'Buy oat milk', 3000, 'title reached client');
+			expect(occurrences(persistence.replay(PAGE), 'oat')).toBe(1);
+		} finally {
+			await other.stop();
+		}
+	});
+});
+
+describe('task titles renamed while the note was closed (DI-29)', () => {
+	const bulletText = (c: TestClient) =>
+		(toJSON(c.doc).content!.find((n) => n.type === 'bulletList')?.content?.[0].content?.[0].content ?? []).map((n) => n.text).join('');
+	const occurrences = (doc: Y.Doc, text: string) => textOf(doc).split(text).length - 1;
+	/** The text run of bullet n1's paragraph in a client's copy. */
+	const bulletRun = (c: TestClient) => {
+		const list = c.fragment.toArray().find((n) => n instanceof Y.XmlElement && n.nodeName === 'bulletList') as Y.XmlElement;
+		const li = list.get(0) as Y.XmlElement;
+		return (li.get(0) as Y.XmlElement).get(0) as Y.XmlText;
+	};
+	const linkedDoc = (text: string) => ({
+		type: 'doc',
+		content: [
+			{
+				type: 'bulletList',
+				content: [{ type: 'listItem', attrs: { nodeId: 'n1', taskId: 't1' }, content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] }]
+			},
+			{ type: 'paragraph' }
+		]
+	});
+
+	/** Open the note, add the linked bullet, and close it again once it's in the log. */
+	async function noteWithLinkedBullet(text: string) {
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [bulletList([{ nodeId: 'n1', taskId: 't1', text }])]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes(text));
+		alice.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+	}
+
+	it('shows a rename made while the note was closed when it is next opened', async () => {
+		await noteWithLinkedBullet('Buy milk');
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		// Before bob can type: the next keystroke must not push "Buy milk" back.
+		expect(bulletText(bob)).toBe('Buy oat milk');
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy oat milk'));
+		expect(occurrences(persistence.replay(PAGE), 'oat')).toBe(1);
+	});
+
+	it('keeps a bullet edit made after the rename', async () => {
+		// The rename reached an open note only as a record — e.g. the note was
+		// held by a collab build that predates live renames. The user then
+		// edited the bullet, and the task took that text: it wins.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [bulletList([{ nodeId: 'n1', taskId: 't1', text: 'Buy milk' }])]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy milk'));
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+		const run = bulletRun(alice);
+		run.delete(0, run.length);
+		run.insert(0, 'Buy soy milk');
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy soy milk'));
+		alice.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		expect(bulletText(bob)).toBe('Buy soy milk');
+	});
+
+	it('applies a rename newer than the stored content a note is seeded from, and only that', async () => {
+		persistence.detach(PAGE, linkedDoc('Buy milk'));
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		expect(bulletText(alice)).toBe('Buy oat milk');
+		alice.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+
+		// Content written after the rename (a version restore, say) wins.
+		persistence.renameTask(PAGE, 'n1', 'Buy rice milk');
+		persistence.detach(PAGE, linkedDoc('Buy milk, restored'));
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		expect(bulletText(bob)).toBe('Buy milk, restored');
+	});
+
+	it('two replicas opening the note at once apply the rename once', async () => {
+		await noteWithLinkedBullet('Buy milk');
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+		const other = await startServer(persistence, api);
+		try {
+			const alice = open({ user: 'alice' });
+			const bob = open({ user: 'bob' }, other);
+			await Promise.all([alice.synced(), bob.synced()]);
+			server.collab.catchUpAll();
+			other.collab.catchUpAll();
+			for (const c of [alice, bob]) await eventually(() => bulletText(c) === 'Buy oat milk', 3000, 'title reached client');
+			expect(occurrences(persistence.replay(PAGE), 'oat')).toBe(1);
+		} finally {
+			await other.stop();
+		}
+	});
+
+	it('opens the note anyway when renames cannot be read', async () => {
+		await noteWithLinkedBullet('Buy milk');
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+		persistence.failRenamedTitles = true;
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		expect(bulletText(bob)).toBe('Buy milk');
+	});
+});
+
 describe('server edits', () => {
 	it('removes a list item through the shared document so editors see it', async () => {
 		const alice = open({ user: 'alice' });

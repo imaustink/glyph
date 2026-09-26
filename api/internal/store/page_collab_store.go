@@ -33,6 +33,11 @@ type CollabNotifier interface {
 	// TaskStatusChanged: a note task's status changed (e.g. on the board), so
 	// its bullet's status indicator in any open copy of the note should too.
 	TaskStatusChanged(ctx context.Context, pageID uuid.UUID, nodeID string, status model.TaskStatus) error
+	// TaskTitleChanged: a note task was renamed outside the editor (the task
+	// page, MCP, an API client), so its bullet in any open copy of the note
+	// should show the new title (DI-29). Notes that aren't open pick it up
+	// from tasks.title_renamed_at when next loaded.
+	TaskTitleChanged(ctx context.Context, pageID uuid.UUID, nodeID, title string) error
 }
 
 type pgCollabNotifier struct{ pool DBPool }
@@ -47,6 +52,23 @@ func (n *pgCollabNotifier) TaskStatusChanged(ctx context.Context, pageID uuid.UU
 		NodeID string           `json:"nodeId"`
 		Status model.TaskStatus `json:"status"`
 	}{"task-status", pageID, nodeID, status})
+	if err != nil {
+		return err
+	}
+	_, err = n.pool.Exec(ctx, `SELECT pg_notify($1, $2)`, CollabNotifyChannel, string(payload))
+	return err
+}
+
+// TaskTitleChanged sends {"type":"task-title", pageId, nodeId, title}. Titles
+// are at most 500 characters (2000 bytes of UTF-8), well inside NOTIFY's
+// 8000-byte payload limit. Collab builds that predate it ignore the type.
+func (n *pgCollabNotifier) TaskTitleChanged(ctx context.Context, pageID uuid.UUID, nodeID, title string) error {
+	payload, err := json.Marshal(struct {
+		Type   string    `json:"type"`
+		PageID uuid.UUID `json:"pageId"`
+		NodeID string    `json:"nodeId"`
+		Title  string    `json:"title"`
+	}{"task-title", pageID, nodeID, title})
 	if err != nil {
 		return err
 	}

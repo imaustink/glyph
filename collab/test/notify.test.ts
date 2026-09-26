@@ -17,6 +17,25 @@ describe('parseNotification', () => {
 		});
 	});
 
+	it('parses a task title change (DI-29)', () => {
+		expect(parseNotification(JSON.stringify({ type: 'task-title', pageId: PAGE, nodeId: 'n1', title: 'Buy oat milk' }))).toEqual({
+			type: 'task-title',
+			pageId: PAGE,
+			nodeId: 'n1',
+			title: 'Buy oat milk'
+		});
+		// The API allows 500 characters: code points, not UTF-16 units.
+		const longest = '😀'.repeat(500);
+		expect(parseNotification(JSON.stringify({ type: 'task-title', pageId: PAGE, nodeId: 'n1', title: longest }))).toMatchObject({ title: longest });
+	});
+
+	it('rejects a task title change without a usable title (DI-29)', () => {
+		for (const title of [undefined, 42, '', '   ', 'x'.repeat(501)]) {
+			expect(parseNotification(JSON.stringify({ type: 'task-title', pageId: PAGE, nodeId: 'n1', title }))).toBeNull();
+		}
+		expect(parseNotification(JSON.stringify({ type: 'task-title', pageId: PAGE, title: 'no bullet' }))).toBeNull();
+	});
+
 	it('rejects malformed or unknown payloads', () => {
 		for (const bad of [
 			undefined,

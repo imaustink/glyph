@@ -978,7 +978,7 @@ func (m *mockTaskStore) Update(_ context.Context, t *model.Task) (*model.Task, e
 }
 // Patch emulates the store's locked read-modify-write with getByIDFn and
 // updateFn.
-func (m *mockTaskStore) Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error) (*model.Task, error) {
+func (m *mockTaskStore) Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error, _ ...store.TaskPatchOptions) (*model.Task, error) {
 	t, err := m.GetByID(ctx, id, ownerID)
 	if err != nil {
 		return nil, err
