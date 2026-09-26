@@ -49,5 +49,97 @@ func TestPageDeleteTasks(t *testing.T) {
 			assert.False(t, taskVisible(t, h, h.UserA.ID, alices.ID), "the deleter's own board task goes with the folder")
 			assert.False(t, taskVisible(t, h, h.UserA.ID, noteTask.ID), "the note's task goes with the note")
 		},
+
+		// "Keep Tasks": ?keepTasks=true detaches the subtree's tasks instead
+		// of deleting them. They become standalone tasks (no note, no bullet,
+		// no folder board) with everything else as it was.
+		"KeepTasksDetachesNoteAndBoardTasks": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			f := createFolder(t, h, h.UserA.ID, "F")
+			note := createChild(t, h, h.UserA.ID, f.ID, "page", "Note")
+			writeDoc(t, h, h.UserA.ID, note.ID, todoDoc(bullet{nodeID: "n1"}))
+			body := linkedTaskBody(note.ID, "n1", "Note task")
+			for k, v := range map[string]interface{}{
+				"status": "in-progress", "priority": "high", "tags": []string{"x"},
+				"description": "details", "dueDate": "2026-10-01",
+			} {
+				body[k] = v
+			}
+			w := h.Do(t, "POST", "/api/v1/tasks", body, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+			noteTask := Decode[model.Task](t, w)
+			w = h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{"title": "Board task", "folderId": f.ID.String(), "status": "done"}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+			boardTask := Decode[model.Task](t, w)
+			other := createFolder(t, h, h.UserA.ID, "Other")
+			w = h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{"title": "Elsewhere", "folderId": other.ID.String()}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+			elsewhere := Decode[model.Task](t, w)
+
+			w = h.Do(t, "DELETE", "/api/v1/pages/"+f.ID.String()+"?keepTasks=true", nil, h.UserA.ID)
+			require.Equal(t, http.StatusNoContent, w.Code, w.Body.String())
+
+			w = h.Do(t, "GET", "/api/v1/tasks/"+noteTask.ID.String(), nil, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, "keepTasks deleted the note's task: %s", w.Body.String())
+			got := Decode[model.Task](t, w)
+			assert.Nil(t, got.SourcePageID, "the kept task still points at the deleted note")
+			assert.Nil(t, got.SourceNodeID, "the kept task still points at the deleted bullet")
+			assert.Nil(t, got.FolderID)
+			assert.Equal(t, "Note task", got.Title)
+			assert.Equal(t, model.StatusInProgress, got.Status)
+			assert.Equal(t, model.Priority("high"), got.Priority)
+			assert.Equal(t, []string{"x"}, got.Tags)
+			assert.Equal(t, "details", got.Description)
+			if assert.NotNil(t, got.DueDate) {
+				assert.Equal(t, "2026-10-01", (*got.DueDate)[:10])
+			}
+
+			w = h.Do(t, "GET", "/api/v1/tasks/"+boardTask.ID.String(), nil, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, "keepTasks deleted the board task: %s", w.Body.String())
+			got = Decode[model.Task](t, w)
+			assert.Nil(t, got.FolderID, "the kept task still points at the deleted folder")
+			assert.Equal(t, model.StatusDone, got.Status)
+
+			if f := getTask(t, h, h.UserA.ID, elsewhere.ID).FolderID; assert.NotNil(t, f) {
+				assert.Equal(t, other.ID, *f, "a task outside the subtree was unfiled")
+			}
+		},
+
+		// Without the opt-in the subtree's tasks are soft-deleted (DI-21).
+		"DeleteWithoutKeepTasksSoftDeletesTasks": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			note := createPage(t, h, h.UserA.ID, "Note")
+			writeDoc(t, h, h.UserA.ID, note.ID, todoDoc(bullet{nodeID: "n1"}))
+			linked := createLinkedTask(t, h, h.UserA.ID, note.ID, "n1")
+
+			w := h.Do(t, "DELETE", "/api/v1/pages/"+note.ID.String()+"?keepTasks=false", nil, h.UserA.ID)
+			require.Equal(t, http.StatusNoContent, w.Code, w.Body.String())
+			assert.False(t, taskVisible(t, h, h.UserA.ID, linked.ID))
+		},
+
+		// keepTasks never reaches another user's task: theirs is unfiled
+		// either way.
+		"KeepTasksUnfilesOtherUsersBoardTasks": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			f := createFolder(t, h, h.UserA.ID, "Shared board")
+			shareFolder(t, h, f.ID.String(), h.UserA.ID, h.UserB.ID, "editor")
+			w := h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{"title": "Bob's", "folderId": f.ID.String()}, h.UserB.ID)
+			require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+			bobs := Decode[model.Task](t, w)
+
+			w = h.Do(t, "DELETE", "/api/v1/pages/"+f.ID.String()+"?keepTasks=true", nil, h.UserA.ID)
+			require.Equal(t, http.StatusNoContent, w.Code, w.Body.String())
+			got := getTask(t, h, h.UserB.ID, bobs.ID)
+			assert.Nil(t, got.FolderID)
+			assert.Equal(t, h.UserB.ID, got.UserID)
+		},
+
+		"KeepTasksMustBeABoolean": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			note := createPage(t, h, h.UserA.ID, "Note")
+			w := h.Do(t, "DELETE", "/api/v1/pages/"+note.ID.String()+"?keepTasks=maybe", nil, h.UserA.ID)
+			require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+			getPage(t, h, h.UserA.ID, note.ID) // not deleted
+		},
 	})
 }
