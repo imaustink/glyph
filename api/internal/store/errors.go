@@ -42,3 +42,12 @@ var ErrCycle = errors.New("a node cannot be moved under itself or one of its des
 // ErrLastOwner is returned when a membership change would leave an
 // organization with no owner.
 var ErrLastOwner = errors.New("organization must keep at least one owner")
+
+// ErrTaskLive is returned when moving a task onto another bullet while its
+// own bullet is still on its note: the bullet was copied, or it was cut and
+// the note's save without it hasn't reached the server yet.
+var ErrTaskLive = errors.New("the task's bullet is still on its note")
+
+// ErrTaskNotMovable is returned when moving a task that can't follow a
+// bullet: one the user deleted, or one that was never a bullet's task.
+var ErrTaskNotMovable = errors.New("the task can't be moved to another bullet")

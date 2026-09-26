@@ -114,6 +114,24 @@ func IsExternalRename(opts []TaskPatchOptions, before string, after *model.Task)
 	return external && after.Title != before && after.SourcePageID != nil && after.SourceNodeID != nil
 }
 
+// TaskMoveFrom is what the caller of MoveToBullet authorized against: the
+// task's owner and source page when it was read. The move is refused
+// (ErrConflict) if either changed in the meantime.
+type TaskMoveFrom struct {
+	OwnerID      uuid.UUID
+	SourcePageID *uuid.UUID
+}
+
+// TaskMove is where MoveToBullet puts a task: a bullet (PageID + NodeID), and
+// the owner, org and privacy that note gives its tasks.
+type TaskMove struct {
+	PageID    uuid.UUID
+	NodeID    string
+	OwnerID   uuid.UUID
+	OrgID     *uuid.UUID
+	IsPrivate bool
+}
+
 // TaskStore handles task persistence.
 type TaskStore interface {
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]*model.Task, error)
@@ -148,6 +166,19 @@ type TaskStore interface {
 	Upsert(ctx context.Context, t *model.Task) (*model.Task, error)
 	// Delete soft-deletes a task.
 	Delete(ctx context.Context, id, userID uuid.UUID) error
+	// GetForMove returns task id whether or not it is soft-deleted, with no
+	// access check: the caller authorizes a MoveToBullet against it.
+	GetForMove(ctx context.Context, id uuid.UUID) (*model.Task, error)
+	// MoveToBullet moves task id onto another bullet, for a bullet cut from
+	// one note and pasted into another. Under the task's row lock: a task
+	// soft-deleted because its bullet left its note ('source_removed') is
+	// restored onto dest, keeping everything else about it; a live task is
+	// ErrTaskLive (its bullet is still on its note — a copy — unless it is
+	// already on dest, which is returned as is, so a retry is harmless); a
+	// task the user deleted, or one that was never a bullet's, is
+	// ErrTaskNotMovable. ErrConflict if dest's bullet already has a task, or
+	// the task's owner or source page no longer match from.
+	MoveToBullet(ctx context.Context, id uuid.UUID, from TaskMoveFrom, dest TaskMove) (*model.Task, error)
 }
 
 // LaneReorderItem is used by ReorderAll to batch-update lane ordering.

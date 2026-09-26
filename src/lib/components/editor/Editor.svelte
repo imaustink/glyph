@@ -257,12 +257,22 @@
       }),
       NodeIdMapExtension,
       // Pasted/dropped bullets get their own identity, and never keep a task
-      // link to another note's (or another bullet's) task — in every mode.
+      // link to another note's (or another bullet's) task — in every mode. A
+      // bullet brought over from another note asks for that note's task to
+      // be moved onto it: it is, if the bullet was cut from there.
       PasteIdentityExtension.configure({
         taskBelongsHere: (taskId: string) => {
           const page = collab ? collabPageId : loadedPageId;
           const source = tasksStore.getById(taskId)?.sourcePageId ?? bulletRemoval.sourcePageOfRemoved(taskId);
           return !!page && source === page;
+        },
+        onForeignTaskPasted: (pasted) => {
+          const page = collab ? collabPageId : loadedPageId;
+          if (!page) return;
+          taskCreation.adoptPasted(
+            pasted.map((p) => ({ ...p, cut: bulletRemoval.sourcePageOfRemoved(p.taskId) !== undefined })),
+            page
+          );
         }
       }),
       Placeholder.configure({

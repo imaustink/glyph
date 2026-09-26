@@ -59,10 +59,24 @@ export interface IPageRepository extends IRepository<TreeNode> {
 
 // ─── Task Repository Interface ────────────────────────────────────────────────
 
+/** The bullet a task is moved to when its bullet is pasted into another note. */
+export interface TaskBullet {
+  sourcePageId: string;
+  sourceNodeId: string;
+}
+
 export interface ITaskRepository extends IRepository<Task> {
   getByPageId(pageId: string): Promise<Task[]>;
   getByNodeId(nodeId: string): Promise<Task | null>;
   applyFilter(tasks: Task[], filterSet: FilterSet, ctx?: FilterContext): Task[] | Promise<Task[]>;
+  /**
+   * API mode: ask the server to move the task onto `dest` (POST
+   * /tasks/:id/adopt). It only does so for a task whose bullet has left its
+   * note; otherwise it rejects (409 "source_live" while the bullet is still
+   * there). Absent in localStorage mode, where tasksStore moves the task
+   * itself.
+   */
+  adopt?(id: string, dest: TaskBullet): Promise<Task>;
 }
 
 // ─── Lane Repository Interface ────────────────────────────────────────────────

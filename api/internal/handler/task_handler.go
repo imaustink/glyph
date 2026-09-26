@@ -402,6 +402,102 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	c.JSON(http.StatusOK, task)
 }
 
+// AdoptTaskRequest is the body of POST /tasks/:id/adopt: the bullet the task
+// moves to.
+type AdoptTaskRequest struct {
+	SourcePageID uuid.UUID `json:"sourcePageId" binding:"required"`
+	SourceNodeID string    `json:"sourceNodeId" binding:"required,max=255"`
+}
+
+// POST /tasks/:id/adopt
+//
+// Moves a task onto a bullet pasted into another note, keeping the task (its
+// id, status, due date, description…) instead of the pasted bullet getting a
+// new one. The editor can't tell a cut from a copy, so the server decides,
+// atomically: only a task soft-deleted because its bullet left its note is
+// moved. A live task — a copy, or a cut whose save hasn't landed yet — is
+// 409 "source_live" and may be retried; a task the user deleted is 409
+// "not_movable"; a bullet that already has a task is 409 "source_taken".
+//
+// The caller must be able to edit the destination note (the task then
+// belongs to that note: its owner, org and privacy) and must own the task or
+// be able to edit the note it came from — a pasted or guessed task id must
+// not let anyone take someone else's task.
+func (h *TaskHandler) AdoptTask(c *gin.Context) {
+	user := auth.CurrentUser(c)
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req AdoptTaskRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	dest, ok := h.resolveSourcePage(c, req.SourcePageID, user.ID)
+	if !ok {
+		return
+	}
+	var owner model.Task
+	if !adoptSourcePage(c, &owner, dest) {
+		return
+	}
+	task, err := h.Tasks.GetForMove(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+			return
+		}
+		internalError(c, err)
+		return
+	}
+	if !h.authorizeTaskTake(c, task, user.ID) {
+		return
+	}
+	moved, err := h.Tasks.MoveToBullet(c.Request.Context(), id,
+		store.TaskMoveFrom{OwnerID: task.UserID, SourcePageID: task.SourcePageID},
+		store.TaskMove{PageID: dest.ID, NodeID: req.SourceNodeID, OwnerID: owner.UserID, OrgID: owner.OrgID, IsPrivate: owner.IsPrivate},
+	)
+	switch {
+	case err == nil:
+		c.JSON(http.StatusOK, moved)
+	case errors.Is(err, store.ErrNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+	case errors.Is(err, store.ErrTaskLive):
+		c.JSON(http.StatusConflict, gin.H{"error": "the task's bullet is still on its note", "code": "source_live"})
+	case errors.Is(err, store.ErrTaskNotMovable):
+		c.JSON(http.StatusConflict, gin.H{"error": "this task can't be moved", "code": "not_movable"})
+	case errors.Is(err, store.ErrConflict):
+		c.JSON(http.StatusConflict, gin.H{"error": "that bullet is already linked to another task", "code": "source_taken"})
+	default:
+		internalError(c, err)
+	}
+}
+
+// authorizeTaskTake checks that userID may take task (live or soft-deleted)
+// away from where it is: they own it, or may edit the note it comes from.
+// Someone who can't see the task gets 404, as if it didn't exist; on failure
+// it writes the response and returns false.
+func (h *TaskHandler) authorizeTaskTake(c *gin.Context, task *model.Task, userID uuid.UUID) bool {
+	if !checkTokenScope(c, task.OrgID, model.ShareResourceTask, true) {
+		return false
+	}
+	if task.UserID == userID {
+		return true
+	}
+	if task.SourcePageID != nil && h.Pages != nil {
+		page, err := h.Pages.GetByID(c.Request.Context(), *task.SourcePageID, userID)
+		if err == nil {
+			return h.Perms.CanWritePage(c, page, userID)
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			internalError(c, err)
+			return false
+		}
+	}
+	c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+	return false
+}
+
 // DELETE /tasks/:id
 func (h *TaskHandler) DeleteTask(c *gin.Context) {
 	user := auth.CurrentUser(c)

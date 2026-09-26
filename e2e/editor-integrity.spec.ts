@@ -209,4 +209,93 @@ test.describe('Editor data integrity', () => {
 		await bullet.locator('.task-open-link').click();
 		await expect(page.locator('h1.task-title')).toHaveText('Buy oat milk!', { timeout: 15_000 });
 	});
+
+	// Review follow-up to DI-10: moving a linked bullet to another note used
+	// to leave its task deleted with the first note and give the second a
+	// bare new task — losing status, priority, due date, description…
+	test('cutting a linked bullet from one note and pasting it into another moves its task (DI-10)', async ({ page, storageMode }) => {
+		const taskId = await createLinkedBullet(page, 'Pack the tent');
+		const noteA = page.url();
+
+		// Give the task some metadata on its own page.
+		await page.locator(`main .tiptap-editor li[data-task-id="${taskId}"] .task-open-link`).click();
+		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 15_000 });
+		const meta = (label: string) => page.locator(`.meta-row:has(.meta-label:text-is("${label}")) select`);
+		await meta('Status').selectOption('in-progress');
+		await meta('Priority').selectOption('high');
+		await expect(meta('Status')).toHaveValue('in-progress');
+		await expect(meta('Priority')).toHaveValue('high');
+		await page.waitForTimeout(500);
+		await page.locator('a.source-link').click();
+		await waitForEditorReady(page);
+		const inA = page.locator(`main .tiptap-editor li[data-task-id="${taskId}"]`);
+		await expect(inA).toHaveAttribute('data-task-status', 'in-progress', { timeout: 15_000 });
+
+		// Cut the bullet, as the browser does: a cut event whose clipboard the
+		// editor fills, then deletes the selection.
+		const html = await page.locator('main .tiptap-editor').evaluate((el, taskId) => {
+			type PMNode = { type: { name: string }; attrs: Record<string, unknown> };
+			const editor = (el as unknown as {
+				editor: {
+					state: { doc: { descendants(f: (n: PMNode, pos: number) => void): void } };
+					commands: { setNodeSelection(pos: number): boolean };
+				};
+			}).editor;
+			let pos = -1;
+			editor.state.doc.descendants((n, p) => {
+				if (n.type.name === 'listItem' && n.attrs.taskId === taskId) pos = p;
+			});
+			editor.commands.setNodeSelection(pos);
+			const data = new DataTransfer();
+			el.dispatchEvent(new ClipboardEvent('cut', { clipboardData: data, bubbles: true, cancelable: true }));
+			return data.getData('text/html');
+		}, taskId);
+		expect(html).toContain(taskId);
+		await expect(inA).toHaveCount(0);
+
+		// Paste it into a new note, under the TODO heading its template has.
+		await createNewPage(page);
+		const noteB = page.url();
+		expect(noteB).not.toBe(noteA);
+		const titleInput = page.locator('input.title-edit');
+		if (await titleInput.isVisible()) await titleInput.press('Escape');
+		const editor = page.locator('main .tiptap-editor');
+		await editor.locator('h1:has-text("TODO")').click();
+		await page.keyboard.press('End');
+		await page.keyboard.press('Enter');
+		await selectionSettled(page);
+		await editor.evaluate((el, html) => {
+			const data = new DataTransfer();
+			data.setData('text/html', html);
+			el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+		}, html);
+
+		// The pasted bullet is linked to the same task, status and all — in
+		// API mode once the server has seen the cut (a collaborative note
+		// saves it a moment after it happens).
+		const inB = page.locator(`main .tiptap-editor li[data-task-id="${taskId}"]`);
+		await expect(inB).toHaveCount(1, { timeout: 25_000 });
+		await expect(inB).toContainText('Pack the tent');
+		await expect(inB).toHaveAttribute('data-task-status', 'in-progress');
+		await expect(popover(page)).not.toBeVisible();
+
+		await inB.locator('.task-open-link').click();
+		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 15_000 });
+		await expect(page).toHaveURL(new RegExp(taskId));
+		await expect(meta('Status')).toHaveValue('in-progress');
+		await expect(meta('Priority')).toHaveValue('high');
+		await page.locator('a.source-link').click();
+		await expect(page).toHaveURL(noteB, { timeout: 15_000 });
+		await waitForEditorReady(page);
+
+		// One task, not two.
+		if (storageMode === 'api') {
+			const all = (await (await page.request.get('/api/v1/tasks')).json()) as { id: string; title: string }[];
+			expect(all.filter((t) => t.title === 'Pack the tent').map((t) => t.id)).toEqual([taskId]);
+		}
+		await navigateToTaskBoard(page);
+		// The first lane is "All Tasks".
+		await expect(page.locator('.lane').first().locator('.task-card:has-text("Pack the tent")')).toHaveCount(1, { timeout: 15_000 });
+	});
 });
+

@@ -228,4 +228,17 @@ describe('ApiTaskRepository', () => {
       expect(result).toEqual(filtered);
     });
   });
+
+  describe('adopt', () => {
+    it('POSTs the destination bullet to /api/v1/tasks/:id/adopt and returns the moved task', async () => {
+      const moved = makeTask({ id: 'task-T', sourcePageId: 'page-B', sourceNodeId: 'n-b' });
+      mockPost.mockResolvedValueOnce(moved);
+
+      const result = await repo.adopt('task-T', { sourcePageId: 'page-B', sourceNodeId: 'n-b' });
+
+      expect(mockPost).toHaveBeenCalledWith('/api/v1/tasks/task-T/adopt', { sourcePageId: 'page-B', sourceNodeId: 'n-b' });
+      expect(result).toEqual(moved);
+    });
+  });
 });
+

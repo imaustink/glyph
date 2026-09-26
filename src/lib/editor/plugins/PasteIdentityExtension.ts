@@ -13,6 +13,12 @@
  *    `taskBelongsHere` option), or that another bullet already has, is
  *    dropped, with a fresh nodeId (the old one names the other bullet's
  *    task). The bullet is then detected as a new TODO bullet if it is one.
+ *  - A bullet carrying another note's task may be that bullet moving here
+ *    (cut from that note, pasted here) rather than a copy. The editor can't
+ *    tell, so it reports the bullet — its fresh nodeId and the task id — to
+ *    `onForeignTaskPasted`, which asks the server to move the task onto it
+ *    (POST /tasks/:id/adopt). Until that settles the bullet stays unlinked,
+ *    and the caller holds back creating a new task for it.
  *  - A bullet cut and pasted back into the same note keeps both: its old
  *    copy is gone by then, and its task is this page's.
  *
@@ -29,6 +35,19 @@ import { changedRanges, nodeTouches, type Range } from '$lib/editor/changedRange
 export interface PasteIdentityOptions {
 	/** Whether a task id seen in pasted content is one of this page's tasks. */
 	taskBelongsHere: (taskId: string) => boolean;
+	/**
+	 * Bullets pasted with another note's task, under their new nodeIds (one
+	 * per task). Called synchronously from the paste's appendTransaction, so
+	 * it runs before task detection for the same paste; it must not dispatch.
+	 */
+	onForeignTaskPasted?: (pasted: ForeignTaskPasted[]) => void;
+}
+
+export interface ForeignTaskPasted {
+	/** The pasted bullet's new nodeId. */
+	nodeId: string;
+	/** The task it was linked to where it was copied or cut from. */
+	taskId: string;
 }
 
 export const pasteIdentityPluginKey = new PluginKey('paste-identity');
@@ -42,7 +61,7 @@ export const PasteIdentityExtension = Extension.create<PasteIdentityOptions>({
 	name: 'pasteIdentity',
 
 	addOptions() {
-		return { taskBelongsHere: () => false };
+		return { taskBelongsHere: () => false, onForeignTaskPasted: undefined };
 	},
 
 	addProseMirrorPlugins() {
@@ -81,6 +100,8 @@ export const PasteIdentityExtension = Extension.create<PasteIdentityOptions>({
 					const tr = newState.tr;
 					const seenNodeIds = new Set<string>();
 					const seenTaskIds = new Set<string>();
+					const foreign: ForeignTaskPasted[] = [];
+					const reported = new Set<string>();
 					let changed = false;
 					newState.doc.descendants((node, pos) => {
 						if (node.type.name !== 'listItem' || !nodeTouches(node, pos, ranges)) return;
@@ -91,19 +112,27 @@ export const PasteIdentityExtension = Extension.create<PasteIdentityOptions>({
 							!!taskId &&
 							(establishedTaskIds.has(taskId) || seenTaskIds.has(taskId) || !options.taskBelongsHere(taskId));
 						if (copiedNode || foreignTask) {
+							const fresh = nanoid();
 							tr.setNodeMarkup(pos, undefined, {
 								...node.attrs,
-								nodeId: nanoid(),
+								nodeId: fresh,
 								taskId: null,
 								checked: false,
 								taskStatus: 'todo'
 							});
 							changed = true;
+							// Another note's task, seen once in this paste and not already
+							// linked here: possibly this bullet moving over.
+							if (taskId && !copiedNode && !establishedTaskIds.has(taskId) && !seenTaskIds.has(taskId) && !reported.has(taskId)) {
+								reported.add(taskId);
+								foreign.push({ nodeId: fresh, taskId });
+							}
 							return;
 						}
 						if (nodeId) seenNodeIds.add(nodeId);
 						if (taskId) seenTaskIds.add(taskId);
 					});
+					if (foreign.length > 0) options.onForeignTaskPasted?.(foreign);
 					return changed ? tr.setMeta('addToHistory', false) : null;
 				}
 			})

@@ -970,6 +970,12 @@ func (m *mockTaskStore) CreateLinked(ctx context.Context, t *model.Task) (*model
 	}
 	return t, true, nil
 }
+func (m *mockTaskStore) GetForMove(_ context.Context, _ uuid.UUID) (*model.Task, error) {
+	return nil, store.ErrNotFound
+}
+func (m *mockTaskStore) MoveToBullet(_ context.Context, _ uuid.UUID, _ store.TaskMoveFrom, _ store.TaskMove) (*model.Task, error) {
+	return nil, store.ErrNotFound
+}
 func (m *mockTaskStore) Update(_ context.Context, t *model.Task) (*model.Task, error) {
 	if m.updateFn != nil {
 		return m.updateFn(t)

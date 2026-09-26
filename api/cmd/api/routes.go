@@ -84,6 +84,7 @@ func registerRoutes(apiGroup *gin.RouterGroup, h *handlers) {
 	apiGroup.POST("/tasks/filter", h.tasks.FilterTasks)
 	apiGroup.GET("/tasks/:id", h.tasks.GetTask)
 	apiGroup.PATCH("/tasks/:id", h.tasks.UpdateTask)
+	apiGroup.POST("/tasks/:id/adopt", h.tasks.AdoptTask)
 	apiGroup.PUT("/tasks/:id", h.tasks.UpsertTask)
 	apiGroup.DELETE("/tasks/:id", h.tasks.DeleteTask)
 
