@@ -919,6 +919,28 @@ describe('task titles renamed while the note was closed (DI-29)', () => {
 		expect(bulletText(bob)).toBe('Buy oat milk');
 	});
 
+	it('a rename the bullet has shown is not applied again on the next load', async () => {
+		// Applied live, it is recorded as applied: a later edit to the bullet
+		// keeps its text even if its title sync never reached the task.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [bulletList([{ nodeId: 'n1', taskId: 't1', text: 'Buy milk' }])]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy milk'));
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+		expect(await server.collab.onTaskTitle(PAGE, 'n1', 'Buy oat milk')).toBe(true);
+		await eventually(() => bulletText(alice) === 'Buy oat milk', 3000, 'title reached client');
+		const run = bulletRun(alice);
+		run.delete(0, run.length);
+		run.insert(0, 'Buy soy milk');
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy soy milk'));
+		alice.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		expect(bulletText(bob)).toBe('Buy soy milk');
+	});
+
 	it('a rename the bullet never showed wins over a bullet edit whose title never reached the task', async () => {
 		// Nothing records which bullet an edit touched, so an unapplied rename
 		// over a bullet that doesn't match the task looks the same whether or

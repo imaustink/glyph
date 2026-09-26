@@ -238,7 +238,7 @@ Lane filtering is a pure function in [filterUtils.ts](../src/lib/storage/filterU
 - *Templates* strip `nodeId`/`taskId`/`checked`/`taskStatus` when instantiated (`evaluateContentTemplate`).
 - *Titles flow both ways.* Bullet → task goes through the debounced `syncLinkedTaskTitleRealtime`, for every linked bullet a transaction touched, not only the cursor's. The flush sends `X-Glyph-Change-Source: bullet` (`WriteOptions.source`), so the API knows the title came from the bullet and doesn't treat it as a rename. Task → bullet depends on the mode:
   - **Single-writer:** the editor does it on load and on an external rename (`useTaskSync`, `syncTitlesToBullets`).
-  - **Collab:** the editor never does it, because every client would make the same text edit and Yjs would merge them into duplicated text. The collab service does it instead: live from the API's `task-title` notification, and on load from `tasks.title_renamed_at` for notes that were closed (DI-29, [collab/README.md](../collab/README.md)).
+  - **Collab:** the editor never does it, because every client would make the same text edit and Yjs would merge them into duplicated text. The collab service does it instead: live from the API's `task-title` notification, and on load for notes that were closed, for each task whose `tasks.title_renamed_at` is newer than its `title_applied_at` (DI-29, [collab/README.md](../collab/README.md)).
   - Any new code path that writes a task title *from bullet text* must send `source: 'bullet'`. Without it, the API echoes the title back into the note.
 
 ### Realtime collaborative editing

@@ -4,7 +4,7 @@
  * counter like the BIGSERIAL.
  */
 import * as Y from 'yjs';
-import type { CollabDocState, Lease, LoadedDoc, Persistence, Seeder, StoredUpdate, TaskTitle } from '../../src/persistence.js';
+import type { CollabDocState, ExclusiveEdit, Lease, LoadedDoc, Persistence, Seeder, StoredUpdate, TaskTitle } from '../../src/persistence.js';
 import { NotFoundError } from '../../src/persistence.js';
 
 interface Row extends StoredUpdate {
@@ -43,9 +43,10 @@ export class MemoryPersistence implements Persistence {
 	leases = new Map<string, { pageId: string; holder: string; epoch: number; expiresAt: number }>();
 	/**
 	 * Note tasks renamed outside the editor (tasks.title_renamed_at), stamped
-	 * with the logical clock below.
+	 * with the logical clock below, and the rename their bullet has caught up
+	 * with (tasks.title_applied_at).
 	 */
-	renamedTasks: { pageId: string; nodeId: string; title: string; renamedAt: number }[] = [];
+	renamedTasks: { pageId: string; nodeId: string; title: string; renamedAt: number; appliedAt?: number }[] = [];
 	/** Set to make reading renamed task titles throw. */
 	failRenamedTitles = false;
 	private seq = 0;
@@ -144,7 +145,12 @@ export class MemoryPersistence implements Persistence {
 			}
 			const initial = seed(this.pages.get(pageId) ?? null);
 			this.seedCount++;
-			const seq = this.startEpoch(pageId, d, d.epoch + 1, initial, fingerprint, this.contentAt.get(pageId) ?? this.tick());
+			const contentAt = this.contentAt.get(pageId);
+			const seq = this.startEpoch(pageId, d, d.epoch + 1, initial, fingerprint, contentAt ?? this.tick());
+			// Renames older than the stored content are settled by it.
+			for (const t of this.renamedTasks) {
+				if (t.pageId === pageId && contentAt !== undefined && t.renamedAt <= contentAt) t.appliedAt = t.renamedAt;
+			}
 			this.takeLease(pageId, lease, d.epoch);
 			return {
 				epoch: d.epoch,
@@ -206,7 +212,7 @@ export class MemoryPersistence implements Persistence {
 		pageId: string,
 		epoch: number,
 		afterSeq: number,
-		build: (rows: StoredUpdate[]) => Uint8Array | null
+		build: (rows: StoredUpdate[]) => ExclusiveEdit
 	): Promise<number | null | 'stale'> {
 		return this.locked(pageId, async () => {
 			await this.beforeAppend?.(pageId, epoch);
@@ -216,7 +222,12 @@ export class MemoryPersistence implements Persistence {
 			}
 			const d = this.docs.get(pageId);
 			if (!d || d.epoch !== epoch || !d.attached) return 'stale';
-			const update = build(this.rowsFor(pageId, epoch, afterSeq));
+			const { update, titlesShown = [] } = build(this.rowsFor(pageId, epoch, afterSeq));
+			for (const shown of titlesShown) {
+				for (const t of this.renamedTasks) {
+					if (t.pageId === pageId && t.nodeId === shown.nodeId && t.title === shown.title) t.appliedAt = t.renamedAt;
+				}
+			}
 			if (!update) return null;
 			const seq = ++this.seq;
 			this.rows.push({ pageId, epoch, seq, data: update, at: this.tick() });
@@ -241,11 +252,10 @@ export class MemoryPersistence implements Persistence {
 		});
 	}
 
-	async renamedTaskTitles(pageId: string, since: string | null): Promise<TaskTitle[]> {
+	async renamedTaskTitles(pageId: string): Promise<TaskTitle[]> {
 		if (this.failRenamedTitles) throw new Error('simulated database outage');
-		const after = since === null ? -Infinity : Number(since);
 		return this.renamedTasks
-			.filter((t) => t.pageId === pageId && t.renamedAt > after)
+			.filter((t) => t.pageId === pageId && (t.appliedAt === undefined || t.appliedAt < t.renamedAt))
 			.sort((a, b) => a.renamedAt - b.renamedAt)
 			.map(({ nodeId, title }) => ({ nodeId, title }));
 	}

@@ -31,13 +31,22 @@
  *
  *  - A log row's created_at is when the newest content it holds was
  *    written, so the log's newest created_at says how recent the document
- *    is (DI-29: a task renamed after that is put into its bullet on load).
+ *    is (DI-29: before migration 000026, a task renamed after that is put
+ *    into its bullet on load; see the next point for the rule since).
  *    An appended row is stamped when appended; the row that starts an epoch
  *    carries the time of what it was built from (page_contents.updated_at
  *    for a seed, the replaced log's newest time for a schema re-seed); a
  *    compacted row the newest time of the rows it merged. (Collab builds
  *    from before this stamp seeds and compactions with NOW(), which only
  *    makes an older rename look already applied.)
+ *
+ *  - A task rename made outside the note (tasks.title_renamed_at) is owed
+ *    to its bullet until tasks.title_applied_at catches up with it (DI-29,
+ *    api/migrations/000026_task_title_applied_at.up.sql). That is set in
+ *    the transaction of the exclusive append that put the title into the
+ *    bullet (or found it there), and in the seeding transaction for renames
+ *    older than the stored content the epoch is built from. Per task: the
+ *    log's newest write says when the note last changed, not which bullet.
  */
 import * as Y from 'yjs';
 import pg from 'pg';
@@ -74,6 +83,18 @@ export interface LoadedDoc {
 export interface TaskTitle {
 	nodeId: string;
 	title: string;
+}
+
+/** What an appendExclusive build decided. */
+export interface ExclusiveEdit {
+	/** The update to append, or null for none. */
+	update: Uint8Array | null;
+	/**
+	 * Task titles their bullets show once `update` is in (whether or not it
+	 * changed them). Recorded as applied (tasks.title_applied_at) in the same
+	 * transaction, for tasks whose title is still this one.
+	 */
+	titlesShown?: TaskTitle[];
 }
 
 export interface StoredPageContent {
@@ -122,19 +143,19 @@ export interface Persistence {
 	/**
 	 * Append an update built from the latest log, holding the page's log
 	 * lock from reading it to committing: `build` gets the epoch's rows after
-	 * `afterSeq` (to apply before deciding) and returns the update to append,
-	 * or null for none. Two replicas making the same server edit therefore
+	 * `afterSeq` (to apply before deciding) and returns the update to append
+	 * (or null for none) and the task titles it leaves showing. Two replicas making the same server edit therefore
 	 * run one after the other, and the second sees the first's row — so an
 	 * edit that must happen once (a task title put into its bullet: made
 	 * twice, the text would merge into a duplicate) happens once. Returns the
-	 * appended seq, null if `build` returned null, or 'stale' (build not
+	 * appended seq, null if `build` returned no update, or 'stale' (build not
 	 * called) if the epoch is no longer current and attached.
 	 */
 	appendExclusive(
 		pageId: string,
 		epoch: number,
 		afterSeq: number,
-		build: (rows: StoredUpdate[]) => Uint8Array | null
+		build: (rows: StoredUpdate[]) => ExclusiveEdit
 	): Promise<number | null | 'stale'>;
 	/** Updates in the epoch with seq > afterSeq, in seq order. */
 	fetchSince(pageId: string, epoch: number, afterSeq: number): Promise<StoredUpdate[]>;
@@ -142,8 +163,12 @@ export interface Persistence {
 	compact(pageId: string, epoch: number): Promise<number | null>;
 	/**
 	 * The page's live tasks renamed outside the editor (tasks.title_renamed_at)
-	 * after `since` (a LoadedDoc.contentAsOf; null = any time). Empty while the
-	 * database predates that column.
+	 * whose bullets are still owed the rename: not yet recorded as applied
+	 * (tasks.title_applied_at, see ExclusiveEdit.titlesShown), nor older than
+	 * the stored content the epoch was seeded from. While the database
+	 * predates title_applied_at, renames after `since` (a
+	 * LoadedDoc.contentAsOf; null = any time) instead. Empty while it predates
+	 * title_renamed_at.
 	 */
 	renamedTaskTitles(pageId: string, since: string | null): Promise<TaskTitle[]>;
 	/** Mark the page quarantined (read-only for collaborators) in the given epoch. */
@@ -173,15 +198,23 @@ export class PgPersistence implements Persistence {
 	 * have the table yet: until it does, leasing is skipped (re-seeding
 	 * behaves as it did before leases). Re-checked at most every 30 s.
 	 */
-	private leases: { available: boolean; checkedAt: number } | null = null;
+	private leases: SchemaCheck = { available: false, checkedAt: -Infinity };
+	/** Likewise tasks.title_applied_at (migration 000026): until it exists, renames are compared with the log's newest write. */
+	private titleMarkers: SchemaCheck = { available: false, checkedAt: -Infinity };
 
 	constructor(private readonly pool: pg.Pool) {}
 
-	private async leasesAvailable(c: pg.PoolClient | pg.Pool = this.pool): Promise<boolean> {
-		if (this.leases && (this.leases.available || Date.now() - this.leases.checkedAt < 30000)) return this.leases.available;
-		const { rows } = await c.query(`SELECT to_regclass('page_collab_leases') IS NOT NULL AS ok`);
-		this.leases = { available: rows[0].ok, checkedAt: Date.now() };
-		return this.leases.available;
+	private leasesAvailable(c: pg.PoolClient | pg.Pool = this.pool): Promise<boolean> {
+		return schemaHas(this.leases, c, `SELECT to_regclass('page_collab_leases') IS NOT NULL AS ok`);
+	}
+
+	private titleMarkersAvailable(c: pg.PoolClient | pg.Pool = this.pool): Promise<boolean> {
+		return schemaHas(
+			this.titleMarkers,
+			c,
+			`SELECT EXISTS (SELECT 1 FROM pg_attribute
+			   WHERE attrelid = to_regclass('tasks') AND attname = 'title_applied_at' AND NOT attisdropped) AS ok`
+		);
 	}
 
 	static fromUrl(url: string): PgPersistence {
@@ -352,6 +385,19 @@ export class PgPersistence implements Persistence {
 			 VALUES ($1, $2, $3, COALESCE(${contentTime}, NOW())) RETURNING seq`,
 			[pageId, epoch, Buffer.from(initial)]
 		);
+		// Stored content written after a rename is a whole-document write
+		// newer than it (a version restore, a REST save): the rename is
+		// settled. A schema re-seed carries the replaced log's bullets over
+		// as they were, and whatever they were owed with them.
+		if (builtFrom === 'page_contents' && (await this.titleMarkersAvailable(c))) {
+			await c.query(
+				`UPDATE tasks SET title_applied_at = title_renamed_at
+				 WHERE source_page_id = $1 AND title_renamed_at IS NOT NULL
+				   AND title_renamed_at <= (SELECT updated_at FROM page_contents WHERE page_id = $1)
+				   AND (title_applied_at IS NULL OR title_applied_at < title_renamed_at)`,
+				[pageId]
+			);
+		}
 		// Earlier epochs are dead: no client may ever sync into them again, and
 		// their content is preserved in page_content_versions.
 		await c.query(`DELETE FROM page_collab_updates WHERE page_id = $1 AND seq <> $2`, [pageId, ins.rows[0].seq]);
@@ -387,7 +433,7 @@ export class PgPersistence implements Persistence {
 		pageId: string,
 		epoch: number,
 		afterSeq: number,
-		build: (rows: StoredUpdate[]) => Uint8Array | null
+		build: (rows: StoredUpdate[]) => ExclusiveEdit
 	): Promise<number | null | 'stale'> {
 		return this.tx(async (c) => {
 			// The seq-order lock (see the header), held to commit.
@@ -400,13 +446,28 @@ export class PgPersistence implements Persistence {
 				`SELECT seq, data FROM page_collab_updates WHERE page_id = $1 AND epoch = $2 AND seq > $3 ORDER BY seq`,
 				[pageId, epoch, afterSeq]
 			);
-			const update = build(rows.map(toStoredUpdate));
-			if (!update) return null;
-			const ins = await c.query(
-				`INSERT INTO page_collab_updates (page_id, epoch, data) VALUES ($1, $2, $3) RETURNING seq`,
-				[pageId, epoch, Buffer.from(update)]
-			);
-			return Number(ins.rows[0].seq);
+			const { update, titlesShown = [] } = build(rows.map(toStoredUpdate));
+			let seq: number | null = null;
+			if (update) {
+				const ins = await c.query(
+					`INSERT INTO page_collab_updates (page_id, epoch, data) VALUES ($1, $2, $3) RETURNING seq`,
+					[pageId, epoch, Buffer.from(update)]
+				);
+				seq = Number(ins.rows[0].seq);
+			}
+			// Only a task whose title is still the one shown: a rename to
+			// something else since is still owed.
+			if (titlesShown.length > 0 && (await this.titleMarkersAvailable(c))) {
+				await c.query(
+					`UPDATE tasks t SET title_applied_at = t.title_renamed_at
+					 FROM unnest($2::text[], $3::text[]) AS s(node_id, title)
+					 WHERE t.source_page_id = $1 AND t.source_node_id = s.node_id AND t.title = s.title
+					   AND t.deleted_at IS NULL AND t.title_renamed_at IS NOT NULL
+					   AND (t.title_applied_at IS NULL OR t.title_applied_at < t.title_renamed_at)`,
+					[pageId, titlesShown.map((t) => t.nodeId), titlesShown.map((t) => t.title)]
+				);
+			}
+			return seq;
 		});
 	}
 
@@ -456,12 +517,15 @@ export class PgPersistence implements Persistence {
 
 	async renamedTaskTitles(pageId: string, since: string | null): Promise<TaskTitle[]> {
 		try {
+			const [owed, params] = (await this.titleMarkersAvailable())
+				? [`(title_applied_at IS NULL OR title_applied_at < title_renamed_at)`, [pageId]]
+				: [`($2::timestamptz IS NULL OR title_renamed_at > $2::timestamptz)`, [pageId, since]];
 			const { rows } = await this.pool.query(
 				`SELECT source_node_id, title FROM tasks
 				 WHERE source_page_id = $1 AND source_node_id IS NOT NULL AND deleted_at IS NULL
-				   AND title_renamed_at IS NOT NULL AND ($2::timestamptz IS NULL OR title_renamed_at > $2::timestamptz)
+				   AND title_renamed_at IS NOT NULL AND ${owed}
 				 ORDER BY title_renamed_at`,
-				[pageId, since]
+				params
 			);
 			return rows.map((r) => ({ nodeId: r.source_node_id, title: r.title }));
 		} catch (err) {
@@ -483,6 +547,21 @@ export class PgPersistence implements Persistence {
 	async close(): Promise<void> {
 		await this.pool.end();
 	}
+}
+
+/** A cached check that part of the schema exists (see PgPersistence.leases). */
+interface SchemaCheck {
+	available: boolean;
+	checkedAt: number;
+}
+
+/** Once there, it stays there; missing, it is re-checked at most every 30 s. */
+async function schemaHas(check: SchemaCheck, c: pg.PoolClient | pg.Pool, sql: string): Promise<boolean> {
+	if (check.available || Date.now() - check.checkedAt < 30000) return check.available;
+	const { rows } = await c.query(sql);
+	check.available = rows[0].ok;
+	check.checkedAt = Date.now();
+	return check.available;
 }
 
 function toStoredUpdate(row: { seq: string | number; data: Buffer }): StoredUpdate {

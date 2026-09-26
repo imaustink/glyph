@@ -156,24 +156,41 @@ title, on two paths:
   at either end keeps its formatting, and new text takes the formatting of the
   character before it.
 - **The note is closed.** The same PATCH sets `tasks.title_renamed_at`. When a
-  document loads, `afterLoadDocument` applies the titles of tasks renamed after
-  the loaded content was written, before any editor syncs. A bullet edited
-  after the rename is newer, so it keeps its text. "When the content was
-  written" is the newest `created_at` in the epoch's log, and a row's
-  `created_at` is when the newest content in it was written:
-  - an appended row is stamped when it is appended;
-  - a seed row carries `page_contents.updated_at`;
-  - a schema re-seed row carries the replaced log's newest time;
-  - a compacted row carries the newest time of the rows it merged.
+  document loads, `afterLoadDocument` applies the titles of tasks whose bullets
+  are still owed their rename, before any editor syncs.
 
 Either way the edit is written once, even when several replicas hold the
 note. It is built and appended under the page's log lock from the latest log
 (`appendExclusive`). A replica that finds the title already there writes
 nothing.
 
-This is best effort, like status. If a notification is missed while the note
-is open, the title arrives on the next load, unless the bullet was edited
-first. Some races remain:
+**Which renames are owed.** This is tracked per task, because nothing records
+which bullet an edit touched. The note's newest write can't be used: an edit
+to any other bullet would make it newer than the rename. A rename is owed
+until `tasks.title_applied_at` (migration 000026) catches up with
+`tasks.title_renamed_at`. Two things set it:
+
+- The collab writer, in the same transaction as its `appendExclusive`, for
+  each bullet that shows its task's title afterwards, whether it wrote the
+  title or found it already there. This covers both the live path and the load
+  path. A task renamed again to a different title since then stays owed.
+- Seeding a new epoch from `page_contents` written after the rename, such as a
+  version restore or a REST save that detached the note. That whole-document
+  write is newer than the rename, so the stored content wins. A schema
+  re-seed carries the old log's bullets over, and any renames they are owed
+  go with them.
+
+A bullet edited after the rename keeps its text, because the editor's title
+sync gives the task that text. Writing the task's title into the bullet then
+changes nothing, and the rename is recorded as applied. There is one edge. A
+rename that the bullet never showed wins over a later edit to that bullet
+whose title never reached the task (for example, the tab closed within the
+sync debounce). The two cases look the same, and the task's title is the one
+on record.
+
+This is best effort, like status. If a notification is missed, or applying on
+load fails, the rename stays owed and arrives on a later load. Some races
+remain:
 
 - Someone types in the bullet within the editor's title debounce (500 ms) of
   a rename. Their debounced title can then land after the rename, so the task
@@ -188,3 +205,16 @@ first. Some races remain:
   compacted rows with `NOW()`, which can only make an older rename look
   already applied. It never applies a rename over newer text.
 - A collab pod that starts before migration 000025 has run finds no renames.
+- Before migration 000026 has run, a collab pod falls back to comparing renames
+  with the note's newest write. That write is the newest `created_at` in the
+  epoch's log, and each row's `created_at` is when the newest content in it
+  was written: an appended row when it is appended, a seed row
+  `page_contents.updated_at`, a schema re-seed row the replaced log's newest
+  time, and a compacted row the newest time of the rows it merged. Under this
+  fallback an edit to another bullet hides the rename, and nothing is recorded
+  as applied. The pod rechecks for the column every 30 s.
+- Collab pods from before this change never set `title_applied_at`. A new pod
+  applies any rename still owed when it next loads the note. That is a no-op if
+  the bullet already shows the title. One case goes wrong: a note seeded by an
+  old pod from content restored after a rename. The new pod doesn't know the
+  seed settled the rename, so it applies it over the restored text.

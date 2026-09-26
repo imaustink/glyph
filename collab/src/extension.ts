@@ -59,7 +59,7 @@ import {
 import type { Api, CollabSession } from './api.js';
 import type { Lease, Persistence, StoredPageContent } from './persistence.js';
 import { NotFoundError } from './persistence.js';
-import { inspect, repair, seedUpdate, setListItemStatus, setListItemText, toJSON, type ProseMirrorJSON } from './documentRules.js';
+import { inspect, listItemShowsText, repair, seedUpdate, setListItemStatus, setListItemText, toJSON, type ProseMirrorJSON } from './documentRules.js';
 import type { TaskStatus } from '$lib/models/types';
 import type { Logger } from './log.js';
 import { originAllowed } from './origin.js';
@@ -420,14 +420,18 @@ export class GlyphCollab implements Extension {
 	}
 
 	/**
-	 * Put the titles of tasks renamed outside the editor since the loaded
-	 * content was written into their bullets (DI-29). While the note was
-	 * closed there was no copy to take the live notification, and editors
-	 * can't sync titles into a shared document themselves (they would
-	 * duplicate the text). A bullet edited after the rename is newer than it
-	 * and keeps its text. Runs after the document is registered, so a rename
+	 * Put the titles of tasks renamed outside the editor into their bullets,
+	 * if the bullets haven't shown them yet (DI-29; Persistence
+	 * renamedTaskTitles). While the note was closed there was no copy to take
+	 * the live notification, and editors can't sync titles into a shared
+	 * document themselves (they would duplicate the text). Owed renames are
+	 * tracked per task, not by the note's last write: an edit to another
+	 * bullet says nothing about this one. A bullet edited after the rename
+	 * gave the task its text (the editor's title sync), so writing the title
+	 * changes nothing. Runs after the document is registered, so a rename
 	 * committed after the query arrives as a notification instead. Best
-	 * effort: a failure is logged, and the note opens as it is.
+	 * effort: a failure is logged, the note opens as it is, and the rename is
+	 * still owed on the next load.
 	 */
 	private async applyRenamedTitles(state: DocState) {
 		if (state.quarantined) return;
@@ -854,7 +858,8 @@ export class GlyphCollab implements Extension {
 	 * built from the log as it is inside that lock, after applying whatever
 	 * other replicas appended, on a scratch copy of the document; so when two
 	 * replicas holding the note both get the rename, the second finds the
-	 * title already there and writes nothing. The appended row reaches this
+	 * title already there and writes nothing. Either way the bullets showing
+	 * their titles are recorded as caught up, in the same transaction. The appended row reaches this
 	 * copy (and its editors) through the normal catch-up. Serialised with the
 	 * document's other persistence work. Best effort: on failure it logs and
 	 * resolves false.
@@ -884,7 +889,12 @@ export class GlyphCollab implements Extension {
 				const before = Y.encodeStateVector(scratch);
 				let changed = false;
 				for (const t of titles) changed = setListItemText(scratch, t.nodeId, t.title, null) || changed;
-				return changed ? Y.encodeStateAsUpdate(scratch, before) : null;
+				return {
+					update: changed ? Y.encodeStateAsUpdate(scratch, before) : null,
+					// Recorded as applied with the append, so the next load
+					// doesn't owe these bullets the rename (see persistence.ts).
+					titlesShown: titles.filter((t) => listItemShowsText(scratch, t.nodeId, t.title))
+				};
 			} finally {
 				scratch.destroy();
 			}

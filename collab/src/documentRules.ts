@@ -405,18 +405,7 @@ export function setListItemStatus(doc: Y.Doc, nodeId: string, status: string, or
 export function setListItemText(doc: Y.Doc, nodeId: string, title: string, origin: unknown): boolean {
 	const text = title.trim();
 	if (text === '') return false;
-	const targets: Y.XmlElement[] = [];
-	const find = (parent: Y.XmlFragment | Y.XmlElement) => {
-		for (const child of parent.toArray()) {
-			if (!(child instanceof Y.XmlElement)) continue;
-			if (child.nodeName === 'listItem' && child.getAttribute('nodeId') === nodeId && child.getAttribute('taskId')) {
-				const paragraph = child.toArray().find((c): c is Y.XmlElement => c instanceof Y.XmlElement && c.nodeName === 'paragraph');
-				if (paragraph && inlineText(paragraph).trim() !== text) targets.push(paragraph);
-			}
-			find(child);
-		}
-	};
-	find(doc.getXmlFragment(COLLAB_FRAGMENT));
+	const targets = titleParagraphs(doc, nodeId).filter((p) => inlineText(p).trim() !== text);
 	if (targets.length === 0) return false;
 	doc.transact(() => {
 		for (const paragraph of targets) {
@@ -433,6 +422,33 @@ export function setListItemText(doc: Y.Doc, nodeId: string, title: string, origi
 		}
 	}, origin);
 	return true;
+}
+
+/**
+ * Whether the linked bullet with this nodeId shows `title` (as
+ * setListItemText leaves it): false if there is no such bullet.
+ */
+export function listItemShowsText(doc: Y.Doc, nodeId: string, title: string): boolean {
+	const text = title.trim();
+	const paragraphs = titleParagraphs(doc, nodeId);
+	return text !== '' && paragraphs.length > 0 && paragraphs.every((p) => inlineText(p).trim() === text);
+}
+
+/** The first paragraph of each linked list item (with a taskId) with this nodeId. */
+function titleParagraphs(doc: Y.Doc, nodeId: string): Y.XmlElement[] {
+	const out: Y.XmlElement[] = [];
+	const find = (parent: Y.XmlFragment | Y.XmlElement) => {
+		for (const child of parent.toArray()) {
+			if (!(child instanceof Y.XmlElement)) continue;
+			if (child.nodeName === 'listItem' && child.getAttribute('nodeId') === nodeId && child.getAttribute('taskId')) {
+				const paragraph = child.toArray().find((c): c is Y.XmlElement => c instanceof Y.XmlElement && c.nodeName === 'paragraph');
+				if (paragraph) out.push(paragraph);
+			}
+			find(child);
+		}
+	};
+	find(doc.getXmlFragment(COLLAB_FRAGMENT));
+	return out;
 }
 
 /** The plain text of a Y.XmlText (embeds excluded). */
