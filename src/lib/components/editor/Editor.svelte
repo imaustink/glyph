@@ -194,9 +194,12 @@
     if (changed) {
       dispatch(tr);
       // Save under the page this document actually belongs to, not the
-      // possibly-newer reactive pageId.
+      // possibly-newer reactive pageId — and through the save queue: a save
+      // of its own could overlap the one the user's first keystroke starts,
+      // and the second PUT would take a spurious 409 (and a reload).
       if (loadedPageId) {
-        pagesStore.saveContent(loadedPageId, editor.getJSON() as Record<string, unknown>);
+        contentSave.scheduleSave(editor, loadedPageId);
+        void contentSave.flushContentSave();
       }
     }
   }
