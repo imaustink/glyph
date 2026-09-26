@@ -266,6 +266,43 @@ func (pc *PermissionChecker) CanUseParent(c *gin.Context, pages store.PageStore,
 	return pc.CanWriteResource(c, parent.UserID, parent.OrgID, resourceType, parent.ID, requesterID)
 }
 
+// CanUseFolder verifies folderID names a folder the requester may write
+// before it is stored as a task's or lane's folder_id — which puts the row
+// on that folder's board, in front of everyone who can see the folder. A nil
+// folderID always passes. Writes 404 (unknown or unreadable), 400 (not a
+// folder) or 403 on failure.
+func (pc *PermissionChecker) CanUseFolder(c *gin.Context, pages store.PageStore, folderID *uuid.UUID, requesterID uuid.UUID) bool {
+	if folderID == nil {
+		return true
+	}
+	if pages == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return false
+	}
+	if pc == nil {
+		pc = &PermissionChecker{} // owner-only
+	}
+	folder, err := pages.GetFolderByID(c.Request.Context(), *folderID, requesterID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "folder not found"})
+			return false
+		}
+		slog.Error("permission check failed (folder lookup)",
+			"folder_id", folderID,
+			"requester_id", requesterID,
+			"err", err,
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return false
+	}
+	if folder.Type != model.NodeTypeFolder {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "folderId is not a folder"})
+		return false
+	}
+	return pc.CanWriteFolder(c, folder, requesterID)
+}
+
 // CanReadResource is the read-side twin of CanWriteResource's scope check —
 // called after a store's own GetByID access filter already confirmed the
 // requester can read the resource, to additionally enforce that a bearer

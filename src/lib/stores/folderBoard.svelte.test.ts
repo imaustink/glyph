@@ -272,16 +272,115 @@ describe('folderBoardStore', () => {
       expect(repo.updateLane).toHaveBeenCalledWith('folder-1', 'l2', expect.objectContaining({ order: 2 }));
     });
 
-    it('rolls back to the previous order if any write fails', async () => {
-      vi.mocked(repo.getLanes).mockResolvedValueOnce([
-        makeLane({ id: 'l1', order: 0 }),
-        makeLane({ id: 'l2', order: 1 })
-      ]);
+    // DI-25: the reorder is N separate PUTs, so a partial failure leaves the
+    // server with a mix of old and new orders. Restoring the local snapshot
+    // hid that; the store must show what the server actually has.
+    it('refetches the lanes if any write fails, instead of restoring the snapshot [DI-25]', async () => {
+      vi.mocked(repo.getLanes)
+        .mockResolvedValueOnce([
+          makeLane({ id: 'l1', order: 0 }),
+          makeLane({ id: 'l2', order: 1 }),
+          makeLane({ id: 'l3', order: 2 })
+        ])
+        // What the server holds after l3's write landed and l1's failed.
+        .mockResolvedValueOnce([
+          makeLane({ id: 'l3', order: 0 }),
+          makeLane({ id: 'l1', order: 0 }),
+          makeLane({ id: 'l2', order: 2 })
+        ]);
+      await store.load('folder-1');
+      vi.mocked(repo.updateLane).mockImplementation(async (_f: string, laneId: string, patch: Partial<Lane>) => {
+        if (laneId === 'l1') throw new Error('fail');
+        return { ...makeLane({ id: laneId }), ...patch };
+      });
+
+      await expect(store.reorderLanes(['l3', 'l1', 'l2'])).rejects.toThrow('fail');
+      expect(repo.getLanes).toHaveBeenCalledTimes(2);
+      expect(store.lanes.map((l) => l.id)).toEqual(['l3', 'l1', 'l2']);
+    });
+  });
+
+  describe('updateLane failure [DI-25]', () => {
+    it('refetches the lanes instead of restoring the snapshot', async () => {
+      vi.mocked(repo.getLanes)
+        .mockResolvedValueOnce([makeLane({ id: 'l1', title: 'Old' })])
+        .mockResolvedValueOnce([makeLane({ id: 'l1', title: 'Old', order: 7 })]);
       await store.load('folder-1');
       vi.mocked(repo.updateLane).mockRejectedValueOnce(new Error('fail'));
 
-      await expect(store.reorderLanes(['l2', 'l1'])).rejects.toThrow('fail');
-      expect(store.lanes.map((l) => l.id)).toEqual(['l1', 'l2']);
+      await expect(store.updateLane('l1', { title: 'New' })).rejects.toThrow('fail');
+      expect(store.lanes[0]).toMatchObject({ title: 'Old', order: 7 });
+    });
+  });
+
+  // ─── load generation guard ───────────────────────────────────────────────
+
+  describe('load generation guard [DI-25]', () => {
+    it('a slow load for a previous folder does not overwrite the current folder', async () => {
+      let resolveA!: (l: Lane[]) => void;
+      vi.mocked(repo.getFolder).mockImplementation(async (id: string) => ({
+        folder: makeFolder({ id, title: id }),
+        canEdit: true
+      }));
+      vi.mocked(repo.getLanes).mockImplementation((id: string) =>
+        id === 'folder-a'
+          ? new Promise<Lane[]>((r) => { resolveA = r; })
+          : Promise.resolve([makeLane({ id: 'lane-b' })])
+      );
+
+      const loadA = store.load('folder-a');
+      await store.load('folder-b');
+      resolveA([makeLane({ id: 'lane-a' })]);
+      await loadA;
+
+      expect(store.folderId).toBe('folder-b');
+      expect(store.folder?.id).toBe('folder-b');
+      expect(store.lanes.map((l) => l.id)).toEqual(['lane-b']);
+    });
+
+    it('a reloadTasks started for a previous folder does not overwrite the current tasks', async () => {
+      await store.load('folder-a');
+      let resolveA!: (t: Task[]) => void;
+      vi.mocked(repo.getTasks)
+        .mockImplementationOnce(() => new Promise<Task[]>((r) => { resolveA = r; }))
+        .mockResolvedValueOnce([makeTask({ id: 'task-b' })]);
+
+      const reload = store.reloadTasks();
+      await store.load('folder-b');
+      resolveA([makeTask({ id: 'task-a' })]);
+      await reload;
+
+      expect(store.tasks.map((t) => t.id)).toEqual(['task-b']);
+    });
+  });
+
+  // ─── updateTask (cross-lane drops) ───────────────────────────────────────
+
+  describe('updateTask [DI-25]', () => {
+    it('updates the board task optimistically and persists through the task repo', async () => {
+      const taskRepo = { update: vi.fn().mockImplementation(async (id: string, patch: Partial<Task>) => ({ ...makeTask({ id }), ...patch })) };
+      store = createFolderBoardStore(repo, taskRepo);
+      vi.mocked(repo.getTasks).mockResolvedValueOnce([makeTask({ id: 't1', status: 'todo' })]);
+      await store.load('folder-1');
+
+      const p = store.updateTask('t1', { status: 'done' });
+      expect(store.tasks[0].status).toBe('done');
+      await p;
+
+      expect(taskRepo.update).toHaveBeenCalledWith('t1', expect.objectContaining({ status: 'done' }));
+      expect(store.tasks[0].status).toBe('done');
+    });
+
+    it('reloads the board tasks when the write fails', async () => {
+      const taskRepo = { update: vi.fn().mockRejectedValue(new Error('fail')) };
+      store = createFolderBoardStore(repo, taskRepo);
+      vi.mocked(repo.getTasks)
+        .mockResolvedValueOnce([makeTask({ id: 't1', status: 'todo' })])
+        .mockResolvedValueOnce([makeTask({ id: 't1', status: 'in-progress' })]);
+      await store.load('folder-1');
+
+      await expect(store.updateTask('t1', { status: 'done' })).rejects.toThrow('fail');
+      expect(store.tasks[0].status).toBe('in-progress');
     });
   });
 

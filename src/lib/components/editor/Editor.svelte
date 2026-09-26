@@ -539,15 +539,15 @@
   /**
    * The page is being hidden (tab switch, app switch on mobile) or unloaded:
    * send the debounced writes now rather than when their timers fire, which
-   * may be never. The API client sends them with keepalive while the page is
-   * hidden so they survive the tab closing (DI-30).
+   * may be never. They are sent with keepalive so they survive the tab
+   * closing (DI-30).
    */
   function handleVisibilityChange() {
-    if (document.visibilityState === 'hidden') void contentSave.flushAll();
+    if (document.visibilityState === 'hidden') void contentSave.flushAll({ keepalive: true });
   }
 
   function handlePageHide() {
-    void contentSave.flushAll();
+    void contentSave.flushAll({ keepalive: true });
     // Leaving for good: apply deferred local-mode task deletions too.
     void settleBulletRemoval();
   }

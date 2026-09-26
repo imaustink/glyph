@@ -11,6 +11,7 @@
 #   make test-e2e-local    – Playwright local-storage project
 #   make test-e2e-api      – Playwright API project (Docker stack)
 #   make test-e2e-k8s      – both Playwright projects on a local K8s cluster
+#   make test-helm         – chart + deploy-pipeline tests (helm template)
 #   make lint              – all linters
 #   make lint-frontend     – svelte-check + tsc
 #   make lint-go           – go vet + golangci-lint
@@ -67,6 +68,13 @@ test-collab:
 	pnpm --filter @k5s/glyph-collab test
 	pnpm --filter @k5s/glyph-collab build
 
+# ── Helm chart ────────────────────────────────────────────────────────────────
+
+## test-helm: Chart and deploy-pipeline tests (helm template + lint; mirrors CI "helm" job)
+.PHONY: test-helm
+test-helm:
+	helm/glyph/tests/run.sh
+
 # ── E2E ───────────────────────────────────────────────────────────────────────
 
 ## test-e2e-local: Playwright local-storage project (no backend; dev server auto-started)
@@ -97,15 +105,15 @@ lint: lint-frontend lint-go
 
 ## test-unit: Fast unit tests only — frontend vitest + Go unit tests (no e2e)
 .PHONY: test-unit
-test-unit: test-frontend test-go test-collab
+test-unit: test-frontend test-go test-collab test-helm
 
 ## test: Full test suite — unit tests + both E2E projects (matches all CI jobs)
 .PHONY: test
-test: test-frontend test-go test-collab test-e2e
+test: test-frontend test-go test-collab test-helm test-e2e
 
 ## ci: Everything — lint + full test suite (the single command to rule them all)
 .PHONY: ci
-ci: lint-go test-frontend test-go test-collab test-e2e
+ci: lint-go test-frontend test-go test-collab test-helm test-e2e
 
 # ── Help ──────────────────────────────────────────────────────────────────────
 

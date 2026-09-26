@@ -41,6 +41,11 @@ const testPublicURL = "https://glyph.test"
 
 func newMCPEnv(t *testing.T) *mcpEnv {
 	t.Helper()
+	return newMCPEnvWith(t, collabConfig{})
+}
+
+func newMCPEnvWith(t *testing.T, collab collabConfig) *mcpEnv {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	handler.RegisterValidators()
 
@@ -76,7 +81,7 @@ func newMCPEnv(t *testing.T) *mcpEnv {
 	glyphoauth.RegisterOAuthRoutes(r, oauthCfg, nil)
 	apiGroup := r.Group("/api/v1", glyphoauth.DualAuthMiddleware(sessionMw, bearerMw), handler.CSRFMiddleware())
 	glyphoauth.RegisterConsentRoutes(apiGroup, oauthCfg)
-	registerRoutes(apiGroup, newHandlers(s, collabConfig{}))
+	registerRoutes(apiGroup, newHandlers(s, collab))
 	registerMCP(r, s, oauthCfg, bearerMw)
 
 	ctx := context.Background()
@@ -568,10 +573,12 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 	assert.Less(t, strings.Index(md, "## TODO"), strings.Index(md, "Record demo video"))
 	require.Len(t, got["tasks"], 2)
 
-	// Replace keeps the task link when its marker is kept.
+	// Replace keeps the task link when its marker is kept. Dropping the
+	// "Write release notes" bullet deletes its task, which must be allowed
+	// explicitly.
 	rev = int(got["revision"].(float64))
 	e.callOK(g.access, "write_page_content", map[string]interface{}{
-		"page_id": pageID, "mode": "replace", "expected_revision": rev,
+		"page_id": pageID, "mode": "replace", "expected_revision": rev, "allow_task_removal": true,
 		"markdown": "# Launch v2\n\n## TODO\n\n- [ ] Record demo video <!-- task:" + taskID + " -->\n",
 	})
 	got = e.callOK(g.access, "get_page", map[string]interface{}{"page_id": pageID})

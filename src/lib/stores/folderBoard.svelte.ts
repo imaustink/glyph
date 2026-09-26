@@ -1,10 +1,15 @@
 import { repositories } from '$lib/storage/config';
 import type { FolderBoardRepo } from '$lib/storage/config';
+import type { ITaskRepository } from '$lib/storage/interfaces';
 import type { Lane, Task, TreeNode } from '$lib/models/types';
 import { now, makeTimestamps } from '$lib/utils/time';
 import { uuid } from '$lib/utils/uuid';
+import { createOptimisticWriter } from './optimisticWriter';
 
-export function createFolderBoardStore(injectedRepo?: FolderBoardRepo) {
+/** The part of the task repository the folder board writes through. */
+type BoardTaskRepo = Pick<ITaskRepository, 'update'>;
+
+export function createFolderBoardStore(injectedRepo?: FolderBoardRepo, injectedTaskRepo?: BoardTaskRepo) {
   let folderId = $state<string | null>(null);
   let folder = $state<TreeNode | null>(null);
   let lanes = $state<Lane[]>([]);
@@ -15,9 +20,17 @@ export function createFolderBoardStore(injectedRepo?: FolderBoardRepo) {
   let error = $state<string | null>(null);
 
   const repo = injectedRepo ?? repositories.folderBoard;
+  const taskRepo = injectedTaskRepo ?? repositories.tasks;
+
+  /**
+   * Bumped whenever the board switches folder (load/reset). A fetch started
+   * for an earlier generation must not write its result into the current one.
+   */
+  let generation = 0;
 
   async function load(id: string) {
     if (folderId === id && (loaded || loading)) return; // already loaded or in-flight
+    const gen = ++generation;
     folderId = id;
     loaded = false;
     loading = true;
@@ -28,25 +41,43 @@ export function createFolderBoardStore(injectedRepo?: FolderBoardRepo) {
         repo.getLanes(id),
         repo.getTasks(id)
       ]);
+      if (gen !== generation) return;
       folder = meta.folder;
       canEdit = meta.canEdit;
       lanes = folderLanes;
       tasks = folderTasks;
     } catch (e) {
+      if (gen !== generation) return;
       error = e instanceof Error ? e.message : 'Failed to load folder board';
     } finally {
-      loading = false;
-      loaded = true;
+      if (gen === generation) {
+        loading = false;
+        loaded = true;
+      }
     }
   }
 
   /** Re-fetch tasks only (used after task create/update/delete on the board). */
   async function reloadTasks() {
     if (!folderId) return;
+    const gen = generation;
     try {
-      tasks = await repo.getTasks(folderId);
+      const fresh = await repo.getTasks(folderId);
+      if (gen === generation) tasks = fresh;
     } catch {
       // Non-fatal — stale tasks remain visible
+    }
+  }
+
+  /** Re-fetch lanes only (used to recover from a failed lane write). */
+  async function reloadLanes() {
+    if (!folderId) return;
+    const gen = generation;
+    try {
+      const fresh = await repo.getLanes(folderId);
+      if (gen === generation) lanes = fresh;
+    } catch {
+      // Non-fatal — the optimistic state stays visible
     }
   }
 
@@ -75,38 +106,50 @@ export function createFolderBoardStore(injectedRepo?: FolderBoardRepo) {
     }
   }
 
+  /** Serialized, sequenced optimistic lane writes (see optimisticWriter). */
+  const laneWriter = createOptimisticWriter<Lane>({
+    get: (id) => lanes.find((l) => l.id === id),
+    replace: (lane) => { lanes = lanes.map((l) => (l.id === lane.id ? lane : l)); }
+  });
+
   async function updateLane(laneId: string, patch: Partial<Omit<Lane, 'id'>>): Promise<void> {
-    if (!folderId) return;
-    const prev = lanes.find((l) => l.id === laneId);
-    if (!prev) return;
-    const optimistic = { ...prev, ...patch, updatedAt: now() };
-    lanes = lanes.map((l) => (l.id === laneId ? optimistic : l));
-    try {
-      const updated = await repo.updateLane(folderId, laneId, { ...patch, updatedAt: now() });
-      lanes = lanes.map((l) => (l.id === laneId ? updated : l));
-    } catch (e) {
-      lanes = lanes.map((l) => (l.id === laneId ? prev : l));
-      throw e;
-    }
+    const fid = folderId;
+    if (!fid) return;
+    const full = { ...patch, updatedAt: now() };
+    return laneWriter.update(
+      laneId,
+      full,
+      () => repo.updateLane(fid, laneId, full),
+      async () => (await repo.getLanes(fid)).find((l) => l.id === laneId) ?? null
+    );
   }
 
+  /**
+   * Persist a new lane order. There is no atomic folder-lane reorder
+   * endpoint, so this is one write per lane; if any fails, the lanes are
+   * refetched so the board shows what the server actually holds rather than
+   * a snapshot that may no longer be true.
+   */
   async function reorderLanes(orderedIds: string[]): Promise<void> {
-    if (!folderId) return;
-    const prev = lanes;
+    const fid = folderId;
+    if (!fid) return;
     const timestamp = now();
-    const next = orderedIds.map((id, i) => {
-      const lane = prev.find((l) => l.id === id)!;
-      return { ...lane, order: i, updatedAt: timestamp };
-    });
-    // Optimistic reorder — rolled back below if any write fails.
+    const byId = new Map(lanes.map((l) => [l.id, l]));
+    const next = orderedIds
+      .map((id, i) => {
+        const lane = byId.get(id);
+        return lane ? { ...lane, order: i, updatedAt: timestamp } : null;
+      })
+      .filter((l): l is Lane => l !== null);
     lanes = next;
-    try {
-      await Promise.all(
-        next.map((lane) => repo.updateLane(folderId!, lane.id, { order: lane.order, updatedAt: timestamp }))
-      );
-    } catch (e) {
-      lanes = prev;
-      throw e;
+    const changed = next.filter((l) => byId.get(l.id)?.order !== l.order);
+    const results = await Promise.allSettled(
+      changed.map((lane) => repo.updateLane(fid, lane.id, { order: lane.order, updatedAt: timestamp }))
+    );
+    const failure = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failure) {
+      await reloadLanes();
+      throw failure.reason;
     }
   }
 
@@ -117,13 +160,34 @@ export function createFolderBoardStore(injectedRepo?: FolderBoardRepo) {
       await repo.deleteLane(folderId, laneId);
     } catch (e) {
       // Re-fetch to restore state
-      if (folderId) lanes = await repo.getLanes(folderId);
+      await reloadLanes();
+      throw e;
+    }
+  }
+
+  /**
+   * Update a task shown on this board (e.g. a cross-lane drop). Board tasks
+   * are not necessarily in the global tasks store (another user's task in a
+   * shared folder), so the board keeps its own copy in step. On failure the
+   * board's tasks are refetched.
+   */
+  async function updateTask(taskId: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Promise<void> {
+    const full = { ...patch, updatedAt: now() };
+    const prev = tasks.find((t) => t.id === taskId);
+    if (!prev) return;
+    tasks = tasks.map((t) => (t.id === taskId ? { ...t, ...full } : t));
+    try {
+      const saved = await taskRepo.update(taskId, full);
+      if (saved) tasks = tasks.map((t) => (t.id === taskId ? saved : t));
+    } catch (e) {
+      await reloadTasks();
       throw e;
     }
   }
 
   /** Clear the store when navigating away from the folder board. */
   function reset() {
+    generation++;
     folderId = null;
     folder = null;
     lanes = [];
@@ -149,6 +213,7 @@ export function createFolderBoardStore(injectedRepo?: FolderBoardRepo) {
     updateLane,
     deleteLane,
     reorderLanes,
+    updateTask,
     reset
   };
 }

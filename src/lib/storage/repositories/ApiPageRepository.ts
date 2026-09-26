@@ -1,5 +1,6 @@
 import { api } from '$lib/storage/apiClient';
 import type { TreeNode, PageContent } from '$lib/models/types';
+import type { WriteOptions } from '$lib/storage/interfaces';
 
 /**
  * API-backed page repository. Mirrors the interface of PageRepository
@@ -35,8 +36,9 @@ export class ApiPageRepository {
 		return api.getOrNull<PageContent>(`/api/v1/pages/${pageId}/content`);
 	}
 
-	async saveContent(content: PageContent): Promise<PageContent> {
-		return api.put<PageContent>(`/api/v1/pages/${content.pageId}/content`, content);
+	async saveContent(content: PageContent, opts?: WriteOptions): Promise<PageContent> {
+		const path = `/api/v1/pages/${content.pageId}/content`;
+		return opts ? api.put<PageContent>(path, content, opts) : api.put<PageContent>(path, content);
 	}
 
 	async deleteContent(_pageId: string): Promise<void> {

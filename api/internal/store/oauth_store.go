@@ -193,27 +193,27 @@ func (s *pgOAuthClientStore) ListForOrg(ctx context.Context, orgID uuid.UUID) ([
 }
 
 func (s *pgOAuthClientStore) Update(ctx context.Context, id uuid.UUID, name *string, description *string, scopes []model.OAuthScope, redirectURIs []string) (*model.OAuthClient, error) {
-	existing, err := s.GetByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if name != nil {
-		existing.Name = *name
-	}
-	if description != nil {
-		existing.Description = description
-	}
+	// Only the fields that were given are written (a nil argument keeps the
+	// column), in one statement: reading the row, merging in Go and writing
+	// every column back undid a concurrent change to another field.
+	var scopeStrs []string
 	if scopes != nil {
-		existing.Scopes = scopes
-	}
-	if redirectURIs != nil {
-		existing.RedirectURIs = redirectURIs
+		scopeStrs = scopesToStrings(scopes)
 	}
 	const q = `
-		UPDATE oauth_clients SET name=$1, description=$2, scopes=$3, redirect_uris=$4, updated_at=NOW()
-		WHERE id=$5`
-	if _, err := s.pool.Exec(ctx, q, existing.Name, existing.Description, scopesToStrings(existing.Scopes), existing.RedirectURIs, id); err != nil {
+		UPDATE oauth_clients SET
+			name = COALESCE($1, name),
+			description = COALESCE($2, description),
+			scopes = COALESCE($3::text[], scopes),
+			redirect_uris = COALESCE($4::text[], redirect_uris),
+			updated_at = NOW()
+		WHERE id = $5`
+	tag, err := s.pool.Exec(ctx, q, name, description, scopeStrs, redirectURIs, id)
+	if err != nil {
 		return nil, fmt.Errorf("oauth client update: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrNotFound
 	}
 	return s.GetByID(ctx, id)
 }

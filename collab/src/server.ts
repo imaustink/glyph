@@ -24,6 +24,8 @@ const collab = new GlyphCollab({
 	allowedOrigins: config.allowedOrigins,
 	maxDocumentBytes: config.maxDocumentBytes,
 	compactEvery: config.compactEvery,
+	shutdownDrainMs: config.shutdownDrainMs,
+	leaseTtlMs: config.leaseTtlMs,
 	log
 });
 const http = new GlyphHttp({ collab, api, allowedOrigins: config.allowedOrigins, log });
@@ -40,6 +42,9 @@ const timers = [
 	setInterval(() => void collab.reauthorizeAll().catch((err) => log.error('re-authorization sweep failed', { err })), config.reauthIntervalMs)
 ];
 if (config.catchUpIntervalMs > 0) timers.push(setInterval(() => collab.catchUpAll(), config.catchUpIntervalMs));
+timers.push(
+	setInterval(() => void collab.renewLeases().catch((err) => log.warn('lease renewal failed', { err })), collab.leaseRenewIntervalMs)
+);
 
 const server = new Server({
 	name: 'glyph-collab',
@@ -54,6 +59,9 @@ const server = new Server({
 		collab,
 		http,
 		{
+			// Runs after GlyphCollab.onDestroy, which drains documents whose
+			// updates aren't persisted yet (up to COLLAB_SHUTDOWN_DRAIN_MS)
+			// while the pool is still open.
 			async onDestroy() {
 				for (const t of timers) clearInterval(t);
 				await stopListening();

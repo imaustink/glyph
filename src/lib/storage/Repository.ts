@@ -1,12 +1,26 @@
 import type { StorageAdapter } from '$lib/models/types';
 
+/** Adapters that can set an unreadable value aside (LocalStorageAdapter). */
+interface QuarantiningAdapter extends StorageAdapter {
+  quarantine(key: string, raw: unknown, isValid?: (value: unknown) => boolean): string;
+}
+
+function canQuarantine(adapter: StorageAdapter): adapter is QuarantiningAdapter {
+  return typeof (adapter as Partial<QuarantiningAdapter>).quarantine === 'function';
+}
+
 /**
  * Generic async-ready repository base class for localStorage.
  *
- * Maintains an in-memory cache after first load so that sequential read
- * operations within a write-queue cycle don't redundantly hit localStorage.
- * The cache is always consistent with storage because all writes go through
- * the serialized write queue and update both cache and storage atomically.
+ * Every write re-reads the collection from storage inside the serialized
+ * write queue, so a write from this tab never drops what another tab wrote
+ * since this tab last read. (The in-memory cache can be stale across tabs:
+ * the storage event and BroadcastChannel invalidations arrive
+ * asynchronously.) getAll() reads fresh too; getById() uses the cache.
+ *
+ * A stored value that isn't an array is treated as corrupt: the adapter
+ * copies it to a `glyph:corrupt:*` backup key and refuses writes to the
+ * collection, rather than letting an empty or seeded collection replace it.
  *
  * API-backed repositories do NOT extend this class — they implement the
  * IRepository interface directly with HTTP calls.
@@ -26,7 +40,7 @@ export class Repository<T extends { id: string }> {
   /** Cross-tab notification channel for immediate cache invalidation. */
   private _channel: BroadcastChannel | null = null;
 
-  private serializeWrite<R>(fn: () => Promise<R>): Promise<R> {
+  protected serializeWrite<R>(fn: () => Promise<R>): Promise<R> {
     const next = this._writeQueue.then(fn);
     // Don't let a failed write poison the queue for future operations.
     // The error is still propagated to the caller via `next`.
@@ -46,7 +60,7 @@ export class Repository<T extends { id: string }> {
       // Invalidate cache when another tab writes to our storage key.
       // The 'storage' event only fires in other tabs, not the one that wrote.
       window.addEventListener('storage', (e: StorageEvent) => {
-        if (e.key === this.storageKey) {
+        if (e.key === this.storageKey || e.key === null) {
           this._cache = null;
         }
       });
@@ -67,9 +81,26 @@ export class Repository<T extends { id: string }> {
     this._channel?.postMessage('invalidate');
   }
 
+  /** Cached read, for lookups that don't feed a write. */
   protected async readAll(): Promise<T[]> {
     if (this._cache !== null) return this._cache;
-    const items = (await this.adapter.get<T[]>(this.storageKey)) ?? [];
+    return this.readFresh();
+  }
+
+  /** Read the collection from storage, bypassing (and refreshing) the cache. */
+  protected async readFresh(): Promise<T[]> {
+    const value = await this.adapter.get<unknown>(this.storageKey);
+    let items: T[];
+    if (value === null || value === undefined) {
+      items = [];
+    } else if (Array.isArray(value)) {
+      items = value as T[];
+    } else {
+      if (canQuarantine(this.adapter)) {
+        this.adapter.quarantine(this.storageKey, value, Array.isArray);
+      }
+      items = [];
+    }
     this._cache = items;
     return items;
   }
@@ -81,8 +112,8 @@ export class Repository<T extends { id: string }> {
   }
 
   async getAll(): Promise<T[]> {
-    // Return a copy so callers can't accidentally mutate the cache
-    return [...(await this.readAll())];
+    // A fresh copy: callers can't mutate the cache, and they see other tabs' writes.
+    return [...(await this.readFresh())];
   }
 
   async getById(id: string): Promise<T | null> {
@@ -92,7 +123,7 @@ export class Repository<T extends { id: string }> {
 
   async create(item: T): Promise<T> {
     return this.serializeWrite(async () => {
-      const items = await this.readAll();
+      const items = await this.readFresh();
       const updated = [...items, item];
       await this.writeAll(updated);
       return item;
@@ -101,7 +132,7 @@ export class Repository<T extends { id: string }> {
 
   async update(id: string, patch: Partial<Omit<T, 'id'>>): Promise<T | null> {
     return this.serializeWrite(async () => {
-      const items = await this.readAll();
+      const items = await this.readFresh();
       const idx = items.findIndex((item) => item.id === id);
       if (idx === -1) return null;
       const patched = { ...items[idx], ...patch };
@@ -114,7 +145,7 @@ export class Repository<T extends { id: string }> {
 
   async delete(id: string): Promise<boolean> {
     return this.serializeWrite(async () => {
-      const items = await this.readAll();
+      const items = await this.readFresh();
       const filtered = items.filter((item) => item.id !== id);
       if (filtered.length === items.length) return false;
       await this.writeAll(filtered);
@@ -124,7 +155,7 @@ export class Repository<T extends { id: string }> {
 
   async upsert(item: T): Promise<T> {
     return this.serializeWrite(async () => {
-      const items = await this.readAll();
+      const items = await this.readFresh();
       const idx = items.findIndex((i) => i.id === item.id);
       const updated = [...items];
       if (idx === -1) {
@@ -144,7 +175,7 @@ export class Repository<T extends { id: string }> {
     if (ids.length === 0) return;
     return this.serializeWrite(async () => {
       const idSet = new Set(ids);
-      const items = await this.readAll();
+      const items = await this.readFresh();
       const filtered = items.filter((item) => !idSet.has(item.id));
       await this.writeAll(filtered);
     });
@@ -156,12 +187,29 @@ export class Repository<T extends { id: string }> {
   async updateMany(patches: Map<string, Partial<Omit<T, 'id'>>>): Promise<void> {
     if (patches.size === 0) return;
     return this.serializeWrite(async () => {
-      const items = await this.readAll();
+      const items = await this.readFresh();
       const updated = items.map(item => {
         const patch = patches.get(item.id);
         return patch ? { ...item, ...patch } : item;
       });
       await this.writeAll(updated);
+    });
+  }
+
+  /**
+   * Create `items` only if the collection (as filtered by `counts`) is empty
+   * in storage right now, in one read-modify-write cycle. Returns what the
+   * collection holds afterwards (filtered by `counts`). Used for first-run
+   * seeding, so a second tab adopts the first tab's seed instead of adding
+   * its own.
+   */
+  protected async seedCollectionIfEmpty(items: T[], counts: (item: T) => boolean = () => true): Promise<T[]> {
+    return this.serializeWrite(async () => {
+      const current = await this.readFresh();
+      const existing = current.filter(counts);
+      if (existing.length > 0) return existing;
+      await this.writeAll([...current, ...items]);
+      return items;
     });
   }
 }

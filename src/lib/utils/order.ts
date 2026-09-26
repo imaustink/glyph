@@ -28,11 +28,21 @@ export function nextOrder(): number {
 }
 
 /**
- * Compute an order value between two existing values.
- * Useful for drag-and-drop reordering without rewriting all siblings.
+ * Compute an integer order strictly between two existing values, for
+ * drag-and-drop reordering without rewriting all siblings.
+ *
+ * Returns null when no integer fits between them. The caller must then
+ * renumber the siblings; returning a value equal to a neighbour would make
+ * the two items collide.
  */
-export function orderBetween(before: number | null, after: number | null): number {
+export function orderBetween(before: number | null, after: number | null): number | null {
   const lo = before ?? 0;
   const hi = after ?? lo + 2_000_000;
-  return Math.floor((lo + hi) / 2);
+  const candidate = Math.floor((lo + hi) / 2);
+  return candidate > lo && candidate < hi ? candidate : null;
+}
+
+/** The smallest integer order strictly greater than `before`. */
+export function orderAfter(before: number): number {
+  return Math.floor(before) + 1;
 }

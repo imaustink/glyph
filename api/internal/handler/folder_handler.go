@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -66,6 +67,9 @@ func (h *FolderHandler) CreateFolderLane(c *gin.Context) {
 	if !bindJSON(c, &body) {
 		return
 	}
+	if !checkLaneConfig(c, &body.FilterSet, &body.SortConfig) {
+		return
+	}
 	body.UserID = user.ID
 	body.FolderID = &folderID
 	if body.FilterSet.Rules == nil {
@@ -116,15 +120,26 @@ func (h *FolderHandler) UpdateFolderLane(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
+	if !checkLaneConfig(c, req.FilterSet, req.SortConfig) {
+		return
+	}
 	// Merge only the fields the client actually sent. Assigning every field
 	// from a fully-bound model.Lane wiped title/filters/sort whenever the
 	// client sent a partial payload (rename, reorder).
-	req.ApplyTo(existing)
-	if existing.FilterSet.Rules == nil {
-		existing.FilterSet.Rules = []model.FilterRule{}
-	}
-	updated, err := h.Lanes.UpdateByIDAndFolder(c.Request.Context(), existing, folderID)
+	// Merged under the row lock, so a concurrent edit to another field of
+	// the lane is kept.
+	updated, err := h.Lanes.PatchByIDAndFolder(c.Request.Context(), existing.ID, folderID, func(l *model.Lane) error {
+		req.ApplyTo(l)
+		if l.FilterSet.Rules == nil {
+			l.FilterSet.Rules = []model.FilterRule{}
+		}
+		return nil
+	})
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "lane not found"})
+			return
+		}
 		internalError(c, err)
 		return
 	}

@@ -3,6 +3,8 @@
   import { templatesStore } from '$lib/stores/templates.svelte';
   import { storageMode } from '$lib/storage/config';
   import { authStore } from '$lib/stores/auth.svelte';
+  import { notificationsStore } from '$lib/stores/notifications.svelte';
+  import { apiErrorMessage } from '$lib/storage/apiClient';
   import VisibilityPicker from './VisibilityPicker.svelte';
 
   let {
@@ -18,15 +20,27 @@
   } = $props();
 
   async function handleDelete(template: NoteTemplate) {
-    await templatesStore.deleteTemplate(template.id);
+    try {
+      await templatesStore.deleteTemplate(template.id);
+    } catch (err) {
+      notificationsStore.error(apiErrorMessage(err, 'Failed to delete template.'));
+    }
   }
 
   async function handleSetDefault(template: NoteTemplate) {
-    await templatesStore.setDefault(template.id);
+    try {
+      await templatesStore.setDefault(template.id);
+    } catch (err) {
+      notificationsStore.error(apiErrorMessage(err, 'Failed to set the default template.'));
+    }
   }
 
   async function handleVisibilityChange(template: NoteTemplate, newOrgId: string | null, newIsPrivate: boolean) {
-    await templatesStore.updateTemplate(template.id, { orgId: newOrgId, isPrivate: newIsPrivate });
+    try {
+      await templatesStore.updateTemplate(template.id, { orgId: newOrgId, isPrivate: newIsPrivate });
+    } catch (err) {
+      notificationsStore.error(apiErrorMessage(err, 'Failed to update template visibility.'));
+    }
   }
 </script>
 

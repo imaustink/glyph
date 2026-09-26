@@ -136,6 +136,21 @@ jobs:
         working-directory: api
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+  # Chart and deploy-pipeline tests (helm/glyph/tests): renders the chart
+  # with `helm template` across value sets and asserts on the output.
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+
+      - name: Chart tests
+        run: helm/glyph/tests/run.sh
+
   e2e-local:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -287,7 +302,7 @@ jobs:
           retention-days: 7
 
   build-and-push:
-    needs: [frontend, collab, api, e2e-local, e2e-api]
+    needs: [frontend, collab, api, helm, e2e-local, e2e-api]
     # Fork PRs get no secrets on `pull_request` (public repo — the approval
     # gate controls whether a run starts, not what it can read), so the
     # registry login below would fail with empty credentials. Skip the job

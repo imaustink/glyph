@@ -1,0 +1,55 @@
+{{- if .Values.cnpg.monitoring.prometheusRule.enabled }}
+{{- $cluster := include "glyph.cnpg.clusterName" . }}
+{{- $sel := printf "namespace=%q, pod=~%q" .Release.Namespace (printf "%s-[0-9]+" $cluster) }}
+{{- $rule := .Values.cnpg.monitoring.prometheusRule }}
+# Alerts on the two ways backups silently stop protecting the database: WAL
+# archiving failing (WAL then piles up until the volume fills and Postgres
+# stops taking writes) and base backups no longer completing. Metric names are
+# from CNPG's default monitoring queries.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $cluster }}-alerts
+  labels:
+    {{- include "glyph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+    {{- with $rule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: {{ $cluster }}.backups
+      rules:
+        - alert: GlyphPostgresWALArchivingFailing
+          expr: increase(cnpg_pg_stat_archiver_failed_count{ {{- $sel -}} }[15m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "WAL archiving is failing on {{ "{{ $labels.pod }}" }}"
+            description: >-
+              Postgres could not archive WAL to the object store. Point-in-time
+              recovery is broken and unarchived WAL is accumulating on the
+              volume. Check the backup credentials and destinationPath, and
+              `kubectl cnpg status {{ $cluster }}`.
+        - alert: GlyphPostgresWALArchivingStalled
+          expr: |
+            cnpg_pg_stat_archiver_seconds_since_last_archival{ {{- $sel -}} } > {{ $rule.maxSecondsSinceLastArchival }}
+              and on (namespace, pod) cnpg_pg_replication_in_recovery{ {{- $sel -}} } == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "No WAL archived from {{ "{{ $labels.pod }}" }} for over {{ $rule.maxSecondsSinceLastArchival }}s"
+        - alert: GlyphPostgresBackupTooOld
+          expr: |
+            time() - max by (namespace) (cnpg_collector_last_available_backup_timestamp{ {{- $sel -}} }) > {{ mul $rule.maxBackupAgeHours 3600 }}
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "The newest base backup of {{ $cluster }} is older than {{ $rule.maxBackupAgeHours }}h"
+            description: >-
+              Scheduled base backups are not completing (or none has ever
+              completed). Check `kubectl get backups -n {{ .Release.Namespace }}`.
+{{- end }}

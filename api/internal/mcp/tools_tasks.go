@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
@@ -397,8 +398,12 @@ func createTask(cc *callContext, raw json.RawMessage) (interface{}, error) {
 		next, err := pmmd.AppendTaskBullet(content.Content, created.Title, *created.SourceNodeID, created.ID.String(), string(created.Status), heading)
 		var links *linkResult
 		if err == nil {
-			// Also link any other unlinked TODO bullets, as the editor would.
-			_, links, err = cc.saveWithTodoLinks(page, next, content.SchemaVersion, content.Revision)
+			// Only the new bullet is added; bullets already in the note are
+			// left as they are (it's linked already, so nothing else links).
+			var existing map[string]bool
+			if existing, err = pmmd.ListItemNodeIDs(content.Content); err == nil {
+				_, links, err = cc.saveWithTodoLinks(page, next, content.SchemaVersion, content.Revision, existing)
+			}
 		}
 		if err == nil {
 			out["page_url"] = cc.srv.appURL("/notes/" + page.ID.String())
@@ -406,14 +411,22 @@ func createTask(cc *callContext, raw json.RawMessage) (interface{}, error) {
 			return out, nil
 		}
 		// The note was edited between our read and write: re-read and retry once.
-		var ue userError
-		if attempt == 0 && errors.As(err, &ue) {
+		if attempt == 0 && errors.Is(err, errPageChanged) {
 			if content, err = cc.getContent(page.ID); err == nil {
 				continue
 			}
 		}
-		out["warning"] = "task created and linked to the page, but adding its bullet to the note failed: " + err.Error()
-		return out, nil
+		// The task is linked to a bullet that doesn't exist: the next save of
+		// the note would soft-delete it anyway, and the agent would have been
+		// told it was created. Undo it and report the failure instead.
+		if derr := cc.api.delete("/tasks/" + created.ID.String()); derr != nil {
+			return nil, fmt.Errorf("adding the task's bullet to the note failed (%v), and removing the task again failed too: %w", err, derr)
+		}
+		var ue userError
+		if errors.As(err, &ue) {
+			return nil, userError("the task was not created: adding its bullet to the note failed: " + string(ue))
+		}
+		return nil, fmt.Errorf("the task was not created: adding its bullet to the note failed: %w", err)
 	}
 }
 

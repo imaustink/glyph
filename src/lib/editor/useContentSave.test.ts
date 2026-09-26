@@ -22,12 +22,12 @@ vi.mock('$lib/stores/pages.svelte', () => ({
 		forgetRevision: (...args: unknown[]) => forgetRevision(...args)
 	}
 }));
-const trackPendingWrite = vi.fn();
+const setPendingDebounce = vi.fn();
 vi.mock('$lib/stores/ui.svelte', () => ({
 	uiStore: {
 		markSaving: vi.fn(),
 		markSaved: vi.fn(),
-		trackPendingWrite: (...a: unknown[]) => trackPendingWrite(...a)
+		setPendingDebounce: (...a: unknown[]) => setPendingDebounce(...a)
 	}
 }));
 vi.mock('$lib/stores/notifications.svelte', () => ({
@@ -35,7 +35,7 @@ vi.mock('$lib/stores/notifications.svelte', () => ({
 }));
 const flushAllTaskTitleUpdates = vi.fn();
 vi.mock('$lib/editor/useTaskTitleDebounce', () => ({
-	flushAllTaskTitleUpdates: () => flushAllTaskTitleUpdates()
+	flushAllTaskTitleUpdates: (...a: unknown[]) => flushAllTaskTitleUpdates(...a)
 }));
 
 import { useContentSave } from './useContentSave';
@@ -256,13 +256,23 @@ describe('useContentSave conflict handling', () => {
 			expect(handle.hasPendingWork()).toBe(false);
 		});
 
+		it('flushAll({ keepalive }) sends the content save and task titles with keepalive (unload flush)', async () => {
+			const handle = useContentSave();
+			handle.scheduleSave(fakeEditor('doc'), 'page-A');
+
+			await handle.flushAll({ keepalive: true });
+
+			expect(saveContent).toHaveBeenCalledWith('page-A', { type: 'doc', text: 'doc' }, { keepalive: true });
+			expect(flushAllTaskTitleUpdates).toHaveBeenCalledWith({ keepalive: true });
+		});
+
 		it('registers the armed timer with uiStore so hasPendingWrites counts it', async () => {
 			const handle = useContentSave();
 			handle.scheduleSave(fakeEditor('doc'), 'page-A');
-			expect(trackPendingWrite).toHaveBeenLastCalledWith(expect.any(String), true);
+			expect(setPendingDebounce).toHaveBeenLastCalledWith(expect.any(String), true);
 
 			await handle.flushContentSave();
-			expect(trackPendingWrite).toHaveBeenLastCalledWith(expect.any(String), false);
+			expect(setPendingDebounce).toHaveBeenLastCalledWith(expect.any(String), false);
 		});
 	});
 

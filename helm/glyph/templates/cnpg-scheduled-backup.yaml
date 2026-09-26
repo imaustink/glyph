@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "glyph.labels" . | nindent 4 }}
 spec:
-  schedule: {{ .Values.cnpg.backup.schedule | quote }}
+  schedule: {{ include "glyph.cnpg.backupSchedule" . | quote }}
   backupOwnerReference: self
   cluster:
     name: {{ include "glyph.cnpg.clusterName" . }}

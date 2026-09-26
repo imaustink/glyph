@@ -162,7 +162,7 @@
 
 {#if configuringLane}
   <LaneConfig
-    lane={configuringLane}
+    lane={lanesStore.lanes.find((l) => l.id === configuringLane?.id) ?? configuringLane}
     onclose={() => configuringLane = null}
   />
 {/if}

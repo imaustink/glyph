@@ -57,10 +57,14 @@ func TestUserStore_GetByID_NotFound(t *testing.T) {
 
 // ─── GetByEmail ──────────────────────────────────────────────────────────────
 
+// GetByEmail reads up to two rows so it can refuse an ambiguous address.
+
 func TestUserStore_GetByEmail_ScanError(t *testing.T) {
 	pool := &mockPool{
-		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-			return &mockRow{scanFn: func(dest ...any) error { return errors.New("scan error") }}
+		queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+			return &mockRows{rows: []func(...any) error{
+				func(dest ...any) error { return errors.New("scan error") },
+			}}, nil
 		},
 	}
 	s := NewUserStore(pool)
@@ -72,8 +76,8 @@ func TestUserStore_GetByEmail_ScanError(t *testing.T) {
 
 func TestUserStore_GetByEmail_NotFound(t *testing.T) {
 	pool := &mockPool{
-		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-			return &mockRow{scanFn: func(dest ...any) error { return pgx.ErrNoRows }}
+		queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+			return &mockRows{}, nil
 		},
 	}
 	s := NewUserStore(pool)
@@ -185,8 +189,8 @@ t.Fatalf("GetByID_Success: err=%v", err)
 func TestUserStore_GetByEmail_Success(t *testing.T) {
 id := uuid.New()
 pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-return &mockRow{scanFn: makeUserRowFn(id)}
+queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+return &mockRows{rows: []func(...any) error{makeUserRowFn(id)}}, nil
 },
 }
 s := NewUserStore(pool)
@@ -194,6 +198,18 @@ got, err := s.GetByEmail(context.Background(), "a@b.com")
 if err != nil || got.ID != id {
 t.Fatalf("GetByEmail_Success: err=%v", err)
 }
+}
+
+func TestUserStore_GetByEmail_Ambiguous(t *testing.T) {
+	pool := &mockPool{
+		queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+			return &mockRows{rows: []func(...any) error{makeUserRowFn(uuid.New()), makeUserRowFn(uuid.New())}}, nil
+		},
+	}
+	s := NewUserStore(pool)
+	if _, err := s.GetByEmail(context.Background(), "a@b.com"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("GetByEmail_Ambiguous: want ErrConflict, got %v", err)
+	}
 }
 
 func TestUserStore_Search_Success(t *testing.T) {

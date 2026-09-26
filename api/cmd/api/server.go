@@ -21,8 +21,9 @@ func newServer(ctx context.Context, pool *pgxpool.Pool, s *stores, sessionSecret
 	// gin's mode is set in main(), before this function runs, so that
 	// mode-dependent guards elsewhere in startup (SESSION_SECRET requirement,
 	// dev-auth opt-in) see the correct value.
+	to := defaultTimeouts()
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery(), handler.RequestIDMiddleware(), handler.SecurityHeadersMiddleware())
+	r.Use(gin.Logger(), gin.Recovery(), requestDeadline(to.Request), handler.RequestIDMiddleware(), handler.SecurityHeadersMiddleware())
 
 	// Health check — no auth required
 	r.GET("/health", func(c *gin.Context) {
@@ -40,12 +41,52 @@ func newServer(ctx context.Context, pool *pgxpool.Pool, s *stores, sessionSecret
 		port = "8080"
 	}
 
+	return newHTTPServer(":"+port, r, to)
+}
+
+// timeouts are the server's I/O limits plus the deadline every request's
+// context carries.
+type timeouts struct {
+	Read, ReadHeader, Write, Idle time.Duration
+	// Request is the context deadline for each request. It must end well
+	// before Write: a handler still running when the server gives up on
+	// writing its response can commit a save the client never hears about
+	// (the client retries and gets a spurious 409). Under the deadline,
+	// pgx cancels the query and the transaction rolls back instead.
+	Request time.Duration
+}
+
+func defaultTimeouts() timeouts {
+	return timeouts{
+		// Reading a request body up to the 5 MiB content / 6 MiB MCP limit.
+		Read:       30 * time.Second,
+		ReadHeader: 10 * time.Second,
+		Request:    30 * time.Second,
+		Write:      60 * time.Second,
+		Idle:       60 * time.Second,
+	}
+}
+
+func newHTTPServer(addr string, h http.Handler, to timeouts) *http.Server {
 	return &http.Server{
-		Addr:         ":" + port,
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              addr,
+		Handler:           h,
+		ReadTimeout:       to.Read,
+		ReadHeaderTimeout: to.ReadHeader,
+		WriteTimeout:      to.Write,
+		IdleTimeout:       to.Idle,
+	}
+}
+
+// requestDeadline bounds each request's context, so database work started
+// by a handler is cancelled before the server's WriteTimeout can cut the
+// response off (see timeouts.Request).
+func requestDeadline(d time.Duration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), d)
+		defer cancel()
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
 	}
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nextOrder, orderBetween } from './order';
+import { nextOrder, orderBetween, orderAfter } from './order';
 
 describe('nextOrder', () => {
   it('returns a number', () => {
@@ -53,5 +53,31 @@ describe('orderBetween', () => {
   it('returns an integer', () => {
     const result = orderBetween(1, 4);
     expect(Number.isInteger(result)).toBe(true);
+  });
+
+  // With no integer strictly between the neighbours, the midpoint used to
+  // floor onto `before`, so the moved item collided with its neighbour.
+  it('returns null instead of a colliding value when there is no integer gap', () => {
+    expect(orderBetween(5, 6)).toBeNull();
+    expect(orderBetween(5, 5)).toBeNull();
+    expect(orderBetween(1_800_000_000_000_000, 1_800_000_000_000_001)).toBeNull();
+  });
+
+  it('always returns a value strictly between its neighbours', () => {
+    for (const [lo, hi] of [[0, 2], [10, 13], [1_800_000_000_000_000, 1_800_000_000_000_010]]) {
+      const v = orderBetween(lo, hi)!;
+      expect(v).toBeGreaterThan(lo);
+      expect(v).toBeLessThan(hi);
+    }
+  });
+});
+
+describe('orderAfter', () => {
+  it('returns the next integer after an integer order', () => {
+    expect(orderAfter(7)).toBe(8);
+  });
+
+  it('returns an integer for a legacy fractional order', () => {
+    expect(orderAfter(7.5)).toBe(8);
   });
 });

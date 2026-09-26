@@ -1,10 +1,13 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/glyph/api/internal/model"
@@ -32,13 +35,19 @@ func scanPage(row interface {
 		}
 		return nil, err
 	}
-	if triggerJSON != nil {
+	if !isJSONNullOrEmpty(triggerJSON) {
 		p.TodoTrigger = &model.TodoTriggerConfig{}
 		if err := json.Unmarshal(triggerJSON, p.TodoTrigger); err != nil {
 			return nil, fmt.Errorf("unmarshal todo_trigger: %w", err)
 		}
 	}
 	return p, nil
+}
+
+// isJSONNullOrEmpty reports whether a scanned JSONB column holds no value:
+// SQL NULL, or a JSONB null left behind by the typed-nil bug (DI-07).
+func isJSONNullOrEmpty(b []byte) bool {
+	return b == nil || string(bytes.TrimSpace(b)) == "null"
 }
 
 const pageColumns = `id, user_id, type, title, parent_id, "order", tags, priority, todo_trigger, org_id, is_private, created_at, updated_at`
@@ -51,8 +60,13 @@ var pageAccessFilter = ResourceAccessFilter(ResourcePage)
 // shares so that folder-specific share grants are respected.
 var folderAccessFilter = ResourceAccessFilter(ResourceFolder)
 
+// pageListOrder is a total order: "order" has many ties (every new page is
+// 0), and without the id tie-breaker LIMIT/OFFSET pages could repeat or skip
+// rows between requests.
+const pageListOrder = `"order" ASC, id ASC`
+
 func (s *pgPageStore) ListByUser(ctx context.Context, userID uuid.UUID) ([]*model.Page, error) {
-	q := `SELECT ` + pageColumns + ` FROM pages WHERE ` + pageAccessFilter + ` ORDER BY "order" ASC`
+	q := `SELECT ` + pageColumns + ` FROM pages WHERE ` + pageAccessFilter + ` ORDER BY ` + pageListOrder
 	rows, err := s.pool.Query(ctx, q, userID)
 	if err != nil {
 		return nil, fmt.Errorf("pages list: %w", err)
@@ -78,7 +92,7 @@ func (s *pgPageStore) ListByUserPaginated(ctx context.Context, userID uuid.UUID,
 		return nil, 0, fmt.Errorf("pages count: %w", err)
 	}
 
-	q := `SELECT ` + pageColumns + ` FROM pages WHERE ` + pageAccessFilter + ` ORDER BY "order" ASC LIMIT $2 OFFSET $3`
+	q := `SELECT ` + pageColumns + ` FROM pages WHERE ` + pageAccessFilter + ` ORDER BY ` + pageListOrder + ` LIMIT $2 OFFSET $3`
 	rows, err := s.pool.Query(ctx, q, userID, pg.Limit, pg.Offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("pages list paginated: %w", err)
@@ -125,7 +139,6 @@ func (s *pgPageStore) Upsert(ctx context.Context, p *model.Page) (*model.Page, e
 		  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		  ON CONFLICT (id) DO UPDATE SET
 		    parent_id = EXCLUDED.parent_id,
-		    type = EXCLUDED.type,
 		    title = EXCLUDED.title,
 		    "order" = EXCLUDED."order",
 		    tags = EXCLUDED.tags,
@@ -136,13 +149,9 @@ func (s *pgPageStore) Upsert(ctx context.Context, p *model.Page) (*model.Page, e
 		    updated_at = NOW()
 		  WHERE pages.user_id = $2
 		  RETURNING ` + pageColumns
-	result, err := scanPage(s.pool.QueryRow(ctx, q,
+	return s.writeWithParent(ctx, p.ID, p.ParentID, q,
 		p.ID, p.UserID, p.ParentID, p.Type, p.Title, p.Order, p.Tags, p.Priority, triggerJSON, p.OrgID, p.IsPrivate,
-	))
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
+	)
 }
 func (s *pgPageStore) Create(ctx context.Context, p *model.Page) (*model.Page, error) {
 	triggerJSON, err := marshalNullableJSON(p.TodoTrigger)
@@ -163,7 +172,21 @@ func (s *pgPageStore) Create(ctx context.Context, p *model.Page) (*model.Page, e
 	))
 }
 
+// PageUpdateFields lists every field Update writes, by JSON name. The type is
+// not among them: it is fixed at creation (see ErrTypeImmutable).
+var PageUpdateFields = []string{"title", "parentId", "order", "tags", "priority", "todoTrigger", "orgId", "isPrivate"}
+
 func (s *pgPageStore) Update(ctx context.Context, p *model.Page) (*model.Page, error) {
+	return s.UpdateFields(ctx, p, PageUpdateFields)
+}
+
+// UpdateFields writes only the named columns in a single UPDATE. The PATCH
+// handler used to read the row, merge the patch in Go and write every column
+// back, so of two concurrent PATCHes of different fields the later one
+// restored the other's field to its old value (DI-05). Writing only what the
+// request sent needs no read and no lock: each UPDATE is atomic, and fields
+// it doesn't name keep whatever the other writer committed.
+func (s *pgPageStore) UpdateFields(ctx context.Context, p *model.Page, fields []string) (*model.Page, error) {
 	triggerJSON, err := marshalNullableJSON(p.TodoTrigger)
 	if err != nil {
 		return nil, err
@@ -171,36 +194,204 @@ func (s *pgPageStore) Update(ctx context.Context, p *model.Page) (*model.Page, e
 	if p.Priority == "" {
 		p.Priority = model.PriorityNone
 	}
-	q := `UPDATE pages
-		  SET type=$1, title=$2, parent_id=$3, "order"=$4, tags=$5, priority=$6, todo_trigger=$7,
-		      org_id=$8, is_private=$9, updated_at=NOW()
-		  WHERE id=$10 AND user_id=$11
+	args := []any{p.ID, p.UserID}
+	sets := make([]string, 0, len(fields)+1)
+	seen := map[string]bool{}
+	var parent *uuid.UUID
+	set := func(col string, v any) {
+		args = append(args, v)
+		sets = append(sets, fmt.Sprintf("%s=$%d", col, len(args)))
+	}
+	for _, f := range fields {
+		if seen[f] {
+			continue
+		}
+		seen[f] = true
+		switch f {
+		case "title":
+			set("title", p.Title)
+		case "parentId":
+			set("parent_id", p.ParentID)
+			parent = p.ParentID // only a write of parent_id needs the cycle check
+		case "order":
+			set(`"order"`, p.Order)
+		case "tags":
+			set("tags", p.Tags)
+		case "priority":
+			set("priority", p.Priority)
+		case "todoTrigger":
+			set("todo_trigger", triggerJSON)
+		case "orgId":
+			set("org_id", p.OrgID)
+		case "isPrivate":
+			set("is_private", p.IsPrivate)
+		}
+	}
+	sets = append(sets, "updated_at=NOW()")
+	q := `UPDATE pages SET ` + strings.Join(sets, ", ") + `
+		  WHERE id=$1 AND user_id=$2
 		  RETURNING ` + pageColumns
-	return scanPage(s.pool.QueryRow(ctx, q,
-		p.Type, p.Title, p.ParentID, p.Order, p.Tags, p.Priority, triggerJSON,
-		p.OrgID, p.IsPrivate, p.ID, p.UserID,
-	))
+	return s.writeWithParent(ctx, p.ID, parent, q, args...)
 }
 
-func (s *pgPageStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM pages WHERE id=$1 AND user_id=$2`, id, userID)
-	if err != nil {
-		return err
+// pageTreeMoveLockSQL serialises every write that sets a page's parent, so
+// two moves that are each acyclic on their own (A under B, B under A) cannot
+// both pass the cycle check. Transaction-scoped: released at commit/rollback.
+// Moves are rare, so one lock for the whole tree costs nothing noticeable.
+const pageTreeMoveLockSQL = `SELECT pg_advisory_xact_lock(hashtext('glyph.pages.tree_move'))`
+
+// wouldCycleSQL reports whether page $1 is $2 or one of $2's ancestors, i.e.
+// whether making $2 the parent of $1 would close a cycle. UNION keeps the
+// walk finite even if a cycle is already stored.
+const wouldCycleSQL = `
+	WITH RECURSIVE chain AS (
+		SELECT id, parent_id FROM pages WHERE id = $2
+		UNION
+		SELECT p.id, p.parent_id FROM pages p JOIN chain c ON p.id = c.parent_id
+	)
+	SELECT EXISTS (SELECT 1 FROM chain WHERE id = $1)`
+
+// writeWithParent runs a single-row page write (q, returning pageColumns)
+// that sets parent_id to parentID. When parentID is non-nil the write runs in
+// a transaction holding the tree-move lock, after checking it would not make
+// the page its own ancestor (ErrCycle). PUT and PATCH share this check, and
+// running it under the lock in the writing transaction closes the race
+// between two concurrent moves.
+func (s *pgPageStore) writeWithParent(ctx context.Context, id uuid.UUID, parentID *uuid.UUID, q string, args ...any) (*model.Page, error) {
+	if parentID == nil {
+		return scanPage(s.pool.QueryRow(ctx, q, args...))
 	}
-	if result.RowsAffected() == 0 {
-		return ErrNotFound
+	if *parentID == id {
+		return nil, ErrCycle
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("page write — begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, pageTreeMoveLockSQL); err != nil {
+		return nil, fmt.Errorf("page write — tree lock: %w", err)
+	}
+	var cycle bool
+	if err := tx.QueryRow(ctx, wouldCycleSQL, id, *parentID).Scan(&cycle); err != nil {
+		return nil, fmt.Errorf("page write — cycle check: %w", err)
+	}
+	if cycle {
+		return nil, ErrCycle
+	}
+	out, err := scanPage(tx.QueryRow(ctx, q, args...))
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("page write — commit: %w", err)
+	}
+	return out, nil
+}
+
+// pageSubtreeCTE collects page $1 and all its descendants. UNION keeps it
+// finite on a parent_id cycle.
+const pageSubtreeCTE = `
+	WITH RECURSIVE subtree AS (
+		SELECT id FROM pages WHERE id = $1
+		UNION
+		SELECT p.id FROM pages p JOIN subtree s ON p.parent_id = s.id
+	)`
+
+// Delete removes a page or folder and its whole subtree, in one transaction.
+//
+// The pages.parent_id cascade deletes every descendant regardless of owner,
+// and editor shares / org roles let other users create pages inside someone
+// else's folder. Deleting such a subtree is therefore refused
+// (ErrSubtreeNotOwned) unless the caller owns every page in it. Before the
+// rows go, each page's current content is archived into
+// page_content_versions, which no longer cascades with its page, so a deleted
+// note is recoverable; the subtree's tasks are soft-deleted and its shares
+// deleted.
+func (s *pgPageStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("page delete — begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var rootID uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`SELECT id FROM pages WHERE id = $1 AND user_id = $2 FOR UPDATE`, id, userID,
+	).Scan(&rootID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("page delete — lookup: %w", err)
+	}
+
+	// Lock the subtree so nothing can be created in or moved into it (both
+	// need a key-share lock on the parent row) while we check and delete.
+	// The read below is a new statement, so it also sees any child that
+	// committed while we were acquiring the locks.
+	if _, err := tx.Exec(ctx,
+		pageSubtreeCTE+` SELECT 1 FROM pages p JOIN subtree s ON s.id = p.id FOR UPDATE OF p`, id,
+	); err != nil {
+		return fmt.Errorf("page delete — lock subtree: %w", err)
+	}
+	var (
+		ids     []uuid.UUID
+		foreign int
+	)
+	if err := tx.QueryRow(ctx,
+		pageSubtreeCTE+` SELECT COALESCE(array_agg(p.id), '{}'), COUNT(*) FILTER (WHERE p.user_id <> $2)
+		FROM pages p JOIN subtree s ON s.id = p.id`, id, userID,
+	).Scan(&ids, &foreign); err != nil {
+		return fmt.Errorf("page delete — read subtree: %w", err)
+	}
+	if foreign > 0 {
+		return ErrSubtreeNotOwned
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO page_content_versions (page_id, content, revision, schema_version, replaced_at)
+		 SELECT page_id, content, revision, schema_version, updated_at
+		 FROM page_contents WHERE page_id = ANY($1) AND content IS NOT NULL`, ids,
+	); err != nil {
+		return fmt.Errorf("page delete — archive content: %w", err)
+	}
+	// The tasks of the deleted notes (and those placed directly on a deleted
+	// folder's board) go with them, as a removed bullet's task does, instead
+	// of surviving as orphans with a dangling source. Soft delete, so they
+	// stay recoverable; the foreign keys then null their page references.
+	if _, err := tx.Exec(ctx,
+		`UPDATE tasks SET deleted_at = NOW(), deleted_reason = 'source_removed', updated_at = NOW()
+		 WHERE deleted_at IS NULL AND (source_page_id = ANY($1) OR folder_id = ANY($1))`, ids,
+	); err != nil {
+		return fmt.Errorf("page delete — tasks: %w", err)
+	}
+	// shares.resource_id has no foreign key. A share left behind would
+	// re-grant its recipient access to any page later created under the same
+	// id (PUT takes the id from the URL).
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM shares WHERE resource_type IN ('page', 'folder') AND resource_id = ANY($1)`, ids,
+	); err != nil {
+		return fmt.Errorf("page delete — shares: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM pages WHERE id = ANY($1)`, ids); err != nil {
+		return fmt.Errorf("page delete: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("page delete — commit: %w", err)
 	}
 	return nil
 }
 
 // IsAncestor walks the parent_id chain upward from nodeID using a recursive
 // CTE and reports whether candidateAncestorID appears anywhere in that chain.
-// Returns false (not an error) when either ID does not exist.
+// Returns false (not an error) when either ID does not exist. The tree CTEs
+// use UNION so they terminate even on a parent_id cycle already in the data.
 func (s *pgPageStore) IsAncestor(ctx context.Context, candidateAncestorID, nodeID uuid.UUID) (bool, error) {
 	const q = `
 		WITH RECURSIVE ancestors AS (
 			SELECT parent_id FROM pages WHERE id = $2
-			UNION ALL
+			UNION
 			SELECT p.parent_id FROM pages p JOIN ancestors a ON p.id = a.parent_id
 			WHERE a.parent_id IS NOT NULL
 		)
@@ -218,7 +409,7 @@ func (s *pgPageStore) GetDescendantIDs(ctx context.Context, folderID uuid.UUID) 
 	const q = `
 		WITH RECURSIVE descendants AS (
 			SELECT id FROM pages WHERE id = $1
-			UNION ALL
+			UNION
 			SELECT p.id FROM pages p JOIN descendants d ON p.parent_id = d.id
 		)
 		SELECT id FROM descendants`
@@ -482,7 +673,9 @@ func reconcileSourceTasksLocked(ctx context.Context, tx pgx.Tx, pageID uuid.UUID
 }
 
 // ListContentVersions returns superseded revisions for a page, newest first.
-// Access is gated by the same read filter used by GetContent.
+// Access is gated by the same read filter used by GetContent. Versions older
+// than the page row belong to a deleted page that had the same id and are
+// not returned.
 func (s *pgPageStore) ListContentVersions(ctx context.Context, pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error) {
 	if limit <= 0 || limit > maxContentVersionList {
 		limit = maxContentVersionList
@@ -491,7 +684,7 @@ func (s *pgPageStore) ListContentVersions(ctx context.Context, pageID, userID uu
 		SELECT v.id, v.page_id, v.content, v.revision, v.schema_version, v.replaced_at
 		FROM page_content_versions v
 		JOIN pages p ON p.id = v.page_id
-		WHERE v.page_id = $2 AND (
+		WHERE v.page_id = $2 AND v.replaced_at >= p.created_at AND (
 			p.user_id = $1
 			OR (p.org_id IS NOT NULL AND p.is_private = false
 			    AND p.org_id IN (SELECT org_id FROM org_members WHERE user_id = $1))
@@ -519,9 +712,16 @@ func (s *pgPageStore) ListContentVersions(ctx context.Context, pageID, userID uu
 	return out, nil
 }
 
-// marshalNullableJSON encodes v as JSON bytes, returning nil when v is nil.
+// marshalNullableJSON encodes v as JSON bytes, returning nil (SQL NULL) when
+// v is nil — including a typed nil pointer such as a nil *TodoTriggerConfig.
+// Wrapped in an interface{} that pointer is not == nil, and json.Marshal
+// turns it into the literal "null", which Postgres stores as a JSONB null
+// value rather than SQL NULL (DI-07).
 func marshalNullableJSON(v interface{}) ([]byte, error) {
 	if v == nil {
+		return nil, nil
+	}
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer && rv.IsNil() {
 		return nil, nil
 	}
 	b, err := jsonMarshal(v)

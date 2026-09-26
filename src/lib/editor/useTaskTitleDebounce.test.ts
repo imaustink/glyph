@@ -4,12 +4,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const updateTask = vi.fn();
-const trackPendingWrite = vi.fn();
+const setPendingDebounce = vi.fn();
 vi.mock('$lib/stores/tasks.svelte', () => ({
 	tasksStore: { updateTask: (...a: unknown[]) => updateTask(...a) }
 }));
 vi.mock('$lib/stores/ui.svelte', () => ({
-	uiStore: { markSaving: vi.fn(), markSaved: vi.fn(), trackPendingWrite: (...a: unknown[]) => trackPendingWrite(...a) }
+	uiStore: { markSaving: vi.fn(), markSaved: vi.fn(), setPendingDebounce: (...a: unknown[]) => setPendingDebounce(...a) }
 }));
 
 import {
@@ -36,11 +36,11 @@ describe('useTaskTitleDebounce pending tracking (DI-30)', () => {
 
 		expect(hasPendingTaskTitleUpdate('t1')).toBe(true);
 		expect(hasPendingTaskTitleUpdates()).toBe(true);
-		expect(trackPendingWrite).toHaveBeenLastCalledWith('task-title:t1', true);
+		expect(setPendingDebounce).toHaveBeenLastCalledWith('task-title:t1', true);
 
 		await vi.advanceTimersByTimeAsync(1000);
 		expect(updateTask).toHaveBeenCalledWith('t1', { title: 'New title' });
 		expect(hasPendingTaskTitleUpdates()).toBe(false);
-		expect(trackPendingWrite).toHaveBeenLastCalledWith('task-title:t1', false);
+		expect(setPendingDebounce).toHaveBeenLastCalledWith('task-title:t1', false);
 	});
 });

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -153,13 +154,23 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if req.Type != nil && *req.Type != existing.Type {
+		typeImmutable(c)
+		return
+	}
 	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
 		return
 	}
 	// Remember the pre-update parent so we only re-validate on an actual move.
 	originalParentID := existing.ParentID
+	originalOrgID := existing.OrgID
 
 	req.ApplyTo(existing)
+
+	// {"orgId": null} moves the node to the personal workspace.
+	if raw, present := keys["orgId"]; present && isJSONNull(raw) {
+		existing.OrgID = nil
+	}
 
 	// ApplyTo cannot distinguish {"parentId": null} (move to the top level) from
 	// an omitted parentId (leave unchanged) — both decode to a nil pointer. When
@@ -192,12 +203,41 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 		}
 	}
 
-	page, err := h.Pages.Update(c.Request.Context(), existing)
+	// A node's workspace is its subtree's: moving a folder (or a page with
+	// sub-pages) to another org, or to Personal, takes its descendants and
+	// their notes' tasks along, atomically, before the node itself is saved.
+	if !sameOrg(originalOrgID, existing.OrgID) {
+		if err := h.Pages.SetSubtreeOrg(c.Request.Context(), id, existing.OrgID); err != nil {
+			internalError(c, err)
+			return
+		}
+	}
+
+	// Write only the fields the request sent, so a concurrent PATCH of other
+	// fields isn't undone by this one writing back its stale copy (DI-05).
+	fields := make([]string, 0, len(keys))
+	for k := range keys {
+		fields = append(fields, k)
+	}
+	page, err := h.Pages.UpdateFields(c.Request.Context(), existing, fields)
 	if err != nil {
+		// The store re-checks for a cycle under the tree-move lock, which
+		// catches a concurrent move the check above could not see.
+		if errors.Is(err, store.ErrCycle) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot move a node into one of its own descendants"})
+			return
+		}
 		internalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, page)
+}
+
+func sameOrg(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // DELETE /pages/:id
@@ -221,6 +261,12 @@ func (h *PageHandler) DeletePage(c *gin.Context) {
 		return
 	}
 	if err := h.Pages.Delete(c.Request.Context(), id, user.ID); err != nil {
+		if errors.Is(err, store.ErrSubtreeNotOwned) {
+			// Deleting would cascade to pages other users created inside
+			// this folder. They must move or delete their pages first.
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "subtree_has_other_owners"})
+			return
+		}
 		notFoundOrError(c, err)
 		return
 	}
@@ -228,6 +274,12 @@ func (h *PageHandler) DeletePage(c *gin.Context) {
 }
 
 // PUT /pages/:id
+//
+// Creates the page, or replaces the fields the body contains. A field the
+// body omits keeps its stored value (on create: its default, and isPrivate
+// defaults to true as with POST); an explicit value, including null,
+// replaces it. PUT used to reset every omitted field, so a client that
+// didn't send isPrivate made a private page visible to its whole org.
 func (h *PageHandler) UpsertPage(c *gin.Context) {
 	user := auth.CurrentUser(c)
 	id, ok := parseUUID(c, "id")
@@ -235,8 +287,27 @@ func (h *PageHandler) UpsertPage(c *gin.Context) {
 		return
 	}
 	var body model.Page
-	if !bindJSON(c, &body) {
+	keys, ok := bindJSONWithKeys(c, &body)
+	if !ok {
 		return
+	}
+	existing, err := h.Pages.GetByID(c.Request.Context(), id, user.ID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		internalError(c, err)
+		return
+	}
+	if existing != nil && existing.UserID != user.ID {
+		// Only the owner can replace a page (the store's write is gated on
+		// user_id); don't merge from, or validate against, someone else's.
+		existing = nil
+	}
+	if existing != nil {
+		keepOmittedPageFields(&body, existing, keys)
+		if !checkTokenScope(c, existing.OrgID, model.ShareResourcePage, true) {
+			return
+		}
+	} else if _, sent := keys["isPrivate"]; !sent {
+		body.IsPrivate = true
 	}
 	if !checkTokenScope(c, body.OrgID, model.ShareResourcePage, true) {
 		return
@@ -245,10 +316,10 @@ func (h *PageHandler) UpsertPage(c *gin.Context) {
 	// actually a member of — otherwise this (Upsert can both create and
 	// update) would let any user plant a brand-new page inside an org they
 	// don't belong to, visible to that org once shared non-privately.
-	if !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
+	if !sameUUID(body.OrgID, orgIDOf(existing)) && !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
 		return
 	}
-	if !h.Perms.CanUseParent(c, h.Pages, body.ParentID, user.ID) {
+	if !sameUUID(body.ParentID, parentIDOf(existing)) && !h.Perms.CanUseParent(c, h.Pages, body.ParentID, user.ID) {
 		return
 	}
 	body.ID = id
@@ -258,13 +329,89 @@ func (h *PageHandler) UpsertPage(c *gin.Context) {
 	}
 	if body.Type == "" {
 		body.Type = model.NodeTypePage
+		if existing != nil {
+			body.Type = existing.Type
+		}
+	}
+	// The type is fixed at creation. The store never rewrites it either; this
+	// turns an attempt into a clear 400 instead of a silently ignored field.
+	if existing != nil && body.Type != existing.Type {
+		typeImmutable(c)
+		return
 	}
 	page, err := h.Pages.Upsert(c.Request.Context(), &body)
 	if err != nil {
+		// PUT shares PATCH's cycle check; the store runs it in the writing
+		// transaction under the tree-move lock.
+		if errors.Is(err, store.ErrCycle) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot move a node into one of its own descendants"})
+			return
+		}
 		notFoundOrError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, page)
+}
+
+// keepOmittedPageFields copies onto body every field of existing that the
+// PUT body did not mention (keys are the body's top-level JSON keys).
+func keepOmittedPageFields(body, existing *model.Page, keys map[string]json.RawMessage) {
+	omitted := func(k string) bool { _, sent := keys[k]; return !sent }
+	if omitted("type") {
+		body.Type = existing.Type
+	}
+	if omitted("title") {
+		body.Title = existing.Title
+	}
+	if omitted("parentId") {
+		body.ParentID = existing.ParentID
+	}
+	if omitted("order") {
+		body.Order = existing.Order
+	}
+	if omitted("tags") {
+		body.Tags = existing.Tags
+	}
+	if omitted("priority") {
+		body.Priority = existing.Priority
+	}
+	if omitted("todoTrigger") {
+		body.TodoTrigger = existing.TodoTrigger
+	}
+	if omitted("orgId") {
+		body.OrgID = existing.OrgID
+	}
+	if omitted("isPrivate") {
+		body.IsPrivate = existing.IsPrivate
+	}
+}
+
+func orgIDOf(p *model.Page) *uuid.UUID {
+	if p == nil {
+		return nil
+	}
+	return p.OrgID
+}
+
+func parentIDOf(p *model.Page) *uuid.UUID {
+	if p == nil {
+		return nil
+	}
+	return p.ParentID
+}
+
+func sameUUID(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// typeImmutable rejects a request that would turn a page into a folder or
+// back. Shares are typed ('page' vs 'folder'), so a changed type made the
+// existing shares impossible to list or revoke.
+func typeImmutable(c *gin.Context) {
+	c.JSON(http.StatusBadRequest, gin.H{"error": store.ErrTypeImmutable.Error(), "code": "type_immutable"})
 }
 
 // GET /pages/:id/content
@@ -291,6 +438,7 @@ func (h *PageHandler) GetPageContent(c *gin.Context) {
 		notFoundOrError(c, err)
 		return
 	}
+	content.Content = NormalizeStoredContent(content.Content)
 	c.JSON(http.StatusOK, content)
 }
 
@@ -321,15 +469,21 @@ func (h *PageHandler) UpsertPageContent(c *gin.Context) {
 	body.PageID = id
 	body.DetachCollab = !h.CollabEnabled
 
-	// Validate and sanitize ProseMirror content to prevent XSS via stored documents.
-	if len(body.Content) > 0 {
-		sanitized, valErr := ValidateProseMirrorContent(body.Content)
-		if valErr != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid content: " + valErr.Error()})
-			return
-		}
-		body.Content = sanitized
+	// A missing (or null) document is a client bug, not "clear the page":
+	// the store would write an empty doc and reconcile would soft-delete
+	// every task on the page. Clearing a page means sending an empty doc.
+	if len(body.Content) == 0 || isJSONNull(body.Content) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "content is required"})
+		return
 	}
+
+	// Validate and sanitize ProseMirror content to prevent XSS via stored documents.
+	sanitized, valErr := ValidateProseMirrorContent(body.Content)
+	if valErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid content: " + valErr.Error()})
+		return
+	}
+	body.Content = sanitized
 
 	// The store re-checks write permission inside the writing transaction (and
 	// under a row lock), so a permission revoked between the check above and

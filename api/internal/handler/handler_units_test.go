@@ -63,6 +63,28 @@ func (m *mockLaneStore) Update(_ context.Context, l *model.Lane) (*model.Lane, e
 	}
 	return l, nil
 }
+// Patch emulates the store's locked read-modify-write with getByIDFn and
+// updateFn.
+func (m *mockLaneStore) Patch(ctx context.Context, id, userID uuid.UUID, fn func(*model.Lane) error) (*model.Lane, error) {
+	l, err := m.GetByID(ctx, id, userID)
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(l); err != nil {
+		return nil, err
+	}
+	return m.Update(ctx, l)
+}
+func (m *mockLaneStore) PatchByIDAndFolder(ctx context.Context, id, folderID uuid.UUID, fn func(*model.Lane) error) (*model.Lane, error) {
+	l, err := m.GetByIDAndFolder(ctx, id, folderID)
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(l); err != nil {
+		return nil, err
+	}
+	return m.UpdateByIDAndFolder(ctx, l, folderID)
+}
 func (m *mockLaneStore) Upsert(_ context.Context, l *model.Lane) (*model.Lane, error) {
 	if m.upsertFn != nil {
 		return m.upsertFn(l)
@@ -126,6 +148,18 @@ func (m *mockTemplateStore) Update(_ context.Context, t *model.Template) (*model
 		return m.updateFn(t)
 	}
 	return t, nil
+}
+// Patch emulates the store's locked read-modify-write with getByIDFn and
+// updateFn.
+func (m *mockTemplateStore) Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Template) error) (*model.Template, error) {
+	t, err := m.GetByID(ctx, id, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(t); err != nil {
+		return nil, err
+	}
+	return m.Update(ctx, t)
 }
 func (m *mockTemplateStore) Upsert(_ context.Context, t *model.Template) (*model.Template, error) {
 	if m.upsertFn != nil {
@@ -942,6 +976,18 @@ func (m *mockTaskStore) Update(_ context.Context, t *model.Task) (*model.Task, e
 	}
 	return t, nil
 }
+// Patch emulates the store's locked read-modify-write with getByIDFn and
+// updateFn.
+func (m *mockTaskStore) Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error) (*model.Task, error) {
+	t, err := m.GetByID(ctx, id, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(t); err != nil {
+		return nil, err
+	}
+	return m.Update(ctx, t)
+}
 func (m *mockTaskStore) Upsert(_ context.Context, t *model.Task) (*model.Task, error) {
 	if m.upsertFn != nil {
 		return m.upsertFn(t)
@@ -1123,6 +1169,9 @@ func (m *mockPageStore) Update(_ context.Context, p *model.Page) (*model.Page, e
 	}
 	return p, nil
 }
+func (m *mockPageStore) UpdateFields(ctx context.Context, p *model.Page, _ []string) (*model.Page, error) {
+	return m.Update(ctx, p)
+}
 func (m *mockPageStore) Upsert(_ context.Context, p *model.Page) (*model.Page, error) {
 	if m.upsertFn != nil {
 		return m.upsertFn(p)
@@ -1176,6 +1225,9 @@ func (m *mockPageStore) IsAncestor(_ context.Context, candidateAncestorID, nodeI
 }
 func (m *mockPageStore) GetDescendantIDs(_ context.Context, folderID uuid.UUID) ([]uuid.UUID, error) {
 	return nil, nil
+}
+func (m *mockPageStore) SetSubtreeOrg(_ context.Context, pageID uuid.UUID, orgID *uuid.UUID) error {
+	return nil
 }
 
 // ─── PageHandler tests ────────────────────────────────────────────────────────
@@ -1513,9 +1565,9 @@ func TestPageHandler_UpsertPageContent_UpsertError_Returns500(t *testing.T) {
 	r.Use(injectTestUser())
 	r.PUT("/pages/:id/content", h.UpsertPageContent)
 
-	// Send an empty PageContent body (no content field) so the validation check is skipped
-	// and execution reaches UpsertContent directly.
-	body := jsonBody(t, map[string]any{})
+	// A valid (empty) document, so execution reaches UpsertContent. A body
+	// without content is now rejected with 400 before the store is called.
+	body := jsonBody(t, map[string]any{"content": map[string]any{"type": "doc", "content": []any{}}})
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/pages/"+pageID.String()+"/content", body)
 	req.Header.Set("Content-Type", "application/json")

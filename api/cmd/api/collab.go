@@ -13,7 +13,10 @@ type collabConfig struct {
 	// enabled is the server-wide switch (COLLAB_ENABLED=true). Turning it off
 	// is the kill switch: clients fall back to single-writer editing, and the
 	// first REST write to a page that was being edited collaboratively
-	// detaches it, making page_contents authoritative again.
+	// detaches it, making page_contents authoritative again. Until then the
+	// collab service's final snapshots of still-attached pages are accepted
+	// (so keep COLLAB_SERVICE_TOKEN set while it drains), or edits made since
+	// the last snapshot would be lost at detach.
 	enabled bool
 	// serviceToken authenticates the collab service's snapshot writes
 	// (COLLAB_SERVICE_TOKEN). Must match the collab service's configuration.

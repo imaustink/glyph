@@ -46,6 +46,18 @@ func (m *mockOrgStore) Create(_ context.Context, org *model.Organization) (*mode
 	}
 	return nil, nil
 }
+// CreateWithOwner emulates the store's single transaction with createOrgFn
+// followed by addMemberFn, so either can inject a failure.
+func (m *mockOrgStore) CreateWithOwner(ctx context.Context, org *model.Organization) (*model.Organization, error) {
+	created, err := m.Create(ctx, org)
+	if err != nil || created == nil {
+		return created, err
+	}
+	if _, err := m.AddMember(ctx, created.ID, org.CreatedBy, model.OrgRoleOwner); err != nil {
+		return nil, err
+	}
+	return created, nil
+}
 func (m *mockOrgStore) GetByID(_ context.Context, id uuid.UUID) (*model.Organization, error) {
 	if m.getByIDFn != nil {
 		return m.getByIDFn(id)
@@ -86,11 +98,46 @@ func (m *mockOrgStore) UpdateMemberRole(_ context.Context, orgID, userID uuid.UU
 	if m.updateMemberRoleFn != nil {
 		return m.updateMemberRoleFn(orgID, userID, role)
 	}
+	current, err := m.GetMember(context.Background(), orgID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if current.Role == model.OrgRoleOwner && role != model.OrgRoleOwner {
+		if err := m.requireAnotherOwner(orgID); err != nil {
+			return nil, err
+		}
+	}
 	return &model.OrgMember{UserID: userID, OrgID: orgID, Role: role}, nil
 }
 func (m *mockOrgStore) RemoveMember(_ context.Context, orgID, userID uuid.UUID) error {
 	if m.removeMemberFn != nil {
 		return m.removeMemberFn(orgID, userID)
+	}
+	current, err := m.GetMember(context.Background(), orgID, userID)
+	if err != nil {
+		return nil
+	}
+	if current.Role == model.OrgRoleOwner {
+		return m.requireAnotherOwner(orgID)
+	}
+	return nil
+}
+
+// requireAnotherOwner emulates the store's last-owner guard from
+// listMembersFn.
+func (m *mockOrgStore) requireAnotherOwner(orgID uuid.UUID) error {
+	members, err := m.ListMembers(context.Background(), orgID)
+	if err != nil {
+		return err
+	}
+	owners := 0
+	for _, mm := range members {
+		if mm.Role == model.OrgRoleOwner {
+			owners++
+		}
+	}
+	if owners <= 1 {
+		return store.ErrLastOwner
 	}
 	return nil
 }

@@ -1,9 +1,10 @@
 import { repositories } from '$lib/storage/config';
-import type { IPageRepository } from '$lib/storage/interfaces';
+import type { IPageRepository, WriteOptions } from '$lib/storage/interfaces';
 import type { TreeNode, PageContent, TodoTriggerConfig, ProseMirrorJSONNode } from '$lib/models/types';
 import { now, makeTimestamps } from '$lib/utils/time';
-import { nextOrder } from '$lib/utils/order';
+import { nextOrder, orderBetween, orderAfter } from '$lib/utils/order';
 import { uuid } from '$lib/utils/uuid';
+import { createOptimisticWriter } from './optimisticWriter';
 import { collabSupported, getCollabSession, removeListItemCollaboratively } from '$lib/collab/client';
 
 /** Recursively remove a listItem with the given nodeId from a ProseMirror JSON tree. */
@@ -71,6 +72,9 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
     // Use Date.now() as the sort order. This is monotonically increasing per-device
     // and eliminates the read-modify-write race that occurred when two concurrent
     // calls both read max(sibling.order) before either write completes.
+    // A template's defaultFolderId (or a stale caller) can name a folder that
+    // has since been deleted; a page filed under it would be unreachable.
+    if (parentId !== null && !_idIndex.has(parentId)) parentId = null;
     const node: TreeNode = {
       id: uuid(),
       type: 'page',
@@ -116,23 +120,15 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
     return created;
   }
 
-  async function updateNode(id: string, patch: Partial<Omit<TreeNode, 'id' | 'createdAt'>>): Promise<void> {
-    // Optimistic update: apply immediately, rollback on failure
-    const prev = _idIndex.get(id);
-    if (!prev) return;
-    const optimistic = { ...prev, ...patch, updatedAt: now() };
-    setNodes(nodes.map(n => n.id === id ? optimistic : n));
+  /** Serialized, sequenced optimistic writes per node (see optimisticWriter). */
+  const _writer = createOptimisticWriter<TreeNode>({
+    get: (id) => _idIndex.get(id),
+    replace: (node) => setNodes(nodes.map((n) => (n.id === node.id ? node : n)))
+  });
 
-    try {
-      const updated = await repo.update(id, { ...patch, updatedAt: now() });
-      if (updated) {
-        setNodes(nodes.map(n => n.id === id ? updated : n));
-      }
-    } catch (err) {
-      // Rollback on failure
-      setNodes(nodes.map(n => n.id === id ? prev : n));
-      throw err;
-    }
+  async function updateNode(id: string, patch: Partial<Omit<TreeNode, 'id' | 'createdAt'>>): Promise<void> {
+    const full = { ...patch, updatedAt: now() };
+    return _writer.update(id, full, () => repo.update(id, full), () => repo.getById(id));
   }
 
   /**
@@ -157,14 +153,16 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
    * - API: sends a single DELETE; Postgres ON DELETE CASCADE handles descendants
    *
    * Throws on failure so the caller can surface the error to the user.
+   * Returns the ids of every node that was deleted.
    */
-  async function deleteNode(id: string): Promise<void> {
+  async function deleteNode(id: string): Promise<string[]> {
     const descendantIds = collectDescendantIds(id);
-    await repo.deleteSubtree(id, descendantIds);
+    const reported = await repo.deleteSubtree(id, descendantIds);
 
     // Update local state regardless of storage mode.
-    const deletedSet = new Set([...descendantIds, id]);
+    const deletedSet = new Set([...descendantIds, id, ...(reported ?? [])]);
     setNodes(nodes.filter((n) => !deletedSet.has(n.id)));
+    return [...deletedSet];
   }
 
   /**
@@ -191,14 +189,14 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
    * is thrown so the caller can reload instead of retrying blindly — retrying
    * without a precondition is exactly the clobber this prevents.
    */
-  async function saveContent(pageId: string, content: Record<string, unknown>): Promise<void> {
+  async function saveContent(pageId: string, content: Record<string, unknown>, opts?: WriteOptions): Promise<void> {
     const expectedRevision = knownRevisions.get(pageId);
     const saved = await repo.saveContent({
       pageId,
       content,
       updatedAt: now(),
       ...(expectedRevision !== undefined ? { expectedRevision } : {})
-    });
+    }, opts);
     if (saved && typeof saved.revision === 'number') {
       knownRevisions.set(pageId, saved.revision);
     } else {
@@ -226,6 +224,49 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
       }
     }
     await updateNode(id, { parentId: newParentId, order: newOrder });
+  }
+
+  /** Spacing used when siblings have to be renumbered, leaving room for later single-write moves. */
+  const ORDER_STEP = 1024;
+
+  /**
+   * Move `draggedId` so it sits directly after `targetId`, under the target's
+   * parent. Orders are always integers: the API's `order` is an int, and a
+   * fractional value is rejected with a 400.
+   *
+   * When there is an integer gap after the target only the dragged node is
+   * written. Otherwise the siblings are renumbered. Throws on failure so the
+   * caller can tell the user.
+   */
+  async function placeAfter(draggedId: string, targetId: string): Promise<void> {
+    if (draggedId === targetId) return;
+    const target = _idIndex.get(targetId);
+    const dragged = _idIndex.get(draggedId);
+    if (!target || !dragged) return;
+    const parentId = target.parentId;
+    if (parentId !== null && (parentId === draggedId || collectDescendantIds(draggedId).includes(parentId))) {
+      throw new Error('Cannot move a node into one of its own descendants.');
+    }
+
+    const siblings = getChildren(parentId).filter((n) => n.id !== draggedId);
+    const idx = siblings.findIndex((n) => n.id === targetId);
+    const next = siblings[idx + 1];
+    const gapOrder = next ? orderBetween(target.order, next.order) : orderAfter(target.order);
+    if (gapOrder !== null) {
+      await moveNode(draggedId, parentId, gapOrder);
+      return;
+    }
+
+    const ordered = [...siblings.slice(0, idx + 1), dragged, ...siblings.slice(idx + 1)];
+    // The dragged node goes first: it may be changing parent, and moveNode
+    // runs the cycle check before anything is written.
+    await moveNode(draggedId, parentId, (ordered.indexOf(dragged) + 1) * ORDER_STEP);
+    for (let i = 0; i < ordered.length; i++) {
+      const n = ordered[i];
+      const order = (i + 1) * ORDER_STEP;
+      if (n.id === draggedId || n.order === order) continue;
+      await updateNode(n.id, { order });
+    }
   }
 
   /**
@@ -264,6 +305,7 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
     saveContent,
     forgetRevision,
     moveNode,
+    placeAfter,
     removeBulletByNodeId
   };
 }

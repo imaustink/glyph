@@ -8,6 +8,7 @@ import (
 	"github.com/glyph/api/internal/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type pgShareStore struct{ pool DBPool }
@@ -47,6 +48,12 @@ func (s *pgShareStore) Create(ctx context.Context, sh *model.Share) (*model.Shar
 	if err := s.pool.QueryRow(ctx, q,
 		sh.ID, sh.ResourceType, sh.ResourceID, sh.SharedByID, sh.SharedWith.ID, sh.Permission,
 	).Scan(&sh.ID); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// One share per (resource, recipient): change its permission
+			// instead of creating a second one.
+			return nil, fmt.Errorf("%w: already shared with this user", ErrConflict)
+		}
 		return nil, fmt.Errorf("share create: %w", err)
 	}
 	// Re-fetch with joined user data

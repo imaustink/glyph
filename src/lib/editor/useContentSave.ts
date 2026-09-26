@@ -5,14 +5,18 @@ import { notificationsStore } from '$lib/stores/notifications.svelte';
 import { flushAllTaskTitleUpdates } from '$lib/editor/useTaskTitleDebounce';
 import { DEBOUNCE } from '$lib/models/constants';
 import { ApiError, apiErrorCode } from '$lib/storage/apiClient';
+import type { WriteOptions } from '$lib/storage/interfaces';
 
 export interface ContentSaveHandle {
 	/** Schedule a debounced content save for the current editor state. */
 	scheduleSave(editor: Editor, pageId: string): void;
 	/** Immediately persist any pending content save. */
-	flushContentSave(): Promise<void>;
-	/** Flush all pending writes (content + task titles). Never rejects. */
-	flushAll(): Promise<void>;
+	flushContentSave(opts?: WriteOptions): Promise<void>;
+	/**
+	 * Flush all pending writes (content + task titles). Never rejects.
+	 * `{ keepalive: true }` when the page is being hidden or unloaded.
+	 */
+	flushAll(opts?: WriteOptions): Promise<void>;
 	/** Whether a content save is waiting on its timer, queued, or in flight. */
 	hasPendingWork(): boolean;
 	/** Clean up timers. */
@@ -38,7 +42,7 @@ export function useContentSave(
 	const pendingKey = `content-save:${++instanceCounter}`;
 	function clearTimer() {
 		if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-		uiStore.trackPendingWrite(pendingKey, false);
+		uiStore.setPendingDebounce(pendingKey, false);
 	}
 	let pendingContentJson: Record<string, unknown> | null = null;
 	let pendingContentPageId: string | null = null;
@@ -50,7 +54,7 @@ export function useContentSave(
 	// under the revision the prior save advanced to.
 	let inFlight: Promise<void> | null = null;
 
-	async function persistPending(): Promise<void> {
+	async function persistPending(opts?: WriteOptions): Promise<void> {
 		const json = pendingContentJson;
 		const pid = pendingContentPageId;
 		pendingContentJson = null;
@@ -58,7 +62,7 @@ export function useContentSave(
 		if (json == null || pid == null) return;
 		uiStore.markSaving();
 		try {
-			await pagesStore.saveContent(pid, json);
+			await (opts ? pagesStore.saveContent(pid, json, opts) : pagesStore.saveContent(pid, json));
 			onchange?.();
 			uiStore.markSaved();
 		} catch (err) {
@@ -94,7 +98,7 @@ export function useContentSave(
 		}
 	}
 
-	async function flushContentSave(): Promise<void> {
+	async function flushContentSave(opts?: WriteOptions): Promise<void> {
 		clearTimer();
 		// A save is already running: wait for it to settle rather than starting a
 		// concurrent PUT with a stale precondition. Once it finishes, persist the
@@ -103,7 +107,7 @@ export function useContentSave(
 			await inFlight;
 			if (pendingContentJson == null || pendingContentPageId == null) return;
 		}
-		const run = persistPending();
+		const run = persistPending(opts);
 		inFlight = run;
 		try {
 			await run;
@@ -116,8 +120,8 @@ export function useContentSave(
 	 * Never rejects: callers chain navigation onto it (the editor opens the
 	 * next page once it settles), so one failed write must not strand them.
 	 */
-	async function flushAll() {
-		const results = await Promise.allSettled([flushContentSave(), flushAllTaskTitleUpdates()]);
+	async function flushAll(opts?: WriteOptions) {
+		const results = await Promise.allSettled([flushContentSave(opts), flushAllTaskTitleUpdates(opts)]);
 		for (const r of results) {
 			if (r.status === 'rejected') {
 				console.error('[Editor] Flushing pending writes failed:', r.reason);
@@ -130,7 +134,7 @@ export function useContentSave(
 		pendingContentJson = editor.getJSON() as Record<string, unknown>;
 		pendingContentPageId = pageId;
 		if (saveTimer) clearTimeout(saveTimer);
-		uiStore.trackPendingWrite(pendingKey, true);
+		uiStore.setPendingDebounce(pendingKey, true);
 		saveTimer = setTimeout(async () => {
 			await flushContentSave();
 		}, DEBOUNCE.CONTENT_SAVE);
