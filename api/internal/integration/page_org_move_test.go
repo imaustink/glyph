@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/glyph/api/internal/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,8 +14,9 @@ import (
 
 // TestPageOrgMove covers the org cascade of PATCH /pages/:id {"orgId": ...}:
 // moving a folder to another workspace takes its subtree along, so it must
-// refuse (as delete does) a subtree holding other users' pages, and it must
-// be all-or-nothing with the rest of the PATCH.
+// refuse (as delete does) a subtree holding other users' pages, it must be
+// all-or-nothing with the rest of the PATCH, and it must take the folder
+// board's tasks along with the notes' tasks.
 func TestPageOrgMove(t *testing.T) {
 	RunSpecs(t, map[string]func(t *testing.T, h *Harness){
 		// Moving a folder would carry pages other users created in it (via an
@@ -82,6 +84,37 @@ func TestPageOrgMove(t *testing.T) {
 			assert.Nil(t, getPage(t, h, h.UserA.ID, f.ID).OrgID, "the rejected PATCH moved the folder's org")
 			assert.Nil(t, getPage(t, h, h.UserA.ID, child.ID).OrgID, "the rejected PATCH left the subtree's org rewritten")
 			assert.Nil(t, getPage(t, h, h.UserA.ID, x.ID).OrgID)
+		},
+
+		// Tasks placed directly on a folder's board (folder_id, no source
+		// note) belong to the folder's workspace too.
+		"OrgMoveTakesFolderBoardTasks": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			orgID := createOrgAs(t, h, h.UserA.ID, "Org")
+			f := createFolder(t, h, h.UserA.ID, "Board")
+			sub := createChild(t, h, h.UserA.ID, f.ID, "folder", "Sub-board")
+			var tasks []model.Task
+			for _, folderID := range []string{f.ID.String(), sub.ID.String()} {
+				w := h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{"title": "board task", "folderId": folderID}, h.UserA.ID)
+				require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+				tasks = append(tasks, Decode[model.Task](t, w))
+			}
+
+			w := h.Do(t, "PATCH", "/api/v1/pages/"+f.ID.String(), map[string]interface{}{"orgId": orgID}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			for _, task := range tasks {
+				got := Decode[model.Task](t, h.Do(t, "GET", "/api/v1/tasks/"+task.ID.String(), nil, h.UserA.ID))
+				if assert.NotNil(t, got.OrgID, "folder-board task stayed behind in the old workspace") {
+					assert.Equal(t, orgID, got.OrgID.String())
+				}
+			}
+
+			w = h.Do(t, "PATCH", "/api/v1/pages/"+f.ID.String(), map[string]interface{}{"orgId": nil}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			for _, task := range tasks {
+				got := Decode[model.Task](t, h.Do(t, "GET", "/api/v1/tasks/"+task.ID.String(), nil, h.UserA.ID))
+				assert.Nil(t, got.OrgID, "folder-board task stayed in the org after the move to Personal")
+			}
 		},
 	})
 }
