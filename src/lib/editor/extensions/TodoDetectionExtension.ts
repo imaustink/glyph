@@ -3,8 +3,8 @@ import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { nanoid } from 'nanoid';
 import type { TodoTriggerConfig } from '$lib/models/types';
-import { DEFAULT_TODO_TRIGGER } from '$lib/models/types';
-import { safeRegexTest } from '$lib/utils/safeRegex';
+import type { EditorState } from '@tiptap/pm/state';
+import { isTriggerBlock, matchesTrigger, resolveTrigger } from '$lib/editor/todoDerivation';
 import { isLocalTransaction } from '$lib/collab/isLocalTransaction';
 import { changedRanges, nodeTouches, type Range } from '$lib/editor/changedRanges';
 
@@ -12,6 +12,11 @@ export interface DetectedBullet {
   nodeId: string;
   bulletText: string;
   pageId: string;
+  /**
+   * The cursor is in this bullet's own text — the user is typing it. An empty
+   * bullet only becomes a task in that case (see shouldCreateTaskFor).
+   */
+  hasCursor?: boolean;
 }
 
 export interface TodoDetectionOptions {
@@ -31,15 +36,6 @@ export interface TodoDetectionOptions {
 }
 
 export const todoDetectionPluginKey = new PluginKey<DetectedBullet[]>('todo-detection');
-
-function matchesTrigger(text: string, config: TodoTriggerConfig): boolean {
-  const { pattern, matchMode } = config;
-  if (!pattern) return false;
-  if (matchMode === 'regex') {
-    return safeRegexTest(pattern, text);
-  }
-  return text.toLowerCase() === pattern.trim().toLowerCase();
-}
 
 /**
  * Traverses the document after each doc-changing transaction, finds bullet
@@ -91,11 +87,11 @@ export const TodoDetectionExtension = Extension.create<TodoDetectionOptions>({
 
             if (options.localChangesOnly) {
               if (!isLocalTransaction(tr)) return [];
-              return scanChangedBullets(newState.doc, oldState.doc, options.todoTrigger(), changedRanges(tr));
+              return markCursor(scanChangedBullets(newState.doc, oldState.doc, options.todoTrigger(), changedRanges(tr)), newState);
             }
 
             const { unlinkedBullets } = scanDocumentCached(newState.doc, options.todoTrigger());
-            return unlinkedBullets;
+            return markCursor(unlinkedBullets, newState);
           }
         },
 
@@ -139,7 +135,7 @@ interface ScanResult {
 const scanCache = new WeakMap<ProseMirrorNode, Map<string, ScanResult>>();
 
 function scanDocumentCached(doc: ProseMirrorNode, triggerConfig: TodoTriggerConfig | undefined): ScanResult {
-  const cacheKey = triggerConfig ? `${triggerConfig.pattern}:${triggerConfig.matchMode}` : '__default__';
+  const cacheKey = JSON.stringify(resolveTrigger(triggerConfig));
   let docCache = scanCache.get(doc);
   if (docCache) {
     const cached = docCache.get(cacheKey);
@@ -154,19 +150,30 @@ function scanDocumentCached(doc: ProseMirrorNode, triggerConfig: TodoTriggerConf
   return result;
 }
 
+/** Flag the bullet whose own text holds the cursor (the innermost list item around it). */
+function markCursor(bullets: DetectedBullet[], state: EditorState): DetectedBullet[] {
+  if (bullets.length === 0) return bullets;
+  const { $from } = state.selection;
+  let cursorNodeId: string | null = null;
+  // Only a cursor in the list item's own paragraph counts, not one in a
+  // nested list below it.
+  if ($from.depth >= 2 && $from.parent.type.name === 'paragraph') {
+    const li = $from.node($from.depth - 1);
+    if (li.type.name === 'listItem') cursorNodeId = (li.attrs.nodeId as string | null) ?? null;
+  }
+  if (!cursorNodeId) return bullets;
+  return bullets.map((b) => (b.nodeId === cursorNodeId ? { ...b, hasCursor: true } : b));
+}
+
 function scanDocument(doc: ProseMirrorNode, triggerConfig: TodoTriggerConfig | undefined): ScanResult {
-  const trigger = triggerConfig ?? DEFAULT_TODO_TRIGGER;
-  const blockTypes = trigger.blockTypes?.length ? trigger.blockTypes : ['heading'];
-  const matchesAnyType = blockTypes.includes('any');
+  const trigger = resolveTrigger(triggerConfig);
 
   const unlinkedBullets: DetectedBullet[] = [];
   const bulletListsInTodoSections: { node: ProseMirrorNode; offset: number }[] = [];
   let inTodoSection = false;
 
   doc.forEach((node, offset) => {
-    const isMatchableType = matchesAnyType || blockTypes.includes(node.type.name);
-
-    if (isMatchableType) {
+    if (isTriggerBlock(node.type.name, trigger)) {
       inTodoSection = matchesTrigger(node.textContent.trim(), trigger);
       return;
     }
@@ -252,9 +259,7 @@ function scanChangedBullets(
     }
     return !oldIds.has(id);
   };
-  const trigger = triggerConfig ?? DEFAULT_TODO_TRIGGER;
-  const blockTypes = trigger.blockTypes?.length ? trigger.blockTypes : ['heading'];
-  const matchesAnyType = blockTypes.includes('any');
+  const trigger = resolveTrigger(triggerConfig);
 
   const out: DetectedBullet[] = [];
   let inTodoSection = false;
@@ -282,8 +287,7 @@ function scanChangedBullets(
   };
 
   doc.forEach((node, offset) => {
-    const isMatchableType = matchesAnyType || blockTypes.includes(node.type.name);
-    if (isMatchableType) {
+    if (isTriggerBlock(node.type.name, trigger)) {
       inTodoSection = matchesTrigger(node.textContent.trim(), trigger);
       headingChanged = inTodoSection && nodeTouches(node, offset, ranges);
       return;

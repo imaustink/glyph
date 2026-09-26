@@ -72,6 +72,12 @@ export function createUiStore() {
   /** Resolvers waiting for all saves to complete. */
   let _saveCompleteResolvers: (() => void)[] = [];
 
+  function notifySaveComplete() {
+    const resolvers = _saveCompleteResolvers;
+    _saveCompleteResolvers = [];
+    resolvers.forEach(r => r());
+  }
+
   /** Call before starting an async save. */
   function markSaving() {
     if (_savedTimer) { clearTimeout(_savedTimer); _savedTimer = null; }
@@ -96,10 +102,9 @@ export function createUiStore() {
       saveState = 'saved';
       if (_savedTimer) clearTimeout(_savedTimer);
       _savedTimer = setTimeout(() => { saveState = 'idle'; }, 2000);
-      // Notify all waiters that saves have completed
-      const resolvers = _saveCompleteResolvers;
-      _saveCompleteResolvers = [];
-      resolvers.forEach(r => r());
+      // Notify all waiters that saves have completed (debounced writes
+      // still waiting on their timers count as not complete).
+      if (_pendingDebounces.length === 0) notifySaveComplete();
     }
   }
 
@@ -108,7 +113,7 @@ export function createUiStore() {
    * or rejects after timeoutMs to prevent infinite waiting.
    */
   function waitForSaveComplete(timeoutMs = 5000): Promise<void> {
-    if (_inflightCount === 0 && _pendingFlushes.length === 0) return Promise.resolve();
+    if (_inflightCount === 0 && _pendingFlushes.length === 0 && _pendingDebounces.length === 0) return Promise.resolve();
 
     return new Promise<void>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
@@ -127,7 +132,7 @@ export function createUiStore() {
         });
       }
 
-      if (_inflightCount === 0) {
+      if (_inflightCount === 0 && _pendingDebounces.length === 0) {
         onSavesDone();
       } else {
         _saveCompleteResolvers.push(onSavesDone);
@@ -151,6 +156,8 @@ export function createUiStore() {
     const has = _pendingDebounces.includes(key);
     if (pending && !has) _pendingDebounces = [..._pendingDebounces, key];
     else if (!pending && has) _pendingDebounces = _pendingDebounces.filter((k) => k !== key);
+    // waitForSaveComplete also waits for armed debounces to be sent.
+    if (!pending && _pendingDebounces.length === 0 && _inflightCount === 0) notifySaveComplete();
   }
 
   /**

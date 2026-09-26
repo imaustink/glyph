@@ -44,7 +44,22 @@ type ProseMirrorNode = {
   [key: string]: unknown;
 };
 
-function evaluateNode(node: ProseMirrorNode, now: Date): ProseMirrorNode {
+/**
+ * Bullet identity and task-link attributes. A note made from a template must
+ * give its bullets their own identity: copied ids would link the new note's
+ * bullets to the template's (or another note's) tasks.
+ */
+const IDENTITY_ATTRS = ['nodeId', 'taskId', 'checked', 'taskStatus'];
+
+function stripIdentity(node: ProseMirrorNode): ProseMirrorNode {
+  if (node.type !== 'listItem' || !node.attrs || typeof node.attrs !== 'object') return node;
+  const attrs = { ...(node.attrs as Record<string, unknown>) };
+  for (const key of IDENTITY_ATTRS) delete attrs[key];
+  return { ...node, attrs };
+}
+
+function evaluateNode(input: ProseMirrorNode, now: Date): ProseMirrorNode {
+  const node = stripIdentity(input);
   if (node.text !== undefined) {
     return {
       ...node,

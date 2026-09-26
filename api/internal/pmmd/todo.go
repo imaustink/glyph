@@ -5,20 +5,26 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/google/uuid"
 )
 
 // TodoTrigger mirrors the page's TodoTriggerConfig: which top-level blocks
-// open a TODO section. An empty Pattern means the default (a heading whose
-// text is "TODO").
+// open a TODO section. An empty Pattern means the default (a block whose
+// text is "TODO", exact); BlockTypes still apply.
+//
+// The editor derives TODO bullets the same way
+// (src/lib/editor/todoDerivation.ts). Both are tested against
+// testdata/todo_derivation.json; change them together.
 type TodoTrigger struct {
 	Pattern    string
 	MatchMode  string // "exact" (default) or "regex"
 	BlockTypes []string
 }
 
-// TodoBullet is a bullet in a TODO section that isn't linked to a task yet.
+// TodoBullet is a bullet in a TODO section that isn't linked to a task yet
+// and has text (an empty bullet is not a task).
 type TodoBullet struct {
 	NodeID  string
 	Text    string
@@ -36,8 +42,9 @@ type TaskLink struct {
 // outside the editor gets the same treatment: walking the doc's top-level
 // blocks, a block of a trigger type opens (if it matches) or closes (if it
 // doesn't) a TODO section, and every bullet in a bulletList inside a section
-// — including nested bulletLists — that has no taskId is returned. Bullets
-// without a nodeId are given one in the returned doc, as the editor does.
+// — including nested bulletLists — that has no taskId and some text is
+// returned. Bullets without a nodeId are given one in the returned doc, as
+// the editor does.
 func FindUnlinkedTodoBullets(doc json.RawMessage, trigger TodoTrigger) (json.RawMessage, []TodoBullet, error) {
 	root, err := decodeTodoDoc(doc)
 	if err != nil {
@@ -49,8 +56,10 @@ func FindUnlinkedTodoBullets(doc json.RawMessage, trigger TodoTrigger) (json.Raw
 		blockTypes = []string{"heading"}
 	}
 	isTriggerType := func(t string) bool {
+		// A list is never a trigger block, not even with "any".
+		isList := t == "bulletList" || t == "orderedList"
 		for _, b := range blockTypes {
-			if b == "any" || b == t {
+			if b == t || (b == "any" && !isList) {
 				return true
 			}
 		}
@@ -76,8 +85,8 @@ func FindUnlinkedTodoBullets(doc json.RawMessage, trigger TodoTrigger) (json.Raw
 	return b, out, nil
 }
 
-// LinkTodoBullets sets taskId/taskStatus (and checked for done tasks) on the
-// listItems whose nodeId is in links.
+// LinkTodoBullets sets taskId/taskStatus (and checked for done or cancelled
+// tasks, as the editor shows them) on the listItems whose nodeId is in links.
 func LinkTodoBullets(doc json.RawMessage, links map[string]TaskLink) (json.RawMessage, error) {
 	root, err := decodeTodoDoc(doc)
 	if err != nil {
@@ -91,7 +100,7 @@ func LinkTodoBullets(doc json.RawMessage, links map[string]TaskLink) (json.RawMe
 				if l, ok := links[id]; ok {
 					attrs["taskId"] = l.TaskID
 					attrs["taskStatus"] = l.Status
-					attrs["checked"] = l.Status == "done"
+					attrs["checked"] = l.Status == "done" || l.Status == "cancelled"
 				}
 			}
 		}
@@ -143,6 +152,9 @@ func triggerMatcher(tr TodoTrigger) func(string) bool {
 		pattern, mode = "TODO", "exact"
 	}
 	if mode == "regex" {
+		if !portableRegex(pattern) {
+			return func(string) bool { return false }
+		}
 		re, err := regexp.Compile(pattern)
 		if err != nil {
 			// The editor's safeRegexTest also treats an invalid pattern as
@@ -153,6 +165,56 @@ func triggerMatcher(tr TodoTrigger) func(string) bool {
 	}
 	want := strings.ToLower(strings.TrimSpace(pattern))
 	return func(s string) bool { return strings.ToLower(s) == want }
+}
+
+// maxTriggerPatternLen and nestedQuantifier mirror the editor's
+// safeRegex.ts, which refuses such patterns (ReDoS guard).
+const maxTriggerPatternLen = 200
+
+var nestedQuantifier = regexp.MustCompile(`([+*{][?]?[)]\s*[+*{])|([+*{][?]?\s*[+*{])`)
+
+// portableRegex reports whether a trigger pattern means the same in the
+// editor (JavaScript) and here (RE2). Patterns the editor refuses, and
+// constructs only RE2 supports — flag groups like (?i), (?P<…>), \A, \z,
+// \p{…}, \x{…}, \Q…\E, POSIX [[:class:]] — match nothing, as in the
+// editor. (The editor refuses the JS-only constructs.)
+func portableRegex(pattern string) bool {
+	// Length in UTF-16 units, as JavaScript counts it.
+	if len(utf16.Encode([]rune(pattern))) > maxTriggerPatternLen || nestedQuantifier.MatchString(pattern) {
+		return false
+	}
+	if strings.Contains(pattern, "[[:") {
+		return false
+	}
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '\\':
+			if i+1 < len(pattern) {
+				switch pattern[i+1] {
+				case 'A', 'z', 'C', 'Q', 'E', 'p', 'P':
+					return false
+				case 'x':
+					if i+2 < len(pattern) && pattern[i+2] == '{' {
+						return false
+					}
+				}
+			}
+			i++
+		case '(':
+			if i+2 < len(pattern) && pattern[i+1] == '?' {
+				next := pattern[i+2]
+				named := next == '<' && i+3 < len(pattern) && isASCIILetter(pattern[i+3])
+				if next != ':' && !named {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func isASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 func collectUnlinked(list map[string]interface{}, out *[]TodoBullet) {
@@ -178,7 +240,9 @@ func collectUnlinked(list map[string]interface{}, out *[]TodoBullet) {
 				}
 			}
 			checked, _ := attrs["checked"].(bool)
-			*out = append(*out, TodoBullet{NodeID: nodeID, Text: strings.TrimSpace(text.String()), Checked: checked})
+			if t := strings.TrimSpace(text.String()); t != "" {
+				*out = append(*out, TodoBullet{NodeID: nodeID, Text: t, Checked: checked})
+			}
 		}
 		for _, ch := range children(item) {
 			if ch["type"] == "bulletList" {

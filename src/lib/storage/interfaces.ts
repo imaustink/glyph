@@ -37,7 +37,7 @@ export interface IPageRepository extends IRepository<TreeNode> {
    * `revision`) so callers can hold an up-to-date optimistic-concurrency
    * precondition for the next write.
    */
-  saveContent(content: PageContent): Promise<PageContent | void>;
+  saveContent(content: PageContent, opts?: WriteOptions): Promise<PageContent | void>;
   deleteContent(pageId: string): Promise<void>;
   deleteWithContent(id: string): Promise<boolean>;
   /**

@@ -65,7 +65,11 @@ describe('useBulletRemoval', () => {
 	});
 
 	describe('localStorage mode (client is the only writer)', () => {
-		it('deletes the task whose bullet was removed', async () => {
+		// DI-10: the delete used to be a hard delete 1 s after the bullet left
+		// the document, so a cut followed by a paste or undo more than 1 s later
+		// lost the task. It is now a soft delete: hidden at once, deleted from
+		// storage only when the editor leaves the page (flush).
+		it('deletes the task whose bullet was removed once the page is flushed', async () => {
 			editor = makeEditor(docWith({ nodeId: 'a', taskId: 't-a' }, { nodeId: 'b', taskId: 't-b' }));
 			const handle = useBulletRemoval();
 			handle.snapshot(editor);
@@ -73,9 +77,45 @@ describe('useBulletRemoval', () => {
 			editor.commands.setContent(docWith({ nodeId: 'b', taskId: 't-b' }));
 			await handle.detectRemovedTaskBullets(editor);
 
+			expect(deleteTask).not.toHaveBeenCalled();
+			expect(forgetLocal).toHaveBeenCalledWith(['t-a']);
+
+			await handle.flush();
 			expect(deleteTask).toHaveBeenCalledTimes(1);
 			expect(deleteTask).toHaveBeenCalledWith('t-a');
 		});
+
+		it('restores the task when its bullet comes back before the flush (cut → paste, undo)', async () => {
+			editor = makeEditor(docWith({ nodeId: 'a', taskId: 't-a' }));
+			const handle = useBulletRemoval();
+			handle.snapshot(editor);
+
+			editor.commands.setContent(docWith());
+			await handle.detectRemovedTaskBullets(editor);
+			await vi.advanceTimersByTimeAsync(5000);
+
+			getById.mockReturnValue(undefined); // hidden from local state
+			refreshTask.mockResolvedValue(true);
+			editor.commands.setContent(docWith({ nodeId: 'a', taskId: 't-a' }));
+			await handle.detectRemovedTaskBullets(editor);
+
+			expect(refreshTask).toHaveBeenCalledWith('t-a');
+			await handle.flush();
+			expect(deleteTask).not.toHaveBeenCalled();
+		});
+	});
+
+	it('remembers which page a removed bullet’s task came from', async () => {
+		editor = makeEditor(docWith({ nodeId: 'a', taskId: 't-a' }));
+		getById.mockReturnValue({ id: 't-a', sourcePageId: 'page-A' });
+		const handle = useBulletRemoval({ serverReconciles: true });
+		handle.snapshot(editor);
+
+		editor.commands.setContent(docWith());
+		await handle.detectRemovedTaskBullets(editor);
+
+		expect(handle.sourcePageOfRemoved('t-a')).toBe('page-A');
+		expect(handle.sourcePageOfRemoved('t-unknown')).toBeUndefined();
 	});
 
 	describe('API mode (server reconciles)', () => {

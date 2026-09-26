@@ -1,5 +1,6 @@
 import { ListItem } from '@tiptap/extension-list-item';
 import { nanoid } from 'nanoid';
+import type { EditorState, Transaction } from '@tiptap/pm/state';
 import { getNodePosition } from '$lib/editor/plugins/NodeIdMapPlugin';
 
 declare module '@tiptap/core' {
@@ -15,6 +16,30 @@ declare module '@tiptap/core' {
       setStatusForNode: (nodeId: string, status: string) => ReturnType;
     };
   }
+}
+
+/**
+ * With the cursor at offset 0 of a non-empty first paragraph of a list item
+ * that has an identity, insert an empty list item before it. The cursor maps
+ * forward and stays at the start of the text, as after a normal split.
+ */
+function splitAboveKeepingIdentity(
+  state: EditorState,
+  dispatch: ((tr: Transaction) => void) | undefined
+): boolean {
+  const { selection } = state;
+  if (!selection.empty) return false;
+  const { $from } = selection;
+  if ($from.depth < 2 || $from.parentOffset !== 0) return false;
+  if ($from.parent.type.name !== 'paragraph' || $from.parent.content.size === 0) return false;
+  const item = $from.node($from.depth - 1);
+  if (item.type.name !== 'listItem' || $from.index($from.depth - 1) !== 0) return false;
+  if (!item.attrs.nodeId && !item.attrs.taskId) return false;
+  if (dispatch) {
+    const empty = item.type.create(null, state.schema.nodes.paragraph.create());
+    dispatch(state.tr.insert($from.before($from.depth - 1), empty).scrollIntoView());
+  }
+  return true;
 }
 
 export interface TaskLinkOptions {
@@ -78,6 +103,21 @@ export const TaskLinkExtension = ListItem.extend<TaskLinkOptions>({
         renderHTML: (attrs) =>
           attrs.taskId ? { 'data-task-status': attrs.taskStatus || 'todo' } : {}
       }
+    };
+  },
+
+  addKeyboardShortcuts() {
+    return {
+      ...this.parent?.(),
+      // Enter at the very start of a bullet's text inserts the new, empty
+      // bullet *above* it, so the bullet keeps its identity (nodeId, task
+      // link, status) together with its text. A plain split keeps the
+      // attributes on the upper half — here the empty one — which moved the
+      // task to the empty bullet and made a duplicate task for the text
+      // (DI-09). Everywhere else Enter splits as usual.
+      Enter: () =>
+        this.editor.commands.command(({ state, dispatch }) => splitAboveKeepingIdentity(state, dispatch)) ||
+        this.editor.commands.splitListItem(this.name)
     };
   },
 

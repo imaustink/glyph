@@ -1,5 +1,5 @@
 import { repositories } from '$lib/storage/config';
-import type { IPageRepository } from '$lib/storage/interfaces';
+import type { IPageRepository, WriteOptions } from '$lib/storage/interfaces';
 import type { TreeNode, PageContent, TodoTriggerConfig, ProseMirrorJSONNode } from '$lib/models/types';
 import { now, makeTimestamps } from '$lib/utils/time';
 import { nextOrder, orderBetween, orderAfter } from '$lib/utils/order';
@@ -189,14 +189,14 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
    * is thrown so the caller can reload instead of retrying blindly — retrying
    * without a precondition is exactly the clobber this prevents.
    */
-  async function saveContent(pageId: string, content: Record<string, unknown>): Promise<void> {
+  async function saveContent(pageId: string, content: Record<string, unknown>, opts?: WriteOptions): Promise<void> {
     const expectedRevision = knownRevisions.get(pageId);
     const saved = await repo.saveContent({
       pageId,
       content,
       updatedAt: now(),
       ...(expectedRevision !== undefined ? { expectedRevision } : {})
-    });
+    }, opts);
     if (saved && typeof saved.revision === 'number') {
       knownRevisions.set(pageId, saved.revision);
     } else {

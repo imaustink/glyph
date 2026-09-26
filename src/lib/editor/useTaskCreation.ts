@@ -3,6 +3,7 @@ import type { DetectedBullet } from '$lib/editor/extensions/TodoDetectionExtensi
 import { tasksStore } from '$lib/stores/tasks.svelte';
 import { uiStore } from '$lib/stores/ui.svelte';
 import { notificationsStore } from '$lib/stores/notifications.svelte';
+import { isCheckedStatus, shouldCreateTaskFor } from '$lib/editor/todoDerivation';
 
 export interface PendingTaskDetails {
 	taskId: string;
@@ -62,7 +63,25 @@ export function useTaskCreation(
 		const title = params.bulletText.trim();
 
 		const existing = tasksStore.getByNodeId(params.nodeId);
-		if (existing) return existing.id;
+		// A task already exists for this bullet — typically one whose creation
+		// finished after the user navigated away, so it was never written back
+		// (see the guard below). Link the bullet to it instead of leaving it
+		// unlinked forever (DI-28). Only this page's task, though: a nodeId
+		// seen on another page is a copy, not this bullet's identity.
+		if (existing && existing.sourcePageId === params.pageId) {
+			if (getLoadedPageId && getLoadedPageId() !== params.pageId) return existing.id;
+			const commands = getEditor()?.commands;
+			if (commands) {
+				commands.setTaskIdForNode(params.nodeId, existing.id);
+				commands.setCheckedForNode(params.nodeId, isCheckedStatus(existing.status));
+				commands.setStatusForNode(params.nodeId, existing.status);
+			}
+			return existing.id;
+		}
+
+		// An empty bullet the user isn't typing in stays a plain bullet until it
+		// has text (it is detected again then). Matches Go (DI-27).
+		if (!shouldCreateTaskFor(params)) return null;
 
 		if (promptedNodeIds.has(params.nodeId)) return null;
 		promptedNodeIds.add(params.nodeId);

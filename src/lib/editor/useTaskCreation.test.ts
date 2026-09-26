@@ -34,7 +34,7 @@ import { useTaskCreation } from './useTaskCreation';
 
 function makeEditor() {
 	return {
-		commands: { setTaskIdForNode: vi.fn() }
+		commands: { setTaskIdForNode: vi.fn(), setCheckedForNode: vi.fn(), setStatusForNode: vi.fn() }
 	};
 }
 
@@ -110,5 +110,50 @@ describe('useTaskCreation stale-page guard', () => {
 		await flush();
 
 		expect(editor.commands.setTaskIdForNode).not.toHaveBeenCalled();
+	});
+});
+
+// DI-28: a task created while the user navigated away is never written back
+// to its bullet (the stale-page guard above skips the mutation). When the page
+// is reopened the bullet is detected again; the task already exists for its
+// nodeId, and the bullet must be linked to it rather than left unlinked.
+describe('useTaskCreation links an existing task for the bullet (DI-28)', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		createTask.mockResolvedValue({ id: 'task-new' });
+	});
+
+	it('links the bullet to the task that already exists for its nodeId', async () => {
+		getByNodeId.mockReturnValue({ id: 'task-9', sourcePageId: 'page-A', sourceNodeId: 'node-1' });
+		const editor = makeEditor();
+		const handle = useTaskCreation(() => editor as never, undefined, () => 'page-A');
+
+		handle.handleTodoBulletsDetected([bullet as never]);
+		await flush();
+
+		expect(createTask).not.toHaveBeenCalled();
+		expect(editor.commands.setTaskIdForNode).toHaveBeenCalledWith('node-1', 'task-9');
+	});
+
+	it('does not link it while a different page is loaded', async () => {
+		getByNodeId.mockReturnValue({ id: 'task-9', sourcePageId: 'page-A', sourceNodeId: 'node-1' });
+		const editor = makeEditor();
+		const handle = useTaskCreation(() => editor as never, undefined, () => null);
+
+		handle.handleTodoBulletsDetected([bullet as never]);
+		await flush();
+
+		expect(editor.commands.setTaskIdForNode).not.toHaveBeenCalled();
+	});
+
+	it("never links a bullet to another page's task that happens to share its nodeId", async () => {
+		getByNodeId.mockReturnValue({ id: 'task-other', sourcePageId: 'page-Z', sourceNodeId: 'node-1' });
+		const editor = makeEditor();
+		const handle = useTaskCreation(() => editor as never, undefined, () => 'page-A');
+
+		handle.handleTodoBulletsDetected([bullet as never]);
+		await flush();
+
+		expect(editor.commands.setTaskIdForNode).not.toHaveBeenCalledWith('node-1', 'task-other');
 	});
 });
