@@ -301,12 +301,17 @@ jobs:
     # ubuntu-latest (amd64) produces images that fail with "exec format error"
     # when the kubelet tries to run them.
     runs-on: arc-runner-set
+    # One public Docker Hub repo holds all three images, so the component is
+    # a tag prefix (frontend-<tree>, api-<tree>, collab-<tree>) rather than a
+    # separate repository. cd.yml derives the same tags — keep them in sync.
+    env:
+      IMAGE_REPO: docker.io/blackmarket/glyph
     steps:
       - uses: actions/checkout@v4
 
       - name: Docker login
         run: |
-          echo "$REGISTRY_PASSWORD" | docker login registry.kurpuis.com:5000 \
+          echo "$REGISTRY_PASSWORD" | docker login docker.io \
             -u "$REGISTRY_USERNAME" --password-stdin
         env:
           REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
@@ -324,22 +329,22 @@ jobs:
           docker build \
             --build-arg VITE_STORAGE_MODE=api \
             --build-arg VITE_API_URL= \
-            -t registry.kurpuis.com:5000/glyph-frontend:"$tag" \
+            -t "$IMAGE_REPO:frontend-$tag" \
             -f Dockerfile .
-          docker push registry.kurpuis.com:5000/glyph-frontend:"$tag"
+          docker push "$IMAGE_REPO:frontend-$tag"
 
       - name: Build & push API
         run: |
           tag=$(git rev-parse HEAD^{tree})
           docker build \
-            -t registry.kurpuis.com:5000/glyph-api:"$tag" \
+            -t "$IMAGE_REPO:api-$tag" \
             -f api/Dockerfile api/
-          docker push registry.kurpuis.com:5000/glyph-api:"$tag"
+          docker push "$IMAGE_REPO:api-$tag"
 
       - name: Build & push collab
         run: |
           tag=$(git rev-parse HEAD^{tree})
           docker build \
-            -t registry.kurpuis.com:5000/glyph-collab:"$tag" \
+            -t "$IMAGE_REPO:collab-$tag" \
             -f collab/Dockerfile .
-          docker push registry.kurpuis.com:5000/glyph-collab:"$tag"
+          docker push "$IMAGE_REPO:collab-$tag"
