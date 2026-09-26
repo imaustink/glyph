@@ -87,10 +87,13 @@ const PageWriteSQL = `(
 // FolderDescendantsCTE is a SQL CTE fragment that recursively collects all
 // descendant page IDs (pages and sub-folders) for a given folder.
 // The caller must supply $1 = folderID. The CTE name is "descendants".
+//
+// UNION (not UNION ALL) makes the walk terminate even if the data holds a
+// parent_id cycle: a row already collected is never expanded again.
 const FolderDescendantsCTE = `
 WITH RECURSIVE descendants AS (
     SELECT id FROM pages WHERE id = $1
-    UNION ALL
+    UNION
     SELECT p.id FROM pages p
     JOIN descendants d ON p.parent_id = d.id
 )`

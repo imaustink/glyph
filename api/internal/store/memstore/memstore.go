@@ -7,6 +7,7 @@
 package memstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -376,7 +377,14 @@ func (s *pageStore) ListByUser(_ context.Context, userID uuid.UUID) ([]*model.Pa
 			result = append(result, clonePage(p))
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Order < result[j].Order })
+	// Total order, like the Postgres ORDER BY "order", id (uuid compares
+	// byte-wise), so pagination is stable across order ties.
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Order != result[j].Order {
+			return result[i].Order < result[j].Order
+		}
+		return bytes.Compare(result[i].ID[:], result[j].ID[:]) < 0
+	})
 	return result, nil
 }
 
@@ -430,11 +438,18 @@ func (s *pageStore) Upsert(_ context.Context, p *model.Page) (*model.Page, error
 		if existing.UserID != p.UserID {
 			return nil, store.ErrNotFound
 		}
+		if s.r.wouldCycle(p.ID, p.ParentID) {
+			return nil, store.ErrCycle
+		}
+		p.Type = existing.Type // fixed at creation, as in Postgres
 		p.CreatedAt = existing.CreatedAt
 		p.UpdatedAt = time.Now()
 		stored := clonePage(p)
 		s.r.pages[stored.ID] = stored
 		return clonePage(stored), nil
+	}
+	if s.r.wouldCycle(p.ID, p.ParentID) {
+		return nil, store.ErrCycle
 	}
 	now := time.Now()
 	p.CreatedAt = now
@@ -443,6 +458,26 @@ func (s *pageStore) Upsert(_ context.Context, p *model.Page) (*model.Page, error
 	s.r.pages[stored.ID] = stored
 	return clonePage(stored), nil
 }
+
+// wouldCycle mirrors the Postgres cycle check: whether making parentID the
+// parent of id would make id its own ancestor. Terminates on a cycle already
+// in the data. Must be called with the lock held.
+func (r *Registry) wouldCycle(id uuid.UUID, parentID *uuid.UUID) bool {
+	seen := map[uuid.UUID]bool{}
+	for cur := parentID; cur != nil && !seen[*cur]; {
+		if *cur == id {
+			return true
+		}
+		seen[*cur] = true
+		p, ok := r.pages[*cur]
+		if !ok {
+			return false
+		}
+		cur = p.ParentID
+	}
+	return false
+}
+
 func (s *pageStore) Create(_ context.Context, p *model.Page) (*model.Page, error) {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
@@ -457,13 +492,56 @@ func (s *pageStore) Create(_ context.Context, p *model.Page) (*model.Page, error
 	return clonePage(stored), nil
 }
 
+// UpdateFields mirrors the Postgres field-level UPDATE: only the named
+// fields of p are copied onto the stored page.
+func (s *pageStore) UpdateFields(_ context.Context, p *model.Page, fields []string) (*model.Page, error) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	existing, ok := s.r.pages[p.ID]
+	if !ok || existing.UserID != p.UserID {
+		return nil, fmt.Errorf("pages update: %w", store.ErrNotFound)
+	}
+	next := clonePage(existing)
+	src := clonePage(p)
+	for _, f := range fields {
+		switch f {
+		case "title":
+			next.Title = src.Title
+		case "parentId":
+			if s.r.wouldCycle(p.ID, src.ParentID) {
+				return nil, store.ErrCycle
+			}
+			next.ParentID = src.ParentID
+		case "order":
+			next.Order = src.Order
+		case "tags":
+			next.Tags = src.Tags
+		case "priority":
+			next.Priority = src.Priority
+		case "todoTrigger":
+			next.TodoTrigger = src.TodoTrigger
+		case "orgId":
+			next.OrgID = src.OrgID
+		case "isPrivate":
+			next.IsPrivate = src.IsPrivate
+		}
+	}
+	next.UpdatedAt = time.Now()
+	s.r.pages[next.ID] = next
+	return clonePage(next), nil
+}
+
 func (s *pageStore) Update(_ context.Context, p *model.Page) (*model.Page, error) {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
 	existing, ok := s.r.pages[p.ID]
 	if !ok || existing.UserID != p.UserID {
-		return nil, fmt.Errorf("pages update: not found")
+		return nil, fmt.Errorf("pages update: %w", store.ErrNotFound)
 	}
+	if s.r.wouldCycle(p.ID, p.ParentID) {
+		return nil, store.ErrCycle
+	}
+	p.Type = existing.Type // fixed at creation, as in Postgres
 	p.CreatedAt = existing.CreatedAt
 	p.UpdatedAt = time.Now()
 	stored := clonePage(p)
@@ -471,16 +549,89 @@ func (s *pageStore) Update(_ context.Context, p *model.Page) (*model.Page, error
 	return clonePage(stored), nil
 }
 
+// Delete mirrors the Postgres store: ErrNotFound unless the caller owns the
+// page, ErrSubtreeNotOwned if any descendant belongs to someone else, and
+// otherwise the whole subtree goes, as the parent_id cascade does — with each
+// page's content archived into the history, which outlives the page.
 func (s *pageStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
 	p, ok := s.r.pages[id]
 	if !ok || p.UserID != userID {
-		return nil
+		return store.ErrNotFound
 	}
-	delete(s.r.pages, id)
-	delete(s.r.contents, id)
+	ids := s.r.subtreeIDs(id)
+	for _, pid := range ids {
+		if s.r.pages[pid].UserID != userID {
+			return store.ErrSubtreeNotOwned
+		}
+	}
+	inSubtree := make(map[uuid.UUID]bool, len(ids))
+	for _, pid := range ids {
+		inSubtree[pid] = true
+		if cur, ok := s.r.contents[pid]; ok {
+			s.r.versionSeq++
+			s.r.contentVersions[pid] = append(s.r.contentVersions[pid], model.PageContentVersion{
+				ID: s.r.versionSeq, PageID: pid, Content: cur.Content, Revision: cur.Revision,
+				SchemaVersion: cur.SchemaVersion, ReplacedAt: cur.UpdatedAt,
+			})
+		}
+		delete(s.r.pages, pid)
+		delete(s.r.contents, pid)
+		delete(s.r.collab, pid)
+	}
+	for sid, sh := range s.r.shares {
+		if (sh.ResourceType == model.ShareResourcePage || sh.ResourceType == model.ShareResourceFolder) && inSubtree[sh.ResourceID] {
+			delete(s.r.shares, sid)
+		}
+	}
+	// The subtree's tasks are soft-deleted, as in Postgres.
+	now := time.Now()
+	for tid, t := range s.r.tasks {
+		if (t.SourcePageID != nil && inSubtree[*t.SourcePageID]) || (t.FolderID != nil && inSubtree[*t.FolderID]) {
+			t.UpdatedAt = now
+			s.r.deletedTasks[tid] = deletedTask{task: t, reason: deletedReasonSourceRemoved}
+			delete(s.r.tasks, tid)
+		}
+	}
+	// Mirror the remaining foreign keys: lanes.folder_id cascades, and the
+	// task references are SET NULL.
+	for lid, l := range s.r.lanes {
+		if l.FolderID != nil && inSubtree[*l.FolderID] {
+			delete(s.r.lanes, lid)
+		}
+	}
+	clearRefs := func(t *model.Task) {
+		if t.SourcePageID != nil && inSubtree[*t.SourcePageID] {
+			t.SourcePageID = nil
+		}
+		if t.FolderID != nil && inSubtree[*t.FolderID] {
+			t.FolderID = nil
+		}
+	}
+	for _, t := range s.r.tasks {
+		clearRefs(t)
+	}
+	for _, d := range s.r.deletedTasks {
+		clearRefs(d.task)
+	}
 	return nil
+}
+
+// subtreeIDs returns id and all its descendants, terminating on a cycle.
+// Must be called with the lock held.
+func (r *Registry) subtreeIDs(id uuid.UUID) []uuid.UUID {
+	out := []uuid.UUID{id}
+	seen := map[uuid.UUID]bool{id: true}
+	for i := 0; i < len(out); i++ {
+		for _, p := range r.pages {
+			if p.ParentID != nil && *p.ParentID == out[i] && !seen[p.ID] {
+				seen[p.ID] = true
+				out = append(out, p.ID)
+			}
+		}
+	}
+	return out
 }
 
 func (s *pageStore) GetContent(_ context.Context, pageID, userID uuid.UUID) (*model.PageContent, error) {
@@ -488,11 +639,11 @@ func (s *pageStore) GetContent(_ context.Context, pageID, userID uuid.UUID) (*mo
 	defer s.r.mu.RUnlock()
 	p, ok := s.r.pages[pageID]
 	if !ok || !s.r.canRead(userID, p.UserID, p.OrgID, p.IsPrivate, model.ShareResourcePage, p.ID) {
-		return nil, fmt.Errorf("get content: not found")
+		return nil, fmt.Errorf("get content: %w", store.ErrNotFound)
 	}
 	pc, ok := s.r.contents[pageID]
 	if !ok {
-		return nil, fmt.Errorf("get content: not found")
+		return nil, fmt.Errorf("get content: %w", store.ErrNotFound)
 	}
 	cp := *pc
 	return &cp, nil
@@ -668,8 +819,12 @@ func (s *pageStore) ListContentVersions(_ context.Context, pageID, userID uuid.U
 	}
 	src := s.r.contentVersions[pageID]
 	out := []model.PageContentVersion{}
-	// Newest first.
+	// Newest first. Versions older than the page belong to a deleted page
+	// that had the same id (mirrors the Postgres replaced_at >= created_at).
 	for i := len(src) - 1; i >= 0 && len(out) < limit; i-- {
+		if src[i].ReplacedAt.Before(p.CreatedAt) {
+			continue
+		}
 		out = append(out, src[i])
 	}
 	return out, nil
@@ -680,8 +835,12 @@ func (s *pageStore) ListContentVersions(_ context.Context, pageID, userID uuid.U
 func (s *pageStore) IsAncestor(_ context.Context, candidateAncestorID, nodeID uuid.UUID) (bool, error) {
 	s.r.mu.RLock()
 	defer s.r.mu.RUnlock()
+	// seen guards against a parent_id cycle already in the data, which
+	// would otherwise loop forever while holding the lock.
+	seen := map[uuid.UUID]bool{}
 	current := nodeID
-	for {
+	for !seen[current] {
+		seen[current] = true
 		p, ok := s.r.pages[current]
 		if !ok || p.ParentID == nil {
 			return false, nil
@@ -691,6 +850,7 @@ func (s *pageStore) IsAncestor(_ context.Context, candidateAncestorID, nodeID uu
 		}
 		current = *p.ParentID
 	}
+	return false, nil
 }
 
 func (s *pageStore) GetDescendantIDs(_ context.Context, folderID uuid.UUID) ([]uuid.UUID, error) {
@@ -699,11 +859,13 @@ func (s *pageStore) GetDescendantIDs(_ context.Context, folderID uuid.UUID) ([]u
 	// BFS to collect all descendants.
 	result := []uuid.UUID{folderID}
 	queue := []uuid.UUID{folderID}
+	seen := map[uuid.UUID]bool{folderID: true} // terminates on a cycle
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
 		for _, p := range s.r.pages {
-			if p.ParentID != nil && *p.ParentID == current {
+			if p.ParentID != nil && *p.ParentID == current && !seen[p.ID] {
+				seen[p.ID] = true
 				result = append(result, p.ID)
 				queue = append(queue, p.ID)
 			}
@@ -1462,6 +1624,11 @@ func (s *templateStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 		return fmt.Errorf("templates delete: %w", store.ErrNotFound)
 	}
 	delete(s.r.templates, id)
+	for sid, sh := range s.r.shares {
+		if sh.ResourceType == model.ShareResourceTemplate && sh.ResourceID == id {
+			delete(s.r.shares, sid)
+		}
+	}
 	return nil
 }
 
@@ -1694,6 +1861,13 @@ func (s *shareStore) Create(_ context.Context, sh *model.Share) (*model.Share, e
 	if sh.ID == uuid.Nil {
 		sh.ID = uuid.New()
 	}
+	// Mirrors UNIQUE (resource_type, resource_id, shared_with_id).
+	for _, existing := range s.r.shares {
+		if existing.ResourceType == sh.ResourceType && existing.ResourceID == sh.ResourceID &&
+			existing.SharedWith.ID == sh.SharedWith.ID {
+			return nil, fmt.Errorf("%w: already shared with this user", store.ErrConflict)
+		}
+	}
 	sh.CreatedAt = time.Now()
 	if u, ok := s.r.usersByID[sh.SharedWith.ID]; ok {
 		sh.SharedWith.Email = u.Email
@@ -1709,7 +1883,7 @@ func (s *shareStore) GetByID(_ context.Context, id uuid.UUID) (*model.Share, err
 	defer s.r.mu.RUnlock()
 	sh, ok := s.r.shares[id]
 	if !ok {
-		return nil, fmt.Errorf("share get: not found")
+		return nil, fmt.Errorf("share get: %w", store.ErrNotFound)
 	}
 	return cloneShare(sh), nil
 }
@@ -1743,7 +1917,7 @@ func (s *shareStore) UpdatePermission(_ context.Context, id uuid.UUID, permissio
 	defer s.r.mu.Unlock()
 	sh, ok := s.r.shares[id]
 	if !ok {
-		return nil, fmt.Errorf("share update: not found")
+		return nil, fmt.Errorf("share update: %w", store.ErrNotFound)
 	}
 	sh.Permission = permission
 	return cloneShare(sh), nil

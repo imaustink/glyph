@@ -32,4 +32,7 @@ CREATE INDEX IF NOT EXISTS page_content_versions_page_replaced_idx
 -- overwrite is still recoverable.
 INSERT INTO page_content_versions (page_id, content, revision, schema_version, replaced_at)
 SELECT page_id, content, revision, schema_version, updated_at
-FROM page_contents;
+FROM page_contents
+-- page_content_versions.content is NOT NULL; skip (rather than abort on) any
+-- row without content.
+WHERE content IS NOT NULL;

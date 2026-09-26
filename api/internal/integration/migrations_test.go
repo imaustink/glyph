@@ -1,0 +1,178 @@
+package integration
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	"github.com/testcontainers/testcontainers-go/wait"
+)
+
+// Migration tests run the real migration files against a throwaway Postgres,
+// seeding legacy data between steps. They only make sense for Postgres, so
+// they bypass the backend matrix.
+
+// startMigrationDB starts an empty Postgres and returns a pool to it.
+func startMigrationDB(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	ctx := context.Background()
+	container, err := tcpostgres.Run(ctx,
+		"postgres:16-alpine",
+		tcpostgres.WithDatabase("migrations_test"),
+		tcpostgres.WithUsername("test"),
+		tcpostgres.WithPassword("test"),
+		testcontainers.WithWaitStrategy(
+			wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).
+				WithStartupTimeout(30*time.Second),
+		),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
+
+	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
+	require.NoError(t, err)
+	pool, err := pgxpool.New(ctx, connStr)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// upMigrations returns the up-migration files in order.
+func upMigrations(t *testing.T) []string {
+	t.Helper()
+	files, err := filepath.Glob("../../migrations/*.up.sql")
+	require.NoError(t, err)
+	sort.Strings(files)
+	return files
+}
+
+// applyMigrations runs every up migration whose version is in [from, to].
+func applyMigrations(t *testing.T, pool *pgxpool.Pool, from, to string) {
+	t.Helper()
+	for _, path := range upMigrations(t) {
+		version := strings.SplitN(filepath.Base(path), "_", 2)[0]
+		if version < from || version > to {
+			continue
+		}
+		sql, err := os.ReadFile(path)
+		require.NoError(t, err)
+		_, err = pool.Exec(context.Background(), string(sql))
+		require.NoError(t, err, "migration %s", filepath.Base(path))
+	}
+}
+
+func TestMigrations(t *testing.T) {
+	t.Parallel()
+
+	// DI-19: a page_contents row written before 000013 with the old TEXT
+	// default ('') must survive the TEXT→JSONB conversion (000013 kept NOT
+	// NULL but mapped '' to NULL) and the history seeding in 000017
+	// (page_content_versions.content is NOT NULL).
+	t.Run("LegacyEmptyContentMigratesToEmptyDoc", func(t *testing.T) {
+		pool := startMigrationDB(t)
+		ctx := context.Background()
+		applyMigrations(t, pool, "000001", "000012")
+		_, err := pool.Exec(ctx, `
+			INSERT INTO users (id, sub, issuer) VALUES ('00000000-0000-0000-0000-000000000001', 's', 'i');
+			INSERT INTO pages (id, user_id, type) VALUES ('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'page');
+			INSERT INTO page_contents (page_id) VALUES ('00000000-0000-0000-0000-000000000002');`)
+		require.NoError(t, err)
+
+		applyMigrations(t, pool, "000013", "999999")
+
+		var content, versioned string
+		require.NoError(t, pool.QueryRow(ctx,
+			`SELECT content::text FROM page_contents WHERE page_id = '00000000-0000-0000-0000-000000000002'`,
+		).Scan(&content))
+		require.JSONEq(t, `{"type":"doc","content":[]}`, content)
+		require.NoError(t, pool.QueryRow(ctx,
+			`SELECT content::text FROM page_content_versions WHERE page_id = '00000000-0000-0000-0000-000000000002'`,
+		).Scan(&versioned))
+		require.JSONEq(t, `{"type":"doc","content":[]}`, versioned)
+	})
+
+	// DI-07: rows written as JSONB null (instead of SQL NULL) by the typed-nil
+	// bug are backfilled to SQL NULL, on pages and templates alike. Real
+	// configs are left alone.
+	t.Run("000022_BackfillsJSONNullTodoTrigger", func(t *testing.T) {
+		pool := startMigrationDB(t)
+		ctx := context.Background()
+		applyMigrations(t, pool, "000001", "000021")
+		_, err := pool.Exec(ctx, `
+			INSERT INTO users (id, sub, issuer) VALUES ('00000000-0000-0000-0000-000000000001', 's', 'i');
+			INSERT INTO pages (id, user_id, type, todo_trigger) VALUES
+			  ('00000000-0000-0000-0000-00000000000a', '00000000-0000-0000-0000-000000000001', 'page', 'null'::jsonb),
+			  ('00000000-0000-0000-0000-00000000000b', '00000000-0000-0000-0000-000000000001', 'page', '{"pattern":"TODO","matchMode":"prefix","blockTypes":["listItem"]}');
+			INSERT INTO templates (id, user_id, todo_trigger) VALUES
+			  ('00000000-0000-0000-0000-00000000000c', '00000000-0000-0000-0000-000000000001', 'null'::jsonb);`)
+		require.NoError(t, err)
+
+		applyMigrations(t, pool, "000022", "000022")
+
+		var pageNull, pageKept, tmplNull bool
+		require.NoError(t, pool.QueryRow(ctx, `
+			SELECT
+			  (SELECT todo_trigger IS NULL FROM pages WHERE id = '00000000-0000-0000-0000-00000000000a'),
+			  (SELECT todo_trigger ->> 'pattern' = 'TODO' FROM pages WHERE id = '00000000-0000-0000-0000-00000000000b'),
+			  (SELECT todo_trigger IS NULL FROM templates WHERE id = '00000000-0000-0000-0000-00000000000c')`,
+		).Scan(&pageNull, &pageKept, &tmplNull))
+		require.True(t, pageNull, "page JSONB null todo_trigger should become SQL NULL")
+		require.True(t, pageKept, "a real page todo_trigger must be kept")
+		require.True(t, tmplNull, "template JSONB null todo_trigger should become SQL NULL")
+	})
+
+	// DI-22: shares left behind by deleted resources are garbage-collected,
+	// and a share whose type no longer matches its page (page↔folder) is
+	// re-typed so its owner can manage it again. Live shares are kept.
+	t.Run("000022_GCsOrphanAndMistypedShares", func(t *testing.T) {
+		pool := startMigrationDB(t)
+		ctx := context.Background()
+		applyMigrations(t, pool, "000001", "000021")
+		_, err := pool.Exec(ctx, `
+			INSERT INTO users (id, sub, issuer) VALUES
+			  ('00000000-0000-0000-0000-000000000001', 'a', 'i'),
+			  ('00000000-0000-0000-0000-000000000002', 'b', 'i');
+			INSERT INTO pages (id, user_id, type) VALUES
+			  ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-000000000001', 'page'),
+			  ('00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-000000000001', 'folder');
+			INSERT INTO templates (id, user_id) VALUES ('00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-000000000001');
+			INSERT INTO shares (id, resource_type, resource_id, shared_by_id, shared_with_id, permission) VALUES
+			  -- live
+			  ('00000000-0000-0000-0000-0000000000b1', 'page',     '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'viewer'),
+			  ('00000000-0000-0000-0000-0000000000b2', 'template', '00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'viewer'),
+			  -- mistyped: a 'page' share on what is now a folder
+			  ('00000000-0000-0000-0000-0000000000b3', 'page',     '00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'editor'),
+			  -- orphans
+			  ('00000000-0000-0000-0000-0000000000c1', 'page',     '00000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'viewer'),
+			  ('00000000-0000-0000-0000-0000000000c2', 'folder',   '00000000-0000-0000-0000-0000000000f2', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'viewer'),
+			  ('00000000-0000-0000-0000-0000000000c3', 'template', '00000000-0000-0000-0000-0000000000f3', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'viewer'),
+			  ('00000000-0000-0000-0000-0000000000c4', 'task',     '00000000-0000-0000-0000-0000000000f4', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'viewer');`)
+		require.NoError(t, err)
+
+		applyMigrations(t, pool, "000022", "000022")
+
+		rows, err := pool.Query(ctx, `SELECT id::text, resource_type FROM shares ORDER BY id`)
+		require.NoError(t, err)
+		got := map[string]string{}
+		for rows.Next() {
+			var id, typ string
+			require.NoError(t, rows.Scan(&id, &typ))
+			got[id] = typ
+		}
+		rows.Close()
+		require.Equal(t, map[string]string{
+			"00000000-0000-0000-0000-0000000000b1": "page",
+			"00000000-0000-0000-0000-0000000000b2": "template",
+			"00000000-0000-0000-0000-0000000000b3": "folder",
+		}, got)
+	})
+}

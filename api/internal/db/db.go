@@ -9,6 +9,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// DefaultStatementTimeout is applied to every pooled connection unless the
+// DSN sets statement_timeout itself. Generous: the slowest legitimate API
+// statements (large content writes with history pruning) take well under a
+// second.
+const DefaultStatementTimeout = "30s"
+
 // Connect opens a pgxpool using the DATABASE_URL environment variable.
 func Connect(ctx context.Context) (*pgxpool.Pool, error) {
 	dsn := os.Getenv("DATABASE_URL")
@@ -16,7 +22,18 @@ func Connect(ctx context.Context) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("DATABASE_URL environment variable is not set")
 	}
 
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("pgxpool.ParseConfig: %w", err)
+	}
+	// Bound every statement so a runaway query (e.g. a recursive CTE over a
+	// corrupt page tree) is cancelled by the server instead of running until
+	// memory or temp space is exhausted. A statement_timeout in the DSN wins.
+	if _, ok := cfg.ConnConfig.RuntimeParams["statement_timeout"]; !ok {
+		cfg.ConnConfig.RuntimeParams["statement_timeout"] = DefaultStatementTimeout
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("pgxpool.New: %w", err)
 	}

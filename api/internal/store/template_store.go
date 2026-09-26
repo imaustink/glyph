@@ -35,7 +35,7 @@ func scanTemplate(row interface{ Scan(...interface{}) error }) (*model.Template,
 		}
 		return nil, err
 	}
-	if triggerJSON != nil {
+	if !isJSONNullOrEmpty(triggerJSON) {
 		t.TodoTrigger = &model.TodoTriggerConfig{}
 		if err := unmarshalJSON(triggerJSON, t.TodoTrigger); err != nil {
 			return nil, err
@@ -168,7 +168,16 @@ func (s *pgTemplateStore) Patch(ctx context.Context, id, ownerID uuid.UUID, fn f
 }
 
 func (s *pgTemplateStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM templates WHERE id=$1 AND user_id=$2`, id, userID)
+	// One statement, so the template and its shares go atomically.
+	// shares.resource_id has no foreign key; a share left behind would
+	// re-grant access to a template later created under the same id.
+	result, err := s.pool.Exec(ctx, `
+		WITH gone_shares AS (
+			DELETE FROM shares
+			WHERE resource_type = 'template' AND resource_id = $1
+			  AND EXISTS (SELECT 1 FROM templates WHERE id = $1 AND user_id = $2)
+		)
+		DELETE FROM templates WHERE id=$1 AND user_id=$2`, id, userID)
 	if err != nil {
 		return err
 	}
