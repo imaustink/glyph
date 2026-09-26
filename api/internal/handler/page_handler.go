@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -250,6 +251,12 @@ func (h *PageHandler) DeletePage(c *gin.Context) {
 }
 
 // PUT /pages/:id
+//
+// Creates the page, or replaces the fields the body contains. A field the
+// body omits keeps its stored value (on create: its default, and isPrivate
+// defaults to true as with POST); an explicit value, including null,
+// replaces it. PUT used to reset every omitted field, so a client that
+// didn't send isPrivate made a private page visible to its whole org.
 func (h *PageHandler) UpsertPage(c *gin.Context) {
 	user := auth.CurrentUser(c)
 	id, ok := parseUUID(c, "id")
@@ -257,8 +264,27 @@ func (h *PageHandler) UpsertPage(c *gin.Context) {
 		return
 	}
 	var body model.Page
-	if !bindJSON(c, &body) {
+	keys, ok := bindJSONWithKeys(c, &body)
+	if !ok {
 		return
+	}
+	existing, err := h.Pages.GetByID(c.Request.Context(), id, user.ID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		internalError(c, err)
+		return
+	}
+	if existing != nil && existing.UserID != user.ID {
+		// Only the owner can replace a page (the store's write is gated on
+		// user_id); don't merge from, or validate against, someone else's.
+		existing = nil
+	}
+	if existing != nil {
+		keepOmittedPageFields(&body, existing, keys)
+		if !checkTokenScope(c, existing.OrgID, model.ShareResourcePage, true) {
+			return
+		}
+	} else if _, sent := keys["isPrivate"]; !sent {
+		body.IsPrivate = true
 	}
 	if !checkTokenScope(c, body.OrgID, model.ShareResourcePage, true) {
 		return
@@ -267,21 +293,16 @@ func (h *PageHandler) UpsertPage(c *gin.Context) {
 	// actually a member of — otherwise this (Upsert can both create and
 	// update) would let any user plant a brand-new page inside an org they
 	// don't belong to, visible to that org once shared non-privately.
-	if !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
+	if !sameUUID(body.OrgID, orgIDOf(existing)) && !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
 		return
 	}
-	if !h.Perms.CanUseParent(c, h.Pages, body.ParentID, user.ID) {
+	if !sameUUID(body.ParentID, parentIDOf(existing)) && !h.Perms.CanUseParent(c, h.Pages, body.ParentID, user.ID) {
 		return
 	}
 	body.ID = id
 	body.UserID = user.ID
 	if body.Tags == nil {
 		body.Tags = []string{}
-	}
-	existing, err := h.Pages.GetByID(c.Request.Context(), id, user.ID)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		internalError(c, err)
-		return
 	}
 	if body.Type == "" {
 		body.Type = model.NodeTypePage
@@ -307,6 +328,60 @@ func (h *PageHandler) UpsertPage(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, page)
+}
+
+// keepOmittedPageFields copies onto body every field of existing that the
+// PUT body did not mention (keys are the body's top-level JSON keys).
+func keepOmittedPageFields(body, existing *model.Page, keys map[string]json.RawMessage) {
+	omitted := func(k string) bool { _, sent := keys[k]; return !sent }
+	if omitted("type") {
+		body.Type = existing.Type
+	}
+	if omitted("title") {
+		body.Title = existing.Title
+	}
+	if omitted("parentId") {
+		body.ParentID = existing.ParentID
+	}
+	if omitted("order") {
+		body.Order = existing.Order
+	}
+	if omitted("tags") {
+		body.Tags = existing.Tags
+	}
+	if omitted("priority") {
+		body.Priority = existing.Priority
+	}
+	if omitted("todoTrigger") {
+		body.TodoTrigger = existing.TodoTrigger
+	}
+	if omitted("orgId") {
+		body.OrgID = existing.OrgID
+	}
+	if omitted("isPrivate") {
+		body.IsPrivate = existing.IsPrivate
+	}
+}
+
+func orgIDOf(p *model.Page) *uuid.UUID {
+	if p == nil {
+		return nil
+	}
+	return p.OrgID
+}
+
+func parentIDOf(p *model.Page) *uuid.UUID {
+	if p == nil {
+		return nil
+	}
+	return p.ParentID
+}
+
+func sameUUID(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // typeImmutable rejects a request that would turn a page into a folder or
