@@ -49,4 +49,31 @@ test.describe('Editor data integrity', () => {
 		await navigateToTaskBoard(page);
 		await expect(page.locator('.lane').first().locator('.task-card:has-text("Buy milk")')).toHaveCount(1, { timeout: 15_000 });
 	});
+
+	test('a task renamed on its page is not reverted by typing in its bullet (DI-29)', async ({ page }) => {
+		const taskId = await createLinkedBullet(page, 'Buy milk');
+		const bullet = page.locator(`main .tiptap-editor li[data-task-id="${taskId}"]`);
+
+		// Rename the task on its own page.
+		await bullet.locator('.task-open-link').click();
+		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 15_000 });
+		await page.locator('h1.task-title').dblclick();
+		await page.locator('input.title-edit').fill('Buy oat milk');
+		await page.locator('input.title-edit').press('Enter');
+		await expect(page.locator('h1.task-title')).toHaveText('Buy oat milk');
+
+		// Back in the note, the bullet shows the new title…
+		await page.locator('a.source-link').click();
+		await waitForEditorReady(page);
+		await expect(bullet).toHaveText('Buy oat milk');
+
+		// …and typing in it keeps the rename.
+		await bullet.locator('p').click();
+		await page.keyboard.press('End');
+		await selectionSettled(page);
+		await page.keyboard.type('!');
+		await page.waitForTimeout(1500);
+		await bullet.locator('.task-open-link').click();
+		await expect(page.locator('h1.task-title')).toHaveText('Buy oat milk!', { timeout: 15_000 });
+	});
 });
