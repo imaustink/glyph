@@ -269,6 +269,16 @@ export class GlyphCollab implements Extension {
 		const pageId = pageIdFromDocumentName(documentName);
 		if (!pageId) throw new CollabError(CollabReason.Forbidden, 'unknown document');
 
+		// A parked copy of this document (see below) may still have its unload
+		// flush — or a retry — in flight. Wait for that work before loading: if
+		// it succeeds, the load below reads its batch from the log; if it fails,
+		// the batch is back in the parked copy's `pending` by the time we carry
+		// it over. Carrying `pending` while a batch is in flight would take an
+		// empty list, and the batch would later be returned to a copy that has
+		// been replaced and never retries (DI-12). `chain` never rejects.
+		const before = this.docs.get(documentName);
+		if (before) await before.chain;
+
 		let loaded;
 		try {
 			loaded = await this.opts.persistence.loadOrSeed(pageId, (stored) => this.seed(stored), this.opts.fingerprint);
@@ -414,6 +424,11 @@ export class GlyphCollab implements Extension {
 				this.scheduleRetry(state);
 				return;
 			}
+			// The note was reopened while the flush ran: the new copy has
+			// replaced this one in `docs` (and onLoadDocument has already torn
+			// this one down). Deleting the entry now would delete the *new*
+			// session's state, and nothing it did would ever be persisted.
+			if (this.docs.get(documentName) !== state) return;
 		}
 
 		if (state.retryTimer) clearTimeout(state.retryTimer);
@@ -462,7 +477,7 @@ export class GlyphCollab implements Extension {
 			try {
 				seq = await persistence.append(state.pageId, state.epoch, Y.mergeUpdates(batch));
 			} catch (err) {
-				state.pending = batch.concat(state.pending);
+				this.returnBatch(state, batch);
 				throw err;
 			}
 			if (seq === null) {
@@ -527,6 +542,25 @@ export class GlyphCollab implements Extension {
 				await this.quarantine(state, `API refused snapshot: ${res.message}`);
 				return;
 		}
+	}
+
+	/**
+	 * Put a batch whose append failed back where it will be retried. Normally
+	 * that is in front of this copy's `pending`. But if this copy was parked
+	 * and has since been replaced by a reload of the same epoch (it is evicted
+	 * and no longer registered), its retries will never run: hand the batch to
+	 * the live copy instead, which persists and broadcasts it like any edit.
+	 * A copy evicted for any other reason (a replaced epoch) drops it — those
+	 * updates belong to a document that no longer exists.
+	 */
+	private returnBatch(state: DocState, batch: Uint8Array[]) {
+		const live = this.docs.get(state.name);
+		if (state.evicted && live && live !== state && !live.evicted && live.epoch === state.epoch) {
+			for (const update of batch) Y.applyUpdate(live.document, update, REPAIR_ORIGIN);
+			this.opts.log.info('moved a failed batch into the reloaded document', { pageId: state.pageId, updates: batch.length });
+			return;
+		}
+		state.pending = batch.concat(state.pending);
 	}
 
 	/** Apply log entries written by other replicas since we last looked. */
