@@ -11,6 +11,7 @@
   import { apiErrorMessage } from '$lib/storage/apiClient';
   import { evaluateTitleTemplate, evaluateContentTemplate } from '$lib/utils/titleTemplate';
   import { orderAfter } from '$lib/utils/order';
+  import { deleteTreeNode } from '$lib/utils/deleteTreeNode';
   import ShareDialog from '$lib/components/shared/ShareDialog.svelte';
   import Modal from '$lib/components/shared/Modal.svelte';
   import VisibilityPicker from '$lib/components/shared/VisibilityPicker.svelte';
@@ -103,21 +104,31 @@
 
   async function confirmDelete(deleteAssociatedTasks: boolean) {
     showDeleteConfirm = false;
+    // Captured before the delete: afterwards the tasks can't be found by page.
+    const taskIds = pendingDeleteTasks.map((t) => t.id);
+    pendingDeleteTasks = [];
 
     try {
-      if (deleteAssociatedTasks) {
-        await Promise.all(pendingDeleteTasks.map(t => tasksStore.deleteTask(t.id)));
+      // The node goes first and the tasks only once it's gone, so a refused
+      // delete (e.g. 409 for a folder holding other users' pages) keeps them.
+      const { deletedIds, failedTaskIds } = await deleteTreeNode({
+        nodeId: node.id,
+        taskIds,
+        deleteTasks: deleteAssociatedTasks,
+        deleteNode: pagesStore.deleteNode,
+        deleteTask: tasksStore.deleteTask
+      });
+      if (failedTaskIds.length > 0) {
+        notificationsStore.error(
+          `Deleted, but ${failedTaskIds.length} of its task${failedTaskIds.length === 1 ? '' : 's'} could not be deleted.`
+        );
       }
-      pendingDeleteTasks = [];
-
-      const deletedIds = await pagesStore.deleteNode(node.id);
       // Templates that filed new pages into a deleted folder would otherwise
       // create unreachable pages. The API clears the reference itself.
       await templatesStore
         .clearDefaultFolder(deletedIds, { persist: storageMode === 'local' })
         .catch(() => notificationsStore.error('Failed to update templates that used the deleted folder.'));
     } catch (err) {
-      pendingDeleteTasks = [];
       notificationsStore.error(apiErrorMessage(err, `Failed to delete ${node.type === 'folder' ? 'folder' : 'page'}.`));
       return;
     }
