@@ -38,7 +38,25 @@ const withImage = {
 	content: [para('Before'), { type: 'image', attrs: { src: 'https://example.com/a.png', alt: 'a' } }, para('After')]
 };
 const withHighlight = { type: 'doc', content: [para('marked', [{ type: 'highlight' }])] };
-const withBadNesting = { type: 'doc', content: [{ type: 'text', text: 'bare text in doc' }] };
+// A content-model violation, not an unknown type: a listItem that doesn't
+// start with a paragraph. Concurrent structural edits can produce this
+// legitimately (the collab service logs rather than refuses it), and it
+// loads without losing anything — so it must stay editable.
+const withContentViolation = {
+	type: 'doc',
+	content: [
+		{
+			type: 'bulletList',
+			content: [
+				{
+					type: 'listItem',
+					attrs: { nodeId: 'n1' },
+					content: [{ type: 'bulletList', content: [{ type: 'listItem', attrs: { nodeId: 'n2' }, content: [para('nested')] }] }]
+				}
+			]
+		}
+	]
+};
 
 describe('applyStoredContent (DI-01)', () => {
 	it('loads valid content', () => {
@@ -65,9 +83,12 @@ describe('applyStoredContent (DI-01)', () => {
 		expect(applyStoredContent(editor, withHighlight).ok).toBe(false);
 	});
 
-	it('reports structurally invalid content', () => {
+	it('loads a content-model violation as-is instead of locking the note', () => {
+		// Only unknown node/mark types risk the blank-doc wipe; a violation of
+		// the content expressions loads losslessly, as it always has.
 		const editor = makeEditor();
-		expect(applyStoredContent(editor, withBadNesting).ok).toBe(false);
+		expect(applyStoredContent(editor, withContentViolation)).toEqual({ ok: true });
+		expect(editor.getText()).toContain('nested');
 	});
 
 	it('does not leave the previous document in the editor after a failed load', () => {
@@ -88,6 +109,9 @@ describe('checkStoredContent (DI-01, collaborative seeding)', () => {
 	it('rejects content the collab service could not seed', () => {
 		expect(checkStoredContent(withImage)).toBeInstanceOf(Error);
 		expect(checkStoredContent(withHighlight)).toBeInstanceOf(Error);
-		expect(checkStoredContent(withBadNesting)).toBeInstanceOf(Error);
+	});
+
+	it('accepts a content-model violation, which the collab service seeds as-is', () => {
+		expect(checkStoredContent(withContentViolation)).toBeNull();
 	});
 });
