@@ -488,6 +488,24 @@ describe('epochs', () => {
 		expect(textOf(persistence.replay(PAGE))).not.toContain('edit made before the restore');
 	});
 
+	it('the kill switch still takes the final snapshot of an attached page [DI-14]', async () => {
+		// COLLAB_ENABLED=false on the API. Edits since the last snapshot are
+		// in the log, but only a snapshot puts them in page_contents — which
+		// the next REST save detaches from. Refusing that snapshot (and
+		// evicting) strands them.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		api.enabled = false;
+		alice.fragment.insert(alice.fragment.length, [paragraph('typed as the switch flipped')]);
+		await eventually(
+			() => JSON.stringify(api.latest(PAGE) ?? '').includes('typed as the switch flipped'),
+			3000,
+			'final snapshot landed in page_contents'
+		);
+		// …and the session then winds down: editors fall back to single-writer.
+		await eventually(() => alice.closeReasons.includes(CollabReason.Disabled), 3000, 'editor told collab is off');
+	});
+
 	it('evicts when the API rejects a snapshot as stale', async () => {
 		const alice = open({ user: 'alice' });
 		await alice.synced();

@@ -40,6 +40,11 @@ describe('HttpApi.snapshot', () => {
 		expect(await api.snapshot(PAGE, body)).toEqual({ kind: 'stale' });
 	});
 
+	it('passes on that the kill switch is off when a final snapshot is accepted [DI-14]', async () => {
+		answer = { status: 200, body: { revision: 8, disabled: true } };
+		expect(await api.snapshot(PAGE, body)).toEqual({ kind: 'ok', revision: 8, disabled: true });
+	});
+
 	it('maps an accepted snapshot to "ok"', async () => {
 		answer = { status: 200, body: { revision: 7 } };
 		expect(await api.snapshot(PAGE, body)).toMatchObject({ kind: 'ok', revision: 7 });

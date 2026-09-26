@@ -478,6 +478,32 @@ func TestCollabWritePath(t *testing.T) {
 			assert.Contains(t, string(currentContent(t, h, h.UserA.ID, page.ID).Content), "single-writer again")
 		},
 
+		// Flipping the kill switch must not strand the edits a live session
+		// has made since its last snapshot: while the page is still attached
+		// its final snapshots are accepted (DI-14). The response says the
+		// switch is off so the collab service can wind the session down.
+		"SnapshotIsAcceptedWhileCollabIsDisabledIfStillAttached": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			page := createPage(t, h, h.UserA.ID, "Plan")
+			writeDoc(t, h, h.UserA.ID, page.ID, doc("before"))
+			epoch := h.AttachCollab(t, page.ID)
+
+			h.CollabHandler.Enabled = false
+			h.PageHandler.CollabEnabled = false
+			defer func() { h.CollabHandler.Enabled, h.PageHandler.CollabEnabled = true, true }()
+
+			w := snapshot(t, h, page.ID, epoch, 1, doc("final collab edits"))
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Equal(t, true, Decode[map[string]interface{}](t, w)["disabled"])
+			assert.Contains(t, string(currentContent(t, h, h.UserA.ID, page.ID).Content), "final collab edits")
+
+			// The next REST save detaches from content that includes them.
+			writeDoc(t, h, h.UserA.ID, page.ID, doc("final collab edits, then single-writer"))
+			w = snapshot(t, h, page.ID, epoch, 2, doc("late collab snapshot"))
+			assert.Equal(t, http.StatusConflict, w.Code)
+			assert.Contains(t, string(currentContent(t, h, h.UserA.ID, page.ID).Content), "then single-writer")
+		},
+
 		"SnapshotRequiresTheServiceToken": func(t *testing.T, h *Harness) {
 			h.ResetDB(t)
 			page := createPage(t, h, h.UserA.ID, "Plan")
