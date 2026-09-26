@@ -4,6 +4,19 @@
 **Base commit:** `1a8046d` (main)
 **Scope:** The whole app. That covers the Go store and migrations, the HTTP handlers, the MCP tools and the `pmmd` markdown converter, the collab service (Hocuspocus/Yjs), the editor and note↔task sync, the frontend stores and storage backends, and the deploy/ops layer (Helm, CNPG, CD, nginx).
 
+## Remediation status
+
+All findings below were fixed on branch `data-integrity`. Each fix has a failing-test commit (`test(...)`) and then a fix commit (`fix(...)`), so every fix can be traced from red to green. The exceptions:
+
+- **DI-19:** not reproducible as written. Migration 000013 keeps the column NOT NULL, so no NULL can reach 000017. The real failure was 000013 itself aborting on a legacy `''` row, and that is what was fixed.
+- **Memstore `CreateLinked` divergence:** not reproducible. A regression test was added instead.
+- **Nothing to fix:** `importData` was deleted because nothing called it. The Go validator already counted UTF-8 bytes, so it got a regression guard only.
+- **Deferred and follow-ups:**
+  - No trash UI. DI-02 refuses the delete and keeps version history instead.
+  - No atomic folder-lane reorder endpoint. The client refetches when a reorder fails.
+  - Task→bullet title sync in collab mode needs a counterpart in the collab service.
+  - Markdown can't express some formatting, and it is kept only for blocks an MCP replace leaves unchanged.
+
 ## Method
 
 Six parallel reviews each read one layer end to end and traced call paths across layer boundaries where needed.
