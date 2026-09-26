@@ -20,6 +20,7 @@
   import { useTaskCreation, type PendingTaskDetails } from '$lib/editor/useTaskCreation';
   import { useTaskSync } from '$lib/editor/useTaskSync';
   import { useBulletRemoval } from '$lib/editor/useBulletRemoval';
+  import { applyStoredContent, checkStoredContent } from '$lib/editor/loadDocument';
   import { storageMode } from '$lib/storage/config';
   import { CollabSession } from '$lib/collab/CollabSession';
   import { collabSupported, collabWebSocketUrl, getCollabSession } from '$lib/collab/client';
@@ -40,6 +41,13 @@
   let editorEl = $state<HTMLDivElement | null>(null);
   let editor = $state<Editor | null>(null);
   let contentLoaded = $state(false);
+  /**
+   * Set when the page's stored content can't be represented in the editor
+   * schema (DI-01). The editor then stays read-only and nothing is saved:
+   * showing — and saving — the blank document TipTap would otherwise load
+   * erased the note.
+   */
+  let contentError = $state<string | null>(null);
 
   // The page whose content is *actually* in the editor right now. This lags
   // `pageId` during navigation because loadContent() is async: `pageId` updates
@@ -130,25 +138,37 @@
   /** Monotonically increasing generation counter to discard stale loadContent responses. */
   let loadGeneration = 0;
 
-  async function loadContent() {
-    if (!editor) return;
+  /** Whether the page loaded, was superseded, or has content the editor can't show. */
+  async function loadContent(): Promise<'loaded' | 'stale' | 'invalid'> {
+    if (!editor) return 'stale';
     const gen = ++loadGeneration;
     // Capture the target page up front — `pageId` may change while we await.
     const targetPageId = pageId;
     const content = await pagesStore.getContent(targetPageId);
     // Discard response if a newer loadContent was triggered while we were awaiting
-    if (gen !== loadGeneration) return;
-    if (content?.content && Object.keys(content.content).length > 0) {
-      editor.commands.setContent(content.content as Record<string, unknown>, { emitUpdate: false });
-    } else {
-      editor.commands.setContent('', { emitUpdate: false });
+    if (gen !== loadGeneration || !editor) return 'stale';
+    const result = applyStoredContent(editor, content?.content as Record<string, unknown> | undefined);
+    if (!result.ok) {
+      // loadedPageId stays null, so no path can save the (empty) editor
+      // document over the note.
+      showContentError(targetPageId, result.error);
+      return 'invalid';
     }
+    contentError = null;
     // From here on the editor genuinely holds targetPageId's document, so
     // writes keyed off loadedPageId are safe.
     loadedPageId = targetPageId;
     taskCreation.clearPrompted();
     bulletRemoval.snapshot(editor);
     taskSync.syncTaskStatuses(editor, targetPageId);
+    return 'loaded';
+  }
+
+  function showContentError(target: string, error: Error) {
+    console.error('[Editor] Stored content cannot be shown in the editor; opened read-only', { pageId: target }, error);
+    contentError = 'This note contains content this version of Glyph can’t show, so it is open read-only and nothing you type will be saved. The note itself is unchanged.';
+    notificationsStore.error('This note can’t be shown in the editor. It was opened read-only so nothing is lost.');
+    editor?.setEditable(false);
   }
 
   /**
@@ -353,7 +373,8 @@
       editor = createEditor(null, null);
       mode = 'rest';
     }
-    await loadContent();
+    const loaded = await loadContent();
+    if (loaded !== 'loaded') return;
     // Legacy documents may have list items without ids; give them ids once,
     // when an editor first loads a page.
     if (fresh) scheduleAutoAssignNodeIds();
@@ -365,11 +386,36 @@
 
   async function openCollaborative(target: string, gen: number) {
     teardownEditor();
+    let ready = false;
+    let seedChecked = false;
+    /**
+     * The collab service seeds the shared document from the stored content;
+     * content the schema can't represent makes that fail, and the session
+     * just keeps retrying with a blank, non-editable note. When the session
+     * drops before its first sync, check the stored content ourselves and, if
+     * that is the reason, stop and say so (DI-01).
+     */
+    const checkSeedable = async () => {
+      if (seedChecked) return;
+      seedChecked = true;
+      let stored;
+      try {
+        stored = await pagesStore.getContent(target);
+      } catch {
+        return; // Can't tell; the session keeps retrying.
+      }
+      if (gen !== openGeneration || session !== s || ready) return;
+      const err = checkStoredContent(stored?.content);
+      if (!err) return;
+      showContentError(target, err);
+      teardownEditor(); // also resolves whenReady() below
+    };
     const s = new CollabSession(
       target,
       {
         onState: (st) => {
           if (session !== s) return;
+          if (!ready && st.connection === 'offline') void checkSeedable();
           uiStore.setCollabState(st);
           // State events fire on every sync acknowledgement, i.e. per
           // keystroke, and setEditable() pushes a view update (and an
@@ -398,6 +444,7 @@
 
     await s.whenReady();
     if (gen !== openGeneration || session !== s || !mounted) return;
+    ready = true;
     // A fatal reason (schema mismatch / forbidden) can finish the session
     // before its first sync. whenReady() now resolves in that case instead of
     // hanging, but the Y.Doc is empty and detached — don't build a TipTap
@@ -405,6 +452,7 @@
     if (s.isFinished) return;
 
     editor = createEditor(s, target);
+    contentError = null;
     loadedPageId = target;
     taskCreation.clearPrompted();
     bulletRemoval.snapshot(editor);
@@ -495,6 +543,7 @@
     prevPageId = next;
     // Clear transient UI state that is page-scoped
     pending = null;
+    contentError = null;
     const removal = settleBulletRemoval();
     contentLoaded = false;
     // Mark the editor as holding no known page until the next one is open.
@@ -523,7 +572,10 @@
   });
 </script>
 
-<div class="editor-wrapper" data-content-loaded={contentLoaded}>
+<div class="editor-wrapper" data-content-loaded={contentLoaded} data-content-error={contentError ? 'true' : undefined}>
+  {#if contentError}
+    <div class="content-error" role="alert">{contentError}</div>
+  {/if}
   <div bind:this={editorEl} class="editor-mount"></div>
 </div>
 
@@ -546,6 +598,17 @@
   .editor-mount {
     flex: 1;
     overflow-y: auto;
+  }
+
+  .content-error {
+    max-width: 760px;
+    margin: 16px auto 0;
+    padding: 10px 14px;
+    border: 1px solid var(--status-cancelled);
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
   }
 
   /* TipTap editor styles */
