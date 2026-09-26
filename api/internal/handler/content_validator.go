@@ -155,6 +155,31 @@ func ValidateProseMirrorContent(raw []byte) ([]byte, error) {
 	return json.Marshal(doc)
 }
 
+// NormalizeStoredContent brings stored content into the editor schema before
+// it is served. Content saved before the allowlist matched the schema can
+// hold nodes and marks the editor can't build; served as-is it loads as a
+// blank editor, and the next keystroke saves that blank doc over the note
+// (DI-01). Content that is already valid comes back unchanged in meaning.
+// Anything unparseable is returned as-is: the read must not fail over it.
+func NormalizeStoredContent(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return raw
+	}
+	if t, _ := doc["type"].(string); t != "doc" {
+		return raw
+	}
+	sanitizeNode(doc)
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
 // contentKind is what a node's children must be, which decides what an
 // unknown child is downgraded to.
 type contentKind int
