@@ -24,12 +24,18 @@
   let nodeTags = $state<string[]>([]);
   let showShareDialog = $state(false);
 
+  // Sync the title and tag inputs from the store only when the page changes
+  // or the field isn't being edited: this effect re-runs on any change to the
+  // record (priority, a save response...), which would otherwise wipe an
+  // edit in progress.
+  let syncedNodeId: string | null = null;
   $effect(() => {
-    if (node) {
-      uiStore.setCurrentPage(node.id);
-      titleValue = node.title;
-      nodeTags = [...node.tags];
-    }
+    if (!node) return;
+    uiStore.setCurrentPage(node.id);
+    const pageChanged = node.id !== syncedNodeId;
+    syncedNodeId = node.id;
+    if (pageChanged || !editingTitle) titleValue = node.title;
+    if (pageChanged || !editingTags) nodeTags = [...node.tags];
   });
 
   $effect(() => {

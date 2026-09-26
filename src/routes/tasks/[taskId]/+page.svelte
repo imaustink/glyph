@@ -44,8 +44,16 @@
   let titleEdit = $state('');
   let editingTitle = $state(false);
 
+  // Sync the title input from the store only when the task changes or the
+  // title isn't being edited: this effect re-runs on any change to the task
+  // (e.g. the description save landing), which would otherwise reset a
+  // rename in progress.
+  let titleSyncedFor: string | null = null;
   $effect(() => {
-    if (task) titleEdit = task.title;
+    if (!task) return;
+    const taskChanged = task.id !== titleSyncedFor;
+    titleSyncedFor = task.id;
+    if (taskChanged || !editingTitle) titleEdit = task.title;
   });
 
   async function updateField<K extends keyof import('$lib/models/types').Task>(
@@ -76,8 +84,17 @@
   // ── Tags ─────────────────────────────────────────────────────────────────
   // localTags mirrors task.tags locally. Saved immediately via onchange callback
   // from TagInput, which fires only on user-driven mutations (not on prop sync).
+  // Re-synced only when the task or its stored tags change, not on every
+  // change to the task record.
   let localTags = $state<string[]>([]);
-  $effect(() => { if (task) localTags = [...task.tags]; });
+  let tagsSyncedFrom = '';
+  $effect(() => {
+    if (!task) return;
+    const source = `${task.id}\u0000${JSON.stringify(task.tags)}`;
+    if (source === tagsSyncedFrom) return;
+    tagsSyncedFrom = source;
+    localTags = [...task.tags];
+  });
   async function saveTags() {
     if (!task) return;
     await updateField('tags', localTags);
