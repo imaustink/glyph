@@ -22,8 +22,13 @@ vi.mock('$lib/stores/pages.svelte', () => ({
 		forgetRevision: (...args: unknown[]) => forgetRevision(...args)
 	}
 }));
+const trackPendingWrite = vi.fn();
 vi.mock('$lib/stores/ui.svelte', () => ({
-	uiStore: { markSaving: vi.fn(), markSaved: vi.fn() }
+	uiStore: {
+		markSaving: vi.fn(),
+		markSaved: vi.fn(),
+		trackPendingWrite: (...a: unknown[]) => trackPendingWrite(...a)
+	}
 }));
 vi.mock('$lib/stores/notifications.svelte', () => ({
 	notificationsStore: { error: (...args: unknown[]) => notifyError(...args) }
@@ -42,6 +47,7 @@ function fakeEditor(docText: string) {
 describe('useContentSave conflict handling', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		saveContent.mockReset();
 		saveContent.mockResolvedValue(undefined);
 		flushAllTaskTitleUpdates.mockResolvedValue(undefined);
 	});
@@ -218,6 +224,45 @@ describe('useContentSave conflict handling', () => {
 			await vi.advanceTimersByTimeAsync(2000);
 
 			expect(saveContent).toHaveBeenLastCalledWith('page-B', { type: 'doc', text: 'b' });
+		});
+	});
+
+	// DI-30: a save waiting on its debounce timer is a pending write too — the
+	// tab-close warning and the navigation guard (uiStore.hasPendingWrites)
+	// must see it, or the last ~500 ms of typing is dropped on close.
+	describe('pending-work tracking (DI-30)', () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('reports a save as pending from the moment it is scheduled until it has been written', async () => {
+			let release!: () => void;
+			saveContent.mockImplementationOnce(() => new Promise<void>((r) => { release = r; }));
+			const handle = useContentSave();
+			expect(handle.hasPendingWork()).toBe(false);
+
+			handle.scheduleSave(fakeEditor('doc'), 'page-A');
+			expect(handle.hasPendingWork()).toBe(true);
+
+			await vi.advanceTimersByTimeAsync(600); // timer fired, PUT in flight
+			expect(saveContent).toHaveBeenCalledTimes(1);
+			expect(handle.hasPendingWork()).toBe(true);
+
+			release();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(handle.hasPendingWork()).toBe(false);
+		});
+
+		it('registers the armed timer with uiStore so hasPendingWrites counts it', async () => {
+			const handle = useContentSave();
+			handle.scheduleSave(fakeEditor('doc'), 'page-A');
+			expect(trackPendingWrite).toHaveBeenLastCalledWith(expect.any(String), true);
+
+			await handle.flushContentSave();
+			expect(trackPendingWrite).toHaveBeenLastCalledWith(expect.any(String), false);
 		});
 	});
 

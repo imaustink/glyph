@@ -66,6 +66,21 @@ test.describe('Editor data integrity', () => {
 		expect(await page.evaluate((key) => localStorage.getItem(key), key)).toBe(before);
 	});
 
+	test('closing the tab right after typing keeps the last edits (DI-30)', async ({ page, storageMode }) => {
+		test.skip(storageMode !== 'local', 'a save sent during unload is only observable reliably in local mode');
+		await waitForEditorReady(page);
+		const editor = page.locator('main .tiptap-editor');
+		await editor.click();
+		await page.keyboard.press('Control+End');
+		await page.keyboard.press('Enter');
+		// Type, then leave well inside the 500 ms save debounce.
+		await page.keyboard.type('last words');
+		await page.reload();
+
+		await waitForEditorReady(page);
+		await expect(page.locator('main .tiptap-editor')).toContainText('last words');
+	});
+
 	test('Enter at the start of a linked bullet keeps its task on the text (DI-09)', async ({ page }) => {
 		const taskId = await createLinkedBullet(page, 'Buy milk');
 
