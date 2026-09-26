@@ -315,7 +315,7 @@ describe('setListItemText (DI-29)', () => {
 		expect(setListItemText(doc, 'n1', 'Buy oat milk', 'test')).toBe(true);
 		expect(firstParagraph(doc).content).toEqual([
 			{ type: 'text', text: 'Buy oat ' },
-			{ type: 'text', text: 'milk', marks: [{ type: 'bold' }] }
+			{ type: 'text', text: 'milk', marks: [{ type: 'bold', attrs: {} }] }
 		]);
 	});
 

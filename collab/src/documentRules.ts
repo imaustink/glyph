@@ -387,6 +387,95 @@ export function setListItemStatus(doc: Y.Doc, nodeId: string, status: string, or
 }
 
 /**
+ * Show a task's title in its bullet (DI-29): the text of the linked list
+ * item's first paragraph becomes `title` (trimmed), as the single-writer
+ * editor does with setBulletTextForNode. Used for renames made outside the
+ * editor, which only the server may write: every editor making the same text
+ * edit would merge into duplicated text.
+ *
+ * Only linked bullets (with a taskId) are touched, and nothing is written
+ * when the paragraph already shows the title (ignoring surrounding space) or
+ * the title is blank. The paragraph becomes plain text of the title, except
+ * that only the part that differs is replaced: unchanged text at the start
+ * and end keeps its marks, and new text takes the marks of the character
+ * before it, as typing there would. Anything else inline in that paragraph
+ * (a hard break, further text runs) is replaced; later paragraphs and nested
+ * lists are left alone. Returns whether anything changed.
+ */
+export function setListItemText(doc: Y.Doc, nodeId: string, title: string, origin: unknown): boolean {
+	const text = title.trim();
+	if (text === '') return false;
+	const targets: Y.XmlElement[] = [];
+	const find = (parent: Y.XmlFragment | Y.XmlElement) => {
+		for (const child of parent.toArray()) {
+			if (!(child instanceof Y.XmlElement)) continue;
+			if (child.nodeName === 'listItem' && child.getAttribute('nodeId') === nodeId && child.getAttribute('taskId')) {
+				const paragraph = child.toArray().find((c): c is Y.XmlElement => c instanceof Y.XmlElement && c.nodeName === 'paragraph');
+				if (paragraph && inlineText(paragraph).trim() !== text) targets.push(paragraph);
+			}
+			find(child);
+		}
+	};
+	find(doc.getXmlFragment(COLLAB_FRAGMENT));
+	if (targets.length === 0) return false;
+	doc.transact(() => {
+		for (const paragraph of targets) {
+			const children = paragraph.toArray();
+			let run = children.find((c): c is Y.XmlText => c instanceof Y.XmlText);
+			for (let i = children.length - 1; i >= 0; i--) {
+				if (children[i] !== run) paragraph.delete(i, 1);
+			}
+			if (!run) {
+				run = new Y.XmlText();
+				paragraph.insert(0, [run]);
+			}
+			replaceChangedText(run, plainText(run), text);
+		}
+	}, origin);
+	return true;
+}
+
+/** The plain text of a Y.XmlText (embeds excluded). */
+function plainText(text: Y.XmlText): string {
+	return (text.toDelta() as { insert: unknown }[]).map((op) => (typeof op.insert === 'string' ? op.insert : '')).join('');
+}
+
+/** The plain text of a text block's inline content (like ProseMirror's textContent). */
+function inlineText(block: Y.XmlElement): string {
+	return block
+		.toArray()
+		.map((c) => (c instanceof Y.XmlText ? plainText(c) : ''))
+		.join('');
+}
+
+const isHighSurrogate = (s: string, i: number) => {
+	const c = s.charCodeAt(i);
+	return c >= 0xd800 && c <= 0xdbff;
+};
+const isLowSurrogate = (s: string, i: number) => {
+	const c = s.charCodeAt(i);
+	return c >= 0xdc00 && c <= 0xdfff;
+};
+
+/**
+ * Turn `text` (currently `from`) into `to`, replacing only the middle that
+ * differs. Boundaries never fall inside a surrogate pair: Yjs would replace a
+ * split pair's halves with U+FFFD.
+ */
+function replaceChangedText(text: Y.XmlText, from: string, to: string) {
+	let start = 0;
+	while (start < from.length && start < to.length && from[start] === to[start]) start++;
+	if (start > 0 && isHighSurrogate(from, start - 1)) start--;
+	let end = 0;
+	while (end < from.length - start && end < to.length - start && from[from.length - 1 - end] === to[to.length - 1 - end]) end++;
+	// The kept suffix must not begin with the low half of a pair.
+	if (end > 0 && isLowSurrogate(from, from.length - end)) end--;
+	const removed = from.length - start - end;
+	if (removed > 0) text.delete(start, removed);
+	if (to.length - start - end > 0) text.insert(start, to.slice(start, to.length - end));
+}
+
+/**
  * Remove the list item with the given nodeId (and its list, if that leaves it
  * empty). Used when a task is deleted from the task page. Returns whether
  * anything was removed.

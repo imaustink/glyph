@@ -34,7 +34,7 @@ const stopListening = listen(
 	config.databaseUrl,
 	(n) => {
 		if (n.type === 'reset') collab.onReset(n.pageId);
-		else collab.onTaskStatus(n.pageId, n.nodeId, n.status as TaskStatus);
+		else if (n.type === 'task-status') collab.onTaskStatus(n.pageId, n.nodeId, n.status as TaskStatus);
 	},
 	(msg, err) => log.warn(msg, { err })
 );
