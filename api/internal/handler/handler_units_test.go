@@ -1516,9 +1516,9 @@ func TestPageHandler_UpsertPageContent_UpsertError_Returns500(t *testing.T) {
 	r.Use(injectTestUser())
 	r.PUT("/pages/:id/content", h.UpsertPageContent)
 
-	// Send an empty PageContent body (no content field) so the validation check is skipped
-	// and execution reaches UpsertContent directly.
-	body := jsonBody(t, map[string]any{})
+	// A valid (empty) document, so execution reaches UpsertContent. A body
+	// without content is now rejected with 400 before the store is called.
+	body := jsonBody(t, map[string]any{"content": map[string]any{"type": "doc", "content": []any{}}})
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/pages/"+pageID.String()+"/content", body)
 	req.Header.Set("Content-Type", "application/json")

@@ -1886,7 +1886,9 @@ t.Error("isPrivateHost(::1) should return true")
 
 // ─── UpsertPageContent additional paths ──────────────────────────────────────
 
-func TestPageHandler_UpsertPageContent_OwnerEmptyContent_Returns200(t *testing.T) {
+// A body without "content" used to write an empty doc (and soft-delete every
+// task on the page); it is now rejected.
+func TestPageHandler_UpsertPageContent_OwnerMissingContent_Returns400(t *testing.T) {
 ownerID := testUser().ID
 pageID := uuid.New()
 h := &PageHandler{Pages: &mockPageStore{
@@ -1902,8 +1904,8 @@ w := httptest.NewRecorder()
 req := httptest.NewRequest(http.MethodPut, "/pages/"+pageID.String()+"/content", body)
 req.Header.Set("Content-Type", "application/json")
 r.ServeHTTP(w, req)
-if w.Code != http.StatusOK {
-t.Errorf("UpsertPageContent empty content: want 200, got %d", w.Code)
+if w.Code != http.StatusBadRequest {
+t.Errorf("UpsertPageContent missing content: want 400, got %d", w.Code)
 }
 }
 
@@ -1943,7 +1945,7 @@ return nil, errors.New("db failure")
 r := gin.New()
 r.Use(injectTestUser())
 r.PUT("/pages/:id/content", h.UpsertPageContent)
-body := jsonBody(t, map[string]any{})
+body := jsonBody(t, map[string]any{"content": map[string]any{"type": "doc", "content": []any{}}})
 w := httptest.NewRecorder()
 req := httptest.NewRequest(http.MethodPut, "/pages/"+pageID.String()+"/content", body)
 req.Header.Set("Content-Type", "application/json")
@@ -2005,7 +2007,7 @@ return nil, store.ErrNotFound
 r := gin.New()
 r.Use(injectTestUser())
 r.PUT("/pages/:id/content", h.UpsertPageContent)
-body := jsonBody(t, map[string]any{})
+body := jsonBody(t, map[string]any{"content": map[string]any{"type": "doc", "content": []any{}}})
 w := httptest.NewRecorder()
 req := httptest.NewRequest(http.MethodPut, "/pages/"+pageID.String()+"/content", body)
 req.Header.Set("Content-Type", "application/json")

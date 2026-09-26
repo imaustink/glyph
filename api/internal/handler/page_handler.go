@@ -445,15 +445,21 @@ func (h *PageHandler) UpsertPageContent(c *gin.Context) {
 	body.PageID = id
 	body.DetachCollab = !h.CollabEnabled
 
-	// Validate and sanitize ProseMirror content to prevent XSS via stored documents.
-	if len(body.Content) > 0 {
-		sanitized, valErr := ValidateProseMirrorContent(body.Content)
-		if valErr != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid content: " + valErr.Error()})
-			return
-		}
-		body.Content = sanitized
+	// A missing (or null) document is a client bug, not "clear the page":
+	// the store would write an empty doc and reconcile would soft-delete
+	// every task on the page. Clearing a page means sending an empty doc.
+	if len(body.Content) == 0 || isJSONNull(body.Content) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "content is required"})
+		return
 	}
+
+	// Validate and sanitize ProseMirror content to prevent XSS via stored documents.
+	sanitized, valErr := ValidateProseMirrorContent(body.Content)
+	if valErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid content: " + valErr.Error()})
+		return
+	}
+	body.Content = sanitized
 
 	// The store re-checks write permission inside the writing transaction (and
 	// under a row lock), so a permission revoked between the check above and
