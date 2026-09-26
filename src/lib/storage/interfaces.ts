@@ -34,7 +34,12 @@ export interface IPageRepository extends IRepository<TreeNode> {
   saveContent(content: PageContent): Promise<PageContent | void>;
   deleteContent(pageId: string): Promise<void>;
   deleteWithContent(id: string): Promise<boolean>;
-  deleteSubtree(id: string, descendantIds: string[]): Promise<void>;
+  /**
+   * Delete a node and its descendants. `descendantIds` are the ones the
+   * caller knows about; a local implementation may find more (e.g. created
+   * by another tab). Returns every id it deleted when it knows them.
+   */
+  deleteSubtree(id: string, descendantIds: string[]): Promise<void | string[]>;
   getTree(nodes: TreeNode[]): TreeNode[];
   getChildren(nodes: TreeNode[], parentId: string): TreeNode[];
 }
@@ -53,8 +58,16 @@ export interface ILaneRepository extends IRepository<Lane> {
   getOrdered(): Promise<Lane[]>;
   reorderAll(orderedIds: string[], updatedAt: string): Promise<void>;
   createBatch?(items: Lane[]): Promise<Lane[]>;
+  /**
+   * First-run seeding in one atomic step: create `items` only if there are
+   * no (global) lanes in storage yet, and return what storage holds after.
+   */
+  seedIfEmpty?(items: Lane[]): Promise<Lane[]>;
 }
 
 // ─── Template Repository Interface ────────────────────────────────────────────
 
-export interface ITemplateRepository extends IRepository<NoteTemplate> {}
+export interface ITemplateRepository extends IRepository<NoteTemplate> {
+  /** First-run seeding in one atomic step (see ILaneRepository.seedIfEmpty). */
+  seedIfEmpty?(items: NoteTemplate[]): Promise<NoteTemplate[]>;
+}

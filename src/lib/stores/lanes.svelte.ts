@@ -3,6 +3,7 @@ import type { ILaneRepository } from '$lib/storage/interfaces';
 import type { Lane, FilterSet, SortConfig } from '$lib/models/types';
 import { now, makeTimestamps } from '$lib/utils/time';
 import { uuid } from '$lib/utils/uuid';
+import { withCrossTabLock } from '$lib/utils/crossTabLock';
 import { createOptimisticWriter } from './optimisticWriter';
 
 const DEFAULT_LANES: Omit<Lane, 'id' | 'createdAt' | 'updatedAt'>[] = [
@@ -61,15 +62,27 @@ export function createLanesStore(injectedRepo?: ILaneRepository) {
   /** Idempotent initialization — seeds default lanes if none exist. Call after load(). */
   async function seedDefaults() {
     if (lanes.length > 0) return;
-    const defaults = DEFAULT_LANES.map(def => ({
-      ...def, id: uuid(), ...makeTimestamps()
-    }));
-    if (repo.createBatch) {
-      lanes = await repo.createBatch(defaults);
-    } else {
-      await Promise.all(defaults.map(lane => repo.create(lane)));
-      lanes = defaults;
-    }
+    // Hold a cross-tab lock and re-read: another tab opened at the same time
+    // may have seeded since this one loaded, and it must be adopted, not
+    // duplicated.
+    await withCrossTabLock('glyph:seed:lanes', async () => {
+      const current = await repo.getOrdered();
+      if (current.length > 0) {
+        setLanes(current);
+        return;
+      }
+      const defaults = DEFAULT_LANES.map(def => ({
+        ...def, id: uuid(), ...makeTimestamps()
+      }));
+      if (repo.seedIfEmpty) {
+        setLanes(await repo.seedIfEmpty(defaults));
+      } else if (repo.createBatch) {
+        setLanes(await repo.createBatch(defaults));
+      } else {
+        await Promise.all(defaults.map(lane => repo.create(lane)));
+        setLanes(defaults);
+      }
+    });
   }
 
   async function createLane(title: string): Promise<Lane> {

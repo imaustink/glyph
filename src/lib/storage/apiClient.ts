@@ -35,6 +35,20 @@ export function apiErrorCode(err: unknown): string | undefined {
 	return body && typeof body.code === 'string' ? body.code : undefined;
 }
 
+/**
+ * A message to show the user for a failed write: the API's own `error` text
+ * for a 4xx refusal (e.g. a 409 explaining why a delete isn't allowed), a
+ * local-storage corruption message, or `fallback`.
+ */
+export function apiErrorMessage(err: unknown, fallback: string): string {
+	if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+		const body = err.body as { error?: unknown } | null;
+		if (body && typeof body.error === 'string' && body.error.trim()) return body.error;
+	}
+	if (err instanceof Error && err.name === 'CorruptStorageError') return err.message;
+	return fallback;
+}
+
 export class UnauthorizedError extends ApiError {
 	constructor(method: string, path: string) {
 		super(401, method, path, null);

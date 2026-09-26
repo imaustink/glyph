@@ -6,6 +6,9 @@
   import { tasksStore } from '$lib/stores/tasks.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
+  import { templatesStore } from '$lib/stores/templates.svelte';
+  import { storageMode } from '$lib/storage/config';
+  import { apiErrorMessage } from '$lib/storage/apiClient';
   import { evaluateTitleTemplate, evaluateContentTemplate } from '$lib/utils/titleTemplate';
   import { orderAfter } from '$lib/utils/order';
   import ShareDialog from '$lib/components/shared/ShareDialog.svelte';
@@ -101,12 +104,23 @@
   async function confirmDelete(deleteAssociatedTasks: boolean) {
     showDeleteConfirm = false;
 
-    if (deleteAssociatedTasks) {
-      await Promise.all(pendingDeleteTasks.map(t => tasksStore.deleteTask(t.id)));
-    }
-    pendingDeleteTasks = [];
+    try {
+      if (deleteAssociatedTasks) {
+        await Promise.all(pendingDeleteTasks.map(t => tasksStore.deleteTask(t.id)));
+      }
+      pendingDeleteTasks = [];
 
-    await pagesStore.deleteNode(node.id);
+      const deletedIds = await pagesStore.deleteNode(node.id);
+      // Templates that filed new pages into a deleted folder would otherwise
+      // create unreachable pages. The API clears the reference itself.
+      await templatesStore
+        .clearDefaultFolder(deletedIds, { persist: storageMode === 'local' })
+        .catch(() => notificationsStore.error('Failed to update templates that used the deleted folder.'));
+    } catch (err) {
+      pendingDeleteTasks = [];
+      notificationsStore.error(apiErrorMessage(err, `Failed to delete ${node.type === 'folder' ? 'folder' : 'page'}.`));
+      return;
+    }
 
     if (page.url.pathname === `/notes/${node.id}`) {
       const remaining = pagesStore.nodes.filter((n) => n.type === 'page' && n.id !== node.id);

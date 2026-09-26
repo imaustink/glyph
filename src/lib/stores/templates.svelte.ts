@@ -4,6 +4,7 @@ import type { NoteTemplate } from '$lib/models/types';
 import { DEFAULT_TODO_TRIGGER } from '$lib/models/types';
 import { now, makeTimestamps } from '$lib/utils/time';
 import { uuid } from '$lib/utils/uuid';
+import { withCrossTabLock } from '$lib/utils/crossTabLock';
 
 const DEFAULT_TEMPLATE_CONTENT = JSON.stringify({
   type: 'doc',
@@ -38,17 +39,51 @@ export function createTemplatesStore(injectedRepo?: ITemplateRepository) {
   /** Idempotent initialization — seeds default template if none exist. Call after load(). */
   async function seedDefaults() {
     if (templates.length > 0) return;
-    const defaultTemplate: NoteTemplate = {
-      id: uuid(),
-      name: 'Default',
-      content: DEFAULT_TEMPLATE_CONTENT,
-      titleTemplate: '',
-      todoTrigger: DEFAULT_TODO_TRIGGER,
-      isDefault: true,
-      ...makeTimestamps()
-    };
-    const created = await repo.create(defaultTemplate);
-    templates = [created];
+    // Cross-tab lock + re-read, as for lanes: adopt another tab's seed.
+    await withCrossTabLock('glyph:seed:templates', async () => {
+      const current = await repo.getAll();
+      if (current.length > 0) {
+        templates = current;
+        return;
+      }
+      const defaultTemplate: NoteTemplate = {
+        id: uuid(),
+        name: 'Default',
+        content: DEFAULT_TEMPLATE_CONTENT,
+        titleTemplate: '',
+        todoTrigger: DEFAULT_TODO_TRIGGER,
+        isDefault: true,
+        ...makeTimestamps()
+      };
+      if (repo.seedIfEmpty) {
+        templates = await repo.seedIfEmpty([defaultTemplate]);
+      } else {
+        const created = await repo.create(defaultTemplate);
+        templates = [created];
+      }
+    });
+  }
+
+  /**
+   * Clear `defaultFolderId` on every template that points at one of
+   * `folderIds` (folders that were just deleted). Otherwise pages created
+   * from those templates would be filed under a folder that no longer
+   * exists and never show up in the tree.
+   *
+   * `persist: false` updates only local state, for backends that already
+   * clear the reference themselves (the API's FK is ON DELETE SET NULL).
+   */
+  async function clearDefaultFolder(folderIds: Iterable<string>, { persist = true } = {}): Promise<void> {
+    const gone = new Set(folderIds);
+    const affected = templates.filter((t) => t.defaultFolderId && gone.has(t.defaultFolderId));
+    if (affected.length === 0) return;
+    templates = templates.map((t) => (affected.includes(t) ? { ...t, defaultFolderId: null } : t));
+    if (!persist) return;
+    const results = await Promise.allSettled(
+      affected.map((t) => repo.update(t.id, { defaultFolderId: null, updatedAt: now() }))
+    );
+    const failure = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failure) throw failure.reason;
   }
 
   function getDefault(): NoteTemplate | null {
@@ -111,6 +146,7 @@ export function createTemplatesStore(injectedRepo?: ITemplateRepository) {
     createTemplate,
     updateTemplate,
     setDefault,
+    clearDefaultFolder,
     deleteTemplate
   };
 }

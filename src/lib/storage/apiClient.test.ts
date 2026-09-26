@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('$app/environment', () => ({ browser: false }));
 
 // Static import — same module instance for all tests, proper V8 coverage.
-import { api, handleAuthError, ApiError, UnauthorizedError, TimeoutError, API_BASE } from './apiClient';
+import { api, handleAuthError, ApiError, UnauthorizedError, TimeoutError, API_BASE, apiErrorMessage } from './apiClient';
 
 describe('apiClient', () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
@@ -314,5 +314,18 @@ describe('apiClient', () => {
       mockFetch(401, { error: 'unauthorized' });
       await expect(api.getOrNull('/api/v1/me')).rejects.toBeInstanceOf(UnauthorizedError);
     });
+  });
+});
+
+describe('apiErrorMessage', () => {
+  it('uses the API error text for a 4xx refusal', () => {
+    const err = new ApiError(409, 'DELETE', '/api/v1/pages/x', { code: 'has_foreign_pages', error: 'Folder contains pages owned by other users.' });
+    expect(apiErrorMessage(err, 'fallback')).toBe('Folder contains pages owned by other users.');
+  });
+
+  it('falls back for 5xx errors, bodies without text, and unknown errors', () => {
+    expect(apiErrorMessage(new ApiError(500, 'GET', '/x', { error: 'boom' }), 'fallback')).toBe('fallback');
+    expect(apiErrorMessage(new ApiError(409, 'GET', '/x', null), 'fallback')).toBe('fallback');
+    expect(apiErrorMessage(new Error('network'), 'fallback')).toBe('fallback');
   });
 });

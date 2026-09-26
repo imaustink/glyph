@@ -72,6 +72,9 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
     // Use Date.now() as the sort order. This is monotonically increasing per-device
     // and eliminates the read-modify-write race that occurred when two concurrent
     // calls both read max(sibling.order) before either write completes.
+    // A template's defaultFolderId (or a stale caller) can name a folder that
+    // has since been deleted; a page filed under it would be unreachable.
+    if (parentId !== null && !_idIndex.has(parentId)) parentId = null;
     const node: TreeNode = {
       id: uuid(),
       type: 'page',
@@ -150,14 +153,16 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
    * - API: sends a single DELETE; Postgres ON DELETE CASCADE handles descendants
    *
    * Throws on failure so the caller can surface the error to the user.
+   * Returns the ids of every node that was deleted.
    */
-  async function deleteNode(id: string): Promise<void> {
+  async function deleteNode(id: string): Promise<string[]> {
     const descendantIds = collectDescendantIds(id);
-    await repo.deleteSubtree(id, descendantIds);
+    const reported = await repo.deleteSubtree(id, descendantIds);
 
     // Update local state regardless of storage mode.
-    const deletedSet = new Set([...descendantIds, id]);
+    const deletedSet = new Set([...descendantIds, id, ...(reported ?? [])]);
     setNodes(nodes.filter((n) => !deletedSet.has(n.id)));
+    return [...deletedSet];
   }
 
   /**
