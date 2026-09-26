@@ -261,6 +261,45 @@ func TestPageIntegrity(t *testing.T) {
 			assert.True(t, getPage(t, h, h.UserA.ID, id).IsPrivate)
 		},
 
+		// ── Low: PUT content without "content" must not wipe the page ─────
+		"PutContentWithoutContentIsRejected": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			note := createPage(t, h, h.UserA.ID, "Note")
+			pc := writeDoc(t, h, h.UserA.ID, note.ID, todoDoc(bullet{nodeID: "n1"}))
+			task := createLinkedTask(t, h, h.UserA.ID, note.ID, "n1")
+
+			for _, body := range []map[string]interface{}{
+				{"expectedRevision": pc.Revision},
+				{"expectedRevision": pc.Revision, "content": nil},
+			} {
+				w := h.Do(t, "PUT", "/api/v1/pages/"+note.ID.String()+"/content", body, h.UserA.ID)
+				assert.Equal(t, http.StatusBadRequest, w.Code, "body %v: %s", body, w.Body.String())
+			}
+			assert.Equal(t, pc.Revision, currentContent(t, h, h.UserA.ID, note.ID).Revision, "content must be untouched")
+			assert.True(t, taskVisible(t, h, h.UserA.ID, task.ID), "the page's tasks must survive")
+		},
+
+		// ── Low: pagination must be stable when "order" ties ─────────────
+		"PaginationIsStableAcrossOrderTies": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			const n = 30
+			for i := 0; i < n; i++ {
+				createPage(t, h, h.UserA.ID, fmt.Sprintf("P%d", i)) // all order 0
+			}
+			seen := map[uuid.UUID]int{}
+			for offset := 0; offset < n; offset += 4 {
+				w := h.Do(t, "GET", fmt.Sprintf("/api/v1/pages?limit=4&offset=%d", offset), nil, h.UserA.ID)
+				require.Equal(t, http.StatusOK, w.Code)
+				for _, p := range Decode[[]model.Page](t, w) {
+					seen[p.ID]++
+				}
+			}
+			assert.Len(t, seen, n, "paging through every offset must return every page exactly once")
+			for id, c := range seen {
+				assert.Equal(t, 1, c, "page %s returned %d times", id, c)
+			}
+		},
+
 		// ── DI-02: folder delete must not destroy other users' work ──────
 		"DI02_DeleteFolderContainingOtherUsersPageRefused": func(t *testing.T, h *Harness) {
 			h.ResetDB(t)
