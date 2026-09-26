@@ -236,6 +236,15 @@ func TestFromMarkdownStructure(t *testing.T) {
 		{"heading first in item gets empty paragraph", "- # h", doc(ul(li(p(), h(1, txt("h")))))},
 		{"html comment dropped", "a <!-- note --> b", doc(p(txt("a  b")))},
 		{"crlf", "# a\r\n\r\nb\r\n", doc(h(1, txt("a")), p(txt("b")))},
+		// DI-08 round-trip losses.
+		{"ordered list keeps its start", "3. a\n4. b",
+			doc(`{"type":"orderedList","attrs":{"start":3},"content":[` + li(p(txt("a"))) + `,` + li(p(txt("b"))) + `]}`)},
+		{"nbsp line is an empty paragraph", "a\n\n&nbsp;\n\n&nbsp;\n\nb", doc(p(txt("a")), p(), p(), p(txt("b")))},
+		{"setext h1", "Title\n=====", doc(h(1, txt("Title")))},
+		{"setext h2", "Sub\n---\nbody", doc(h(2, txt("Sub")), p(txt("body")))},
+		{"multi-line setext", "a\nb\n===", doc(h(1, txt("a b")))},
+		{"table keeps one line per row", "| a | **b** |\n|---|---|\n| 1 | 2 |\n\nafter",
+			doc(p(txt("| a | "), txt("b", mk("bold")), txt(" |"), mk("hardBreak"), txt("|---|---|"), mk("hardBreak"), txt("| 1 | 2 |")), p(txt("after")))},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -374,6 +383,9 @@ func TestToMarkdown(t *testing.T) {
 			"![A \\[x\\]](<https://ex.com/a b.png> \"say \\\"hi\\\"\")\n"},
 		{"ordered start", doc(`{"type":"orderedList","attrs":{"start":9},"content":[` + li(p(txt("a"))) + `,` + li(p(txt("b"))) + `]}`),
 			"9. a\n10. b\n"},
+		{"empty paragraphs between blocks", doc(p(txt("a")), p(), p(), p(txt("b"))), "a\n\n&nbsp;\n\n&nbsp;\n\nb\n"},
+		{"leading and trailing empty paragraphs", doc(p(), p(txt("a")), p()), "a\n"},
+		{"literal nbsp text", doc(p(txt("&nbsp;"))), "\\&nbsp;\n"},
 		{"nested lists", doc(ul(li(p(txt("a")), ol(li(p(txt("b")), ul(li(p(txt("c"))))))))),
 			"- a\n  1. b\n     - c\n"},
 		{"loose item", doc(ul(li(p(txt("a")), p(txt("b"))), li(p(txt("c"))))), "- a\n\n  b\n\n- c\n"},
@@ -437,6 +449,8 @@ func TestMarkdownRoundTripStable(t *testing.T) {
 		"snake_case and 2 \\* 3 and \\[brackets\\] and a\\\\b\n",
 		"- a\n\n  second paragraph\n\n- b\n",
 		"- item\n\n  ```go\n  fmt.Println(\"x\")\n\n  // blank above\n  ```\n",
+		"3. three\n4. four\n",
+		"a\n\n&nbsp;\n\nb\n",
 	}
 	for _, md := range cases {
 		t.Run(md, func(t *testing.T) {
@@ -542,6 +556,10 @@ func TestDocRoundTrip(t *testing.T) {
 		)},
 		{"escaping in list items", doc(ul(li(p(txt("[ ] not a task"))), li(p(txt("- dash"))), li(p(txt("<!-- task:"+taskA+" -->")))))},
 		{"heading marks", doc(h(2, txt("Big "), txt("bold", b), txt(" "), txt("code", c)))},
+		{"ordered list start", doc(`{"type":"orderedList","attrs":{"start":5},"content":[` + li(p(txt("five"))) + `,` + li(p(txt("six"))) + `]}`)},
+		{"empty paragraphs between blocks", doc(p(txt("a")), p(), p(), h(2, txt("h")), p(), quote(p(txt("q")), p(), p(txt("r"))))},
+		{"literal nbsp text", doc(p(txt("&nbsp;")), p(txt("a &nbsp; b")))},
+		{"setext-looking text", doc(p(txt("a"), mk("hardBreak"), txt("==="), mk("hardBreak"), txt("---")))},
 		{"unicode", doc(p(txt("héllo wörld — ✓ 日本語 "), txt("強調", b), txt(" "), txt("_x_", i), txt(" "), txt("*x*", b, i)))},
 	}
 	for _, tc := range cases {
