@@ -37,8 +37,28 @@ export class MemoryPersistence implements Persistence {
 	beforeAppend: ((pageId: string, epoch: number) => void | Promise<void>) | null = null;
 	/** page_collab_leases: `${pageId} ${holder}` → lease. */
 	leases = new Map<string, { pageId: string; holder: string; epoch: number; expiresAt: number }>();
+	/**
+	 * Note tasks renamed outside the editor (tasks.title_renamed_at), stamped
+	 * with the logical clock below.
+	 */
+	renamedTasks: { pageId: string; nodeId: string; title: string; renamedAt: number }[] = [];
+	/** Set to make reading renamed task titles throw. */
+	failRenamedTitles = false;
 	private seq = 0;
+	/** A logical clock standing in for the database's NOW(). */
+	private clock = 0;
 	private locks = new Map<string, Promise<void>>();
+
+	/** The next moment of the logical clock. */
+	tick(): number {
+		return ++this.clock;
+	}
+
+	/** What PATCH /tasks/:id does for a rename from outside the note. */
+	renameTask(pageId: string, nodeId: string, title: string) {
+		this.renamedTasks = this.renamedTasks.filter((t) => !(t.pageId === pageId && t.nodeId === nodeId));
+		this.renamedTasks.push({ pageId, nodeId, title, renamedAt: this.tick() });
+	}
 
 	private takeLease(pageId: string, lease: Lease | undefined, epoch: number) {
 		if (lease) this.leases.set(`${pageId} ${lease.holder}`, { pageId, holder: lease.holder, epoch, expiresAt: Date.now() + lease.ttlMs });

@@ -234,6 +234,92 @@ describe.skipIf(!url)('PgPersistence (Postgres)', () => {
 		expect(built).toBe(false);
 	});
 
+	describe('task titles renamed outside the note (DI-29)', () => {
+		const pause = () => new Promise((r) => setTimeout(r, 5));
+		async function addTask(nodeId: string, title: string, page = pageId) {
+			const { rows } = await pool.query(
+				`INSERT INTO tasks (user_id, title, source_page_id, source_node_id) VALUES ($1, $2, $3, $4) RETURNING id`,
+				[userId, title, page, nodeId]
+			);
+			return rows[0].id as string;
+		}
+		const rename = (id: string, title: string) => pool.query(`UPDATE tasks SET title = $2, title_renamed_at = NOW() WHERE id = $1`, [id, title]);
+
+		it('lists the page\'s live tasks renamed after the loaded content was written', async () => {
+			const early = await addTask('early', 'early');
+			await rename(early, 'renamed before the content');
+			await addTask('never', 'never renamed');
+			const gone = await addTask('gone', 'gone');
+			await pause();
+			const loaded = await persistence.loadOrSeed(pageId, seeder, fingerprint);
+			expect(loaded.contentAsOf).not.toBeNull();
+			await pause();
+
+			const later = await addTask('later', 'later');
+			await rename(later, 'renamed after the content');
+			await rename(gone, 'renamed, then deleted');
+			await pool.query(`UPDATE tasks SET deleted_at = NOW() WHERE id = $1`, [gone]);
+			const elsewhere = randomUUID();
+			await pool.query(`INSERT INTO pages (id, user_id, type, title) VALUES ($1, $2, 'page', 'other')`, [elsewhere, userId]);
+			await rename(await addTask('later', 'on another page', elsewhere), 'renamed elsewhere');
+
+			expect(await persistence.renamedTaskTitles(pageId, loaded.contentAsOf)).toEqual([{ nodeId: 'later', title: 'renamed after the content' }]);
+			expect(await persistence.renamedTaskTitles(pageId, null)).toHaveLength(2);
+		});
+
+		it('a seeded document is as old as the stored content it came from', async () => {
+			const id = await addTask('n1', 'Buy milk');
+			await pause();
+			await rename(id, 'Buy oat milk'); // after page_contents was written, before the seed
+			await pause();
+			const seeded = await persistence.loadOrSeed(pageId, seeder, fingerprint);
+			expect(seeded.seeded).toBe(true);
+			expect(await persistence.renamedTaskTitles(pageId, seeded.contentAsOf)).toEqual([{ nodeId: 'n1', title: 'Buy oat milk' }]);
+			// …and stays so on the next load, if the first one couldn't apply it.
+			const reloaded = await persistence.loadOrSeed(pageId, seeder, fingerprint);
+			expect(await persistence.renamedTaskTitles(pageId, reloaded.contentAsOf)).toHaveLength(1);
+		});
+
+		it('an append after the rename makes the loaded content newer; compaction does not', async () => {
+			const id = await addTask('n1', 'Buy milk');
+			const first = await persistence.loadOrSeed(pageId, seeder, fingerprint);
+			await pause();
+			await rename(id, 'Buy oat milk');
+			await pause();
+			// Compacting the rows from before the rename doesn't make them newer.
+			await persistence.append(pageId, first.epoch, new Uint8Array([0, 0]));
+			await pool.query(`UPDATE page_collab_updates SET created_at = created_at - INTERVAL '1 hour' WHERE page_id = $1`, [pageId]);
+			expect(await persistence.compact(pageId, first.epoch)).not.toBeNull();
+			const compacted = await persistence.loadOrSeed(pageId, seeder, fingerprint);
+			expect(await persistence.renamedTaskTitles(pageId, compacted.contentAsOf)).toHaveLength(1);
+
+			// An edit after the rename (the bullet typed in) does.
+			await persistence.append(pageId, first.epoch, new Uint8Array([0, 0]));
+			const edited = await persistence.loadOrSeed(pageId, seeder, fingerprint);
+			expect(await persistence.renamedTaskTitles(pageId, edited.contentAsOf)).toEqual([]);
+		});
+
+		it('a schema reseed keeps the replaced log\'s content time', async () => {
+			const id = await addTask('n1', 'Buy milk');
+			const loaded = await persistence.loadOrSeed(pageId, seeder, 'old-build');
+			await pool.query(`UPDATE page_collab_updates SET created_at = created_at - INTERVAL '1 hour' WHERE page_id = $1`, [pageId]);
+			await rename(id, 'Buy oat milk');
+			expect(await persistence.reseed(pageId, loaded.epoch, seedUpdate(schema, null), fingerprint)).toBe(loaded.epoch + 1);
+			const after = await persistence.loadOrSeed(pageId, seeder, fingerprint);
+			expect(await persistence.renamedTaskTitles(pageId, after.contentAsOf)).toHaveLength(1);
+		});
+
+		it('finds nothing, without failing, before the column exists (migration not run)', async () => {
+			await rename(await addTask('n1', 'Buy milk'), 'Buy oat milk');
+			await pool.query(`ALTER TABLE tasks RENAME COLUMN title_renamed_at TO title_renamed_at_hidden`);
+			try {
+				expect(await persistence.renamedTaskTitles(pageId, null)).toEqual([]);
+			} finally {
+				await pool.query(`ALTER TABLE tasks RENAME COLUMN title_renamed_at_hidden TO title_renamed_at`);
+			}
+		});
+	});
+
 	it('quarantine is visible in state and cleared by the next epoch', async () => {
 		const loaded = await persistence.loadOrSeed(pageId, seeder, fingerprint);
 		await persistence.quarantine(pageId, loaded.epoch, 'test');
