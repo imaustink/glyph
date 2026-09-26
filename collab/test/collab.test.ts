@@ -40,6 +40,13 @@ function open(o: Parameters<typeof connect>[2], s: TestServer = server): TestCli
 	return c;
 }
 
+/** A gate a persistence hook can wait on until the test releases it. */
+function hold() {
+	let release!: () => void;
+	const gate = new Promise<void>((r) => (release = r));
+	return { wait: () => gate, release };
+}
+
 beforeEach(async () => {
 	persistence = new MemoryPersistence();
 	api = new FakeApi(persistence);
@@ -157,6 +164,64 @@ describe('convergence and persistence', () => {
 		await bob.synced();
 		await eventually(() => textOf(bob.doc).includes('parked edit'), 3000, 'reopened note has the parked edit');
 		await eventually(() => textOf(persistence.replay(PAGE)).includes('parked edit'), 5000, 'parked edit persisted');
+	});
+
+	it('a reopen during the unload flush keeps the new session persisting [DI-12]', async () => {
+		// A failed persist leaves a retry pending, so the last client leaving
+		// runs a real (awaited) flush. Someone reopens the note while that
+		// flush is in flight. When the flush finishes it must tear down only
+		// its own copy — deleting the new session's state would leave every
+		// later edit unpersisted and Reset the new editor.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		persistence.failAppends = 1;
+		alice.fragment.insert(alice.fragment.length, [paragraph('before leaving')]);
+		await sleep(150); // the first persist fails; a retry is scheduled
+
+		const flush = hold();
+		persistence.beforeAppend = () => flush.wait();
+		alice.destroy(); // the unload flush's append is now held in flight
+		await sleep(100);
+
+		const bob = open({ user: 'bob' });
+		await sleep(100); // bob's document is loading while the flush is held
+		flush.release();
+		persistence.beforeAppend = null;
+		await bob.synced();
+
+		bob.fragment.insert(bob.fragment.length, [paragraph('after reopening')]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('after reopening'), 5000, 'new session persisted');
+		expect(textOf(persistence.replay(PAGE))).toContain('before leaving');
+		expect(bob.closeReasons).not.toContain(CollabReason.Reset);
+	});
+
+	it('a batch that fails during the unload flush moves to the reopened copy [DI-12]', async () => {
+		// Same race, but the held flush append fails. Its batch goes back onto
+		// the parked copy — which the reopen has already replaced. The reopen
+		// must wait for the parked copy's in-flight work before carrying its
+		// updates over, or the batch lands on a dead copy that never retries.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		persistence.failAppends = 1;
+		alice.fragment.insert(alice.fragment.length, [paragraph('batch in flight')]);
+		await sleep(150);
+
+		const flush = hold();
+		persistence.beforeAppend = async () => {
+			persistence.beforeAppend = null;
+			await flush.wait();
+			persistence.failAppends = 1; // this (the flush's) append fails
+		};
+		alice.destroy();
+		await sleep(100);
+
+		const bob = open({ user: 'bob' });
+		await sleep(100);
+		flush.release();
+		await bob.synced();
+
+		await eventually(() => textOf(bob.doc).includes('batch in flight'), 5000, 'reopened copy has the failed batch');
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('batch in flight'), 5000, 'failed batch persisted');
 	});
 
 	it('reloads the same document from the log after every client leaves', async () => {

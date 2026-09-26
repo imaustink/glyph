@@ -29,6 +29,12 @@ export class MemoryPersistence implements Persistence {
 	failAppends = 0;
 	/** Test hook: runs at the start of a compaction, before rows are merged. */
 	onCompact: ((pageId: string, epoch: number) => void) | null = null;
+	/**
+	 * Test hook: awaited at the start of every append, before the outage check
+	 * and the epoch check. Lets a test hold an append in flight (to reopen a
+	 * note meanwhile) or inject a foreign row between catch-up and append.
+	 */
+	beforeAppend: ((pageId: string, epoch: number) => void | Promise<void>) | null = null;
 	private seq = 0;
 	private locks = new Map<string, Promise<void>>();
 
@@ -113,6 +119,7 @@ export class MemoryPersistence implements Persistence {
 	}
 
 	async append(pageId: string, epoch: number, data: Uint8Array): Promise<number | null> {
+		await this.beforeAppend?.(pageId, epoch);
 		if (this.failAppends > 0) {
 			this.failAppends--;
 			throw new Error('simulated database outage');
