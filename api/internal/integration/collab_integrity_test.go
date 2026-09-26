@@ -365,6 +365,55 @@ func TestTaskSourceIntegrity(t *testing.T) {
 			assert.Empty(t, h.Notifier.take())
 		},
 
+		// DI-29: a rename made outside the note (the task page, MCP, an API
+		// client) must reach the bullet, or the next keystroke in the bullet
+		// pushes its stale text back as the title. So it is announced to open
+		// copies of the note and recorded for the collab service to apply when
+		// the note is next loaded. The editor's own bullet→title writes are
+		// marked and never echoed back: by the time the echo arrived, the
+		// bullet may hold newer text that it would clobber.
+		"ExternalRenamesAreAnnouncedAndRecordedButBulletEditsAreNot": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			page := createPage(t, h, h.UserA.ID, "Plan")
+			task := createLinkedTask(t, h, h.UserA.ID, page.ID, "n1")
+			path := "/api/v1/tasks/" + task.ID.String()
+			h.Notifier.takeTitles()
+			_, renamed := h.TitleRenamedAt(t, task.ID)
+			assert.False(t, renamed, "a new task has not been renamed")
+
+			w := h.DoWithHeaders(t, "PATCH", path, map[string]interface{}{"title": "typed in the bullet"}, h.UserA.ID,
+				map[string]string{"X-Glyph-Change-Source": "bullet"})
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Equal(t, "typed in the bullet", Decode[model.Task](t, w).Title)
+			assert.Empty(t, h.Notifier.takeTitles(), "the bullet already shows its own text")
+			_, renamed = h.TitleRenamedAt(t, task.ID)
+			assert.False(t, renamed, "a title from the bullet is not a rename")
+
+			w = h.Do(t, "PATCH", path, map[string]interface{}{"title": "renamed on the task page"}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Equal(t, []titleNotification{{PageID: page.ID, NodeID: "n1", Title: "renamed on the task page"}}, h.Notifier.takeTitles())
+			first, renamed := h.TitleRenamedAt(t, task.ID)
+			require.True(t, renamed, "an outside rename is recorded")
+			assert.Empty(t, h.Notifier.take(), "a rename is not a status change")
+
+			// Sending the same title again (e.g. with another field) is no rename.
+			w = h.Do(t, "PATCH", path, map[string]interface{}{"title": "renamed on the task page", "priority": "high"}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Empty(t, h.Notifier.takeTitles())
+			again, _ := h.TitleRenamedAt(t, task.ID)
+			assert.True(t, first.Equal(again), "unchanged title keeps the recorded rename time")
+
+			// Standalone tasks have no bullet to update.
+			w = h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{"title": "standalone"}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code)
+			standalone := Decode[model.Task](t, w)
+			w = h.Do(t, "PATCH", "/api/v1/tasks/"+standalone.ID.String(), map[string]interface{}{"title": "standalone, renamed"}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code)
+			assert.Empty(t, h.Notifier.takeTitles())
+			_, renamed = h.TitleRenamedAt(t, standalone.ID)
+			assert.False(t, renamed)
+		},
+
 		// Ownership follows the note, so creating a task "in" a note someone
 		// can't edit must fail — otherwise anyone could put tasks in anyone's
 		// account.

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glyph/api/internal/auth"
@@ -76,10 +77,17 @@ type statusNotification struct {
 	Status model.TaskStatus
 }
 
+type titleNotification struct {
+	PageID uuid.UUID
+	NodeID string
+	Title  string
+}
+
 // recordingNotifier is a store.CollabNotifier that remembers its calls.
 type recordingNotifier struct {
-	mu    sync.Mutex
-	calls []statusNotification
+	mu     sync.Mutex
+	calls  []statusNotification
+	titles []titleNotification
 }
 
 func (n *recordingNotifier) TaskStatusChanged(_ context.Context, pageID uuid.UUID, nodeID string, status model.TaskStatus) error {
@@ -89,12 +97,43 @@ func (n *recordingNotifier) TaskStatusChanged(_ context.Context, pageID uuid.UUI
 	return nil
 }
 
+func (n *recordingNotifier) TaskTitleChanged(_ context.Context, pageID uuid.UUID, nodeID, title string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.titles = append(n.titles, titleNotification{pageID, nodeID, title})
+	return nil
+}
+
+// take returns (and forgets) the status notifications sent so far.
 func (n *recordingNotifier) take() []statusNotification {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	out := n.calls
 	n.calls = nil
 	return out
+}
+
+// takeTitles returns (and forgets) the title notifications sent so far.
+func (n *recordingNotifier) takeTitles() []titleNotification {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	out := n.titles
+	n.titles = nil
+	return out
+}
+
+// titleRenameReader is implemented by backends that can report when a
+// task's title was last changed from outside its note (tasks.title_renamed_at).
+type titleRenameReader interface {
+	TitleRenamedAt(t *testing.T, taskID uuid.UUID) (time.Time, bool)
+}
+
+// TitleRenamedAt reports when the task was last renamed outside its note.
+func (h *Harness) TitleRenamedAt(t *testing.T, taskID uuid.UUID) (time.Time, bool) {
+	t.Helper()
+	r, ok := h.Backend.(titleRenameReader)
+	require.True(t, ok, "backend %s cannot report title renames", h.Backend.Name())
+	return r.TitleRenamedAt(t, taskID)
 }
 
 // collabServiceToken authenticates test requests to /internal/collab.
@@ -298,6 +337,22 @@ func (h *Harness) Do(t *testing.T, method, path string, body interface{}, userID
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("X-Test-User-ID", userID.String())
+	w := httptest.NewRecorder()
+	h.Router.ServeHTTP(w, req)
+	return w
+}
+
+// DoWithHeaders is Do with extra request headers.
+func (h *Harness) DoWithHeaders(t *testing.T, method, path string, body interface{}, userID uuid.UUID, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	b, err := json.Marshal(body)
+	require.NoError(t, err)
+	req := httptest.NewRequest(method, path, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Test-User-ID", userID.String())
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 	w := httptest.NewRecorder()
 	h.Router.ServeHTTP(w, req)
 	return w

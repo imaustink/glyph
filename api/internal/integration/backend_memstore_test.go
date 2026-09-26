@@ -2,6 +2,7 @@ package integration
 
 import (
 	"testing"
+	"time"
 
 	"github.com/glyph/api/internal/store"
 	"github.com/glyph/api/internal/store/memstore"
@@ -46,6 +47,18 @@ func (b *memBackend) Reset(_ *testing.T) {
 }
 
 func (b *memBackend) Teardown() {} // nothing to clean up
+
+// TitleRenamedAt asks the memstore when the task was last renamed outside its note.
+func (b *memBackend) TitleRenamedAt(t *testing.T, taskID uuid.UUID) (time.Time, bool) {
+	t.Helper()
+	r, ok := b.tasks.(interface {
+		TitleRenamedAt(uuid.UUID) (time.Time, bool)
+	})
+	if !ok {
+		t.Fatal("memstore does not record when a task was renamed outside its note")
+	}
+	return r.TitleRenamedAt(taskID)
+}
 
 // AttachCollab stands in for the collab service seeding a page.
 func (b *memBackend) AttachCollab(_ *testing.T, pageID uuid.UUID) int {
