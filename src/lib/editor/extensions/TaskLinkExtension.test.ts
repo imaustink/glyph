@@ -759,3 +759,65 @@ describe('taskStatus attribute parseHTML/renderHTML fallback branches', () => {
     expect(html).toContain('data-task-status="todo"');
   });
 });
+
+// ─── Enter at the start of a linked bullet (DI-09) ───────────────────────────
+
+describe('splitting a linked bullet with Enter (DI-09)', () => {
+  function linkedDoc(text: string) {
+    return {
+      type: 'doc',
+      content: [{
+        type: 'bulletList',
+        content: [{
+          type: 'listItem',
+          attrs: { nodeId: 'n-milk', taskId: 't-milk', checked: true, taskStatus: 'done' },
+          content: [{ type: 'paragraph', content: [{ type: 'text', text }] }]
+        }]
+      }]
+    };
+  }
+
+  function listItems(editor: Editor): { text: string; attrs: Record<string, unknown> }[] {
+    const out: { text: string; attrs: Record<string, unknown> }[] = [];
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === 'listItem') out.push({ text: node.textContent, attrs: node.attrs });
+    });
+    return out;
+  }
+
+  /** Position of the start of the first list item's text. */
+  const TEXT_START = 3; // bulletList(0) > listItem(1) > paragraph(2) > text(3)
+
+  it('at offset 0, the task link stays on the bullet that keeps the text', () => {
+    const editor = createEditor();
+    editor.commands.setContent(linkedDoc('Buy milk'));
+    editor.commands.setTextSelection(TEXT_START);
+
+    editor.commands.keyboardShortcut('Enter');
+
+    const items = listItems(editor);
+    expect(items.map((i) => i.text)).toEqual(['', 'Buy milk']);
+    const [empty, milk] = items;
+    expect(milk.attrs).toMatchObject({ nodeId: 'n-milk', taskId: 't-milk', checked: true, taskStatus: 'done' });
+    expect(empty.attrs.taskId).toBeNull();
+    expect(empty.attrs.nodeId).not.toBe('n-milk');
+    expect(empty.attrs.checked).toBe(false);
+    // The cursor stays at the start of the text, as a plain split leaves it.
+    expect(editor.state.selection.$from.parent.textContent).toBe('Buy milk');
+    expect(editor.state.selection.$from.parentOffset).toBe(0);
+  });
+
+  it('in the middle of the text, the upper half keeps the link (unchanged behaviour)', () => {
+    const editor = createEditor();
+    editor.commands.setContent(linkedDoc('Buy milk'));
+    editor.commands.setTextSelection(TEXT_START + 3);
+
+    editor.commands.keyboardShortcut('Enter');
+
+    const [upper, lower] = listItems(editor);
+    expect(upper.text).toBe('Buy');
+    expect(upper.attrs.taskId).toBe('t-milk');
+    expect(lower.text).toBe(' milk');
+    expect(lower.attrs.taskId).toBeNull();
+  });
+});
