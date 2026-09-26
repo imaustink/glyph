@@ -335,9 +335,6 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
-		return
-	}
 	// Re-pointing a task at a bullet is creating a task on that note: the
 	// caller must be able to edit the note, and the task moves to the note's
 	// owner and org. Changing only the bullet keeps the note, which must
@@ -351,6 +348,15 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 		sourcePage = page
 	} else if req.SourceNodeID != nil && existing.SourcePageID != nil {
 		if _, ok := h.resolveSourcePage(c, *existing.SourcePageID, user.ID); !ok {
+			return
+		}
+	}
+	// A task re-pointed at a bullet takes the note's org (checked above);
+	// otherwise an org change must be to a destination the requester may
+	// move it to (Personal: the owner only; within the token's grant).
+	if sourcePage == nil {
+		if dest, sent := requestedOrg(keys, req.OrgID); sent && !sameOrg(existing.OrgID, dest) &&
+			!h.Perms.CanMoveToOrg(c, dest, existing.UserID, user.ID, model.ShareResourceTask) {
 			return
 		}
 	}
@@ -543,6 +549,11 @@ func (h *TaskHandler) UpsertTask(c *gin.Context) {
 	if !bindJSON(c, &body) {
 		return
 	}
+	// PUT replaces the task's org, so a bearer token must be granted the
+	// stored org as well as the body's.
+	if !h.checkStoredTaskScope(c, id, user.ID) {
+		return
+	}
 	if !checkTokenScope(c, body.OrgID, model.ShareResourceTask, true) {
 		return
 	}
@@ -585,6 +596,24 @@ func (h *TaskHandler) UpsertTask(c *gin.Context) {
 	// status the bullet already shows.
 	h.notifyStatusChange(c, "", task)
 	c.JSON(http.StatusOK, task)
+}
+
+// checkStoredTaskScope checks a bearer token's write scope against the org
+// of the task id as stored, when the requester owns it (PUT only replaces
+// the owner's row). Cookie-session requests always pass.
+func (h *TaskHandler) checkStoredTaskScope(c *gin.Context, id, userID uuid.UUID) bool {
+	if currentTokenScope(c) == nil {
+		return true
+	}
+	existing, err := h.Tasks.GetByID(c.Request.Context(), id, userID)
+	if errors.Is(err, store.ErrNotFound) {
+		return true
+	}
+	if err != nil {
+		internalError(c, err)
+		return false
+	}
+	return existing.UserID != userID || checkTokenScope(c, existing.OrgID, model.ShareResourceTask, true)
 }
 
 // POST /tasks/filter

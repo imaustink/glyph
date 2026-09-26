@@ -245,6 +245,19 @@ func subtreeHasOtherOwners(c *gin.Context, err error) {
 	c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "subtree_has_other_owners"})
 }
 
+// requestedOrg is the org a PATCH body asks for: sent reports whether it
+// has an orgId key at all, and a JSON null asks for Personal (nil).
+func requestedOrg(keys map[string]json.RawMessage, orgID *uuid.UUID) (dest *uuid.UUID, sent bool) {
+	raw, present := keys["orgId"]
+	if !present {
+		return nil, false
+	}
+	if isJSONNull(raw) {
+		return nil, true
+	}
+	return orgID, true
+}
+
 func sameOrg(a, b *uuid.UUID) bool {
 	if a == nil || b == nil {
 		return a == b
