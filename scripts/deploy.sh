@@ -11,8 +11,12 @@
 #     in CD's concurrency lock, so it checks instead — needs `gh`);
 #   * images are tagged by git tree hash, like CD, so the tag changes with
 #     the content and pullPolicy IfNotPresent can't serve a stale :latest;
-#   * `helm upgrade --atomic --wait`: the pre-upgrade migrate hook runs first
-#     and any failure rolls the release back.
+#   * `helm upgrade --wait`: the pre-upgrade migrate hook runs first, and any
+#     failure fails the deploy. There is deliberately no --atomic: the
+#     migrations have already applied, and rolling back to a revision from
+#     before PR #46 crash-loops the API (its init container runs `migrate up`
+#     against the newer schema). A failed rollout leaves the old pods
+#     serving; see docs/runbooks/migrations.md to recover.
 set -euo pipefail
 
 REGISTRY="docker.io/blackmarket"
@@ -42,6 +46,10 @@ die() { echo "✗ $*" >&2; exit 1; }
 cd "$(git rev-parse --show-toplevel)"
 
 # ── Guards ────────────────────────────────────────────────────────────────────
+# Untracked files count: the frontend (`COPY . .`) and collab images are built
+# from the working tree, so an untracked file could change an image whose
+# tree-hash tag says it didn't. The default values-production.yaml is
+# gitignored (and dockerignored), so it doesn't trip this.
 if [[ -n "$(git status --porcelain)" ]]; then
   die "the working tree has uncommitted changes; deploy only what is on origin/main."
 fi
@@ -102,6 +110,6 @@ helm upgrade "$RELEASE" helm/glyph \
   --set api.image.tag="$TAG" \
   --set collab.image.repository="$REGISTRY/glyph-collab" \
   --set collab.image.tag="$TAG" \
-  -n "$NAMESPACE" --atomic --wait --cleanup-on-fail --timeout 10m
+  -n "$NAMESPACE" --wait --cleanup-on-fail --timeout 10m
 
 echo "✓ Done"

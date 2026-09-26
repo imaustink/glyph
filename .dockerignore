@@ -16,3 +16,6 @@ src-tauri/target
 coverage
 test-results
 playwright-report
+# Production values (scripts/deploy.sh's default --values) hold secrets; keep
+# them out of the build context that `COPY . .` sends.
+values-production.yaml

@@ -128,8 +128,9 @@ jobs:
           path: homelab
           persist-credentials: false
 
-      # Pinned: the upgrade below relies on Helm 3's --atomic (Helm 4 renames
-      # it), and an unpinned installer picks up new majors on its own.
+      # Pinned: the upgrade below relies on Helm 3's flag semantics (Helm 4
+      # changes --wait and renames the rollback flags), and an unpinned
+      # installer picks up new majors on its own.
       - name: Install Helm
         uses: azure/setup-helm@v4
         with:
@@ -154,12 +155,23 @@ jobs:
       #      (the only place migrations run; API pods just wait for them);
       #   2. the Deployments roll to the new tree-hash tag, and --wait blocks
       #      until every one of them (frontend, api and collab) is ready;
-      #   3. on any failure — a failed migration, a pod that never becomes
-      #      ready, the timeout — --atomic rolls the release back.
+      #   3. on any failure (a failed migration, a pod that never becomes
+      #      ready, the timeout) the job fails and the release is marked
+      #      failed. It is NOT rolled back automatically (no --atomic):
+      #        - the hook has already applied the migrations, and a rollback
+      #          to any revision from before PR #46 recreates API pods whose
+      #          run-migrations init container runs `migrate up` against a
+      #          newer schema and crash-loops ("no migration found for
+      #          version N");
+      #        - without a rollback, a failed rollout leaves the old
+      #          ReplicaSet's pods serving (a RollingUpdate only retires old
+      #          pods as new ones become ready), which is the safe state.
+      #      --cleanup-on-fail only deletes objects this upgrade newly
+      #      created, which the old pods don't use. Recovery (roll forward,
+      #      or roll back only to a schema-tolerant revision) is in
+      #      docs/runbooks/migrations.md.
       # No separate restart step: a new tag already rolls the pods, and
-      # restarting on top rolled the API twice per deploy. A migration that has
-      # applied is not undone by the rollback; the older pods tolerate a
-      # schema that is ahead of them (helm/glyph/files/glyph-migrate.sh).
+      # restarting on top rolled the API twice per deploy.
       - name: Helm upgrade
         run: |
           tag=${{ steps.image.outputs.tag }}
@@ -171,4 +183,4 @@ jobs:
             --set api.image.tag="$tag" \
             --set collab.image.repository=docker.io/blackmarket/glyph-collab \
             --set collab.image.tag="$tag" \
-            -n glyph --atomic --wait --cleanup-on-fail --timeout 10m
+            -n glyph --wait --cleanup-on-fail --timeout 10m
