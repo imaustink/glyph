@@ -299,4 +299,25 @@ describe('uiStore', () => {
       resolveFn(); // cleanup
     });
   });
+
+  // ─── armed debounces [DI-30] ──────────────────────────────────────────────
+
+  describe('pending debounces [DI-30]', () => {
+    it('hasPendingWrites is true while a debounced write is armed', () => {
+      store.setPendingDebounce('task-description', true);
+      expect(store.hasPendingWrites).toBe(true);
+
+      store.setPendingDebounce('task-description', false);
+      expect(store.hasPendingWrites).toBe(false);
+    });
+
+    it('tracks each debounce key separately', () => {
+      store.setPendingDebounce('a', true);
+      store.setPendingDebounce('b', true);
+      store.setPendingDebounce('a', false);
+      expect(store.hasPendingWrites).toBe(true);
+      store.setPendingDebounce('b', false);
+      expect(store.hasPendingWrites).toBe(false);
+    });
+  });
 });
