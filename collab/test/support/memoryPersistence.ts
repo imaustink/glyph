@@ -4,7 +4,7 @@
  * counter like the BIGSERIAL.
  */
 import * as Y from 'yjs';
-import type { CollabDocState, LoadedDoc, Persistence, Seeder, StoredUpdate } from '../../src/persistence.js';
+import type { CollabDocState, Lease, LoadedDoc, Persistence, Seeder, StoredUpdate } from '../../src/persistence.js';
 import { NotFoundError } from '../../src/persistence.js';
 
 interface Row extends StoredUpdate {
@@ -35,8 +35,14 @@ export class MemoryPersistence implements Persistence {
 	 * note meanwhile) or inject a foreign row between catch-up and append.
 	 */
 	beforeAppend: ((pageId: string, epoch: number) => void | Promise<void>) | null = null;
+	/** page_collab_leases: `${pageId} ${holder}` → lease. */
+	leases = new Map<string, { pageId: string; holder: string; epoch: number; expiresAt: number }>();
 	private seq = 0;
 	private locks = new Map<string, Promise<void>>();
+
+	private takeLease(pageId: string, lease: Lease | undefined, epoch: number) {
+		if (lease) this.leases.set(`${pageId} ${lease.holder}`, { pageId, holder: lease.holder, epoch, expiresAt: Date.now() + lease.ttlMs });
+	}
 
 	/** Test helper: append a row directly, as if a foreign replica had. */
 	injectRow(pageId: string, epoch: number, data: Uint8Array): number {
@@ -77,7 +83,7 @@ export class MemoryPersistence implements Persistence {
 		return d ? { epoch: d.epoch, attached: d.attached, quarantined: d.quarantined, schemaFingerprint: d.schemaFingerprint } : null;
 	}
 
-	loadOrSeed(pageId: string, seed: Seeder, fingerprint: string): Promise<LoadedDoc> {
+	loadOrSeed(pageId: string, seed: Seeder, fingerprint: string, lease?: Lease): Promise<LoadedDoc> {
 		return this.locked(pageId, () => {
 			if (!this.pages.has(pageId)) throw new NotFoundError();
 			let d = this.docs.get(pageId);
@@ -86,6 +92,7 @@ export class MemoryPersistence implements Persistence {
 				this.docs.set(pageId, d);
 			}
 			if (d.attached) {
+				if (d.schemaFingerprint === fingerprint) this.takeLease(pageId, lease, d.epoch);
 				return {
 					epoch: d.epoch,
 					quarantined: d.quarantined,
@@ -97,17 +104,32 @@ export class MemoryPersistence implements Persistence {
 			const initial = seed(this.pages.get(pageId) ?? null);
 			this.seedCount++;
 			const seq = this.startEpoch(pageId, d, d.epoch + 1, initial, fingerprint);
+			this.takeLease(pageId, lease, d.epoch);
 			return { epoch: d.epoch, quarantined: false, schemaFingerprint: fingerprint, seeded: true, updates: [{ seq, data: initial }] };
 		});
 	}
 
-	reseed(pageId: string, fromEpoch: number, update: Uint8Array, fingerprint: string): Promise<number | null> {
+	reseed(pageId: string, fromEpoch: number, update: Uint8Array, fingerprint: string, lease?: Lease): Promise<number | 'held' | null> {
 		return this.locked(pageId, () => {
 			const d = this.docs.get(pageId);
 			if (!d || !d.attached || d.epoch !== fromEpoch) return null;
+			const now = Date.now();
+			for (const l of this.leases.values()) {
+				if (l.pageId === pageId && l.epoch === fromEpoch && l.holder !== lease?.holder && l.expiresAt > now) return 'held';
+			}
 			this.startEpoch(pageId, d, fromEpoch + 1, update, fingerprint);
+			this.takeLease(pageId, lease, d.epoch);
 			return d.epoch;
 		});
+	}
+
+	async renewLeases(holder: string, held: { pageId: string; epoch: number }[], ttlMs: number): Promise<void> {
+		for (const h of held) if (this.pages.has(h.pageId)) this.takeLease(h.pageId, { holder, ttlMs }, h.epoch);
+	}
+
+	async releaseLease(pageId: string, holder: string, epoch: number): Promise<void> {
+		const key = `${pageId} ${holder}`;
+		if (this.leases.get(key)?.epoch === epoch) this.leases.delete(key);
 	}
 
 	private startEpoch(pageId: string, d: DocRow, epoch: number, initial: Uint8Array, fingerprint: string): number {

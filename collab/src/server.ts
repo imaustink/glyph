@@ -25,6 +25,7 @@ const collab = new GlyphCollab({
 	maxDocumentBytes: config.maxDocumentBytes,
 	compactEvery: config.compactEvery,
 	shutdownDrainMs: config.shutdownDrainMs,
+	leaseTtlMs: config.leaseTtlMs,
 	log
 });
 const http = new GlyphHttp({ collab, api, allowedOrigins: config.allowedOrigins, log });
@@ -41,6 +42,9 @@ const timers = [
 	setInterval(() => void collab.reauthorizeAll().catch((err) => log.error('re-authorization sweep failed', { err })), config.reauthIntervalMs)
 ];
 if (config.catchUpIntervalMs > 0) timers.push(setInterval(() => collab.catchUpAll(), config.catchUpIntervalMs));
+timers.push(
+	setInterval(() => void collab.renewLeases().catch((err) => log.warn('lease renewal failed', { err })), collab.leaseRenewIntervalMs)
+);
 
 const server = new Server({
 	name: 'glyph-collab',

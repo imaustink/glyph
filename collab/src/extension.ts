@@ -20,6 +20,7 @@
  *                   finds its epoch gone, every connection is closed with
  *                   Reset and the in-memory copy is discarded unsaved.
  */
+import { randomUUID } from 'node:crypto';
 import * as Y from 'yjs';
 import type {
 	Extension,
@@ -47,7 +48,7 @@ import {
 	type CollabServerMessage
 } from '$lib/collab/protocol';
 import type { Api, CollabSession } from './api.js';
-import type { Persistence, StoredPageContent } from './persistence.js';
+import type { Lease, Persistence, StoredPageContent } from './persistence.js';
 import { NotFoundError } from './persistence.js';
 import { inspect, repair, seedUpdate, setListItemStatus, toJSON, type ProseMirrorJSON } from './documentRules.js';
 import type { TaskStatus } from '$lib/models/types';
@@ -115,6 +116,10 @@ export interface GlyphCollabOptions {
 	allowedOrigins: string[];
 	maxDocumentBytes: number;
 	compactEvery: number;
+	/** Unique per process: whose leases (see persistence.ts) are whose. Default: random. */
+	replicaId?: string;
+	/** How long a lease on a loaded document lasts unless renewed (ms, default 30 s). */
+	leaseTtlMs?: number;
 	/**
 	 * On shutdown, how long to keep retrying documents that still hold
 	 * unpersisted updates before giving up on them (ms, 0 = don't wait).
@@ -127,8 +132,11 @@ export class GlyphCollab implements Extension {
 	extensionName = 'glyph-collab';
 	private readonly docs = new Map<string, DocState>();
 	private instance: Hocuspocus | null = null;
+	private readonly lease: Lease;
 
-	constructor(private readonly opts: GlyphCollabOptions) {}
+	constructor(private readonly opts: GlyphCollabOptions) {
+		this.lease = { holder: opts.replicaId ?? randomUUID(), ttlMs: opts.leaseTtlMs ?? 30000 };
+	}
 
 	// ─── Connection admission ────────────────────────────────────────────────
 
@@ -286,7 +294,7 @@ export class GlyphCollab implements Extension {
 
 		let loaded;
 		try {
-			loaded = await this.opts.persistence.loadOrSeed(pageId, (stored) => this.seed(stored), this.opts.fingerprint);
+			loaded = await this.opts.persistence.loadOrSeed(pageId, (stored) => this.seed(stored), this.opts.fingerprint, this.lease);
 		} catch (err) {
 			if (err instanceof NotFoundError) throw new CollabError(CollabReason.Forbidden, 'page not found');
 			this.opts.log.error('failed to load document', { pageId, err });
@@ -305,8 +313,18 @@ export class GlyphCollab implements Extension {
 			const json = toJSON(replay);
 			replay.destroy();
 			const update = this.seed({ content: json, schemaVersion: CURRENT_SCHEMA_VERSION });
-			const next = await this.opts.persistence.reseed(pageId, epoch, update, this.opts.fingerprint);
+			const next = await this.opts.persistence.reseed(pageId, epoch, update, this.opts.fingerprint, this.lease);
 			if (next === null) throw new CollabError(CollabReason.Unavailable, 'document changed while upgrading');
+			if (next === 'held') {
+				// Another replica — one running the older build, during a rolling
+				// deploy — has this epoch loaded, and may hold edits it hasn't
+				// appended yet. A new epoch would make those appends fail and
+				// the edits vanish (DI-16). Turn this editor away for now; the
+				// client retries (Unavailable is transient) and gets through
+				// once the other replica unloads the note or its lease expires.
+				this.opts.log.info('deferring schema re-seed: another replica has the document open', { pageId, epoch });
+				throw new CollabError(CollabReason.Unavailable, 'document is open on another server; retry shortly');
+			}
 			this.opts.log.info('re-seeded document for a new schema', { pageId, from: epoch, to: next });
 			epoch = next;
 			updates = await this.opts.persistence.fetchSince(pageId, epoch, 0);
@@ -437,9 +455,33 @@ export class GlyphCollab implements Extension {
 		}
 
 		if (state.retryTimer) clearTimeout(state.retryTimer);
+		void this.teardown(state);
+	}
+
+	/**
+	 * Forget an unloaded copy for good, giving up its lease. Resolves once the
+	 * lease is released (never rejects); callers other than shutdown needn't
+	 * wait. If the note is reopened at once, the new copy's load re-takes the
+	 * lease — and renewLeases re-takes it should this delete land later.
+	 */
+	private teardown(state: DocState): Promise<void> {
 		state.unsubscribe();
 		state.shadow.destroy();
-		this.docs.delete(documentName);
+		this.docs.delete(state.name);
+		return this.opts.persistence
+			.releaseLease(state.pageId, this.lease.holder, state.epoch)
+			.catch((err) => this.opts.log.warn('failed to release lease', { pageId: state.pageId, err }));
+	}
+
+	/** Keep this replica's leases on its loaded documents alive (see persistence.ts). */
+	async renewLeases(): Promise<void> {
+		const held = [...this.docs.values()].filter((s) => !s.evicted).map((s) => ({ pageId: s.pageId, epoch: s.epoch }));
+		await this.opts.persistence.renewLeases(this.lease.holder, held, this.lease.ttlMs);
+	}
+
+	/** Renew leases this often: a third of their lifetime. */
+	get leaseRenewIntervalMs(): number {
+		return Math.max(1000, Math.floor(this.lease.ttlMs / 3));
 	}
 
 	/**
@@ -483,11 +525,8 @@ export class GlyphCollab implements Extension {
 					}
 					// Written. A parked copy (no Hocuspocus document behind it any
 					// more) is torn down, as afterUnloadDocument would have done.
-					if (state.document.getConnectionsCount() === 0 && this.docs.get(state.name) === state) {
-						state.unsubscribe();
-						state.shadow.destroy();
-						this.docs.delete(state.name);
-					}
+					// Awaited: the pool closes right after the drain.
+					if (state.document.getConnectionsCount() === 0 && this.docs.get(state.name) === state) await this.teardown(state);
 				})
 			);
 			left = failed.filter((s) => !s.evicted && this.docs.get(s.name) === s);

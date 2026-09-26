@@ -64,6 +64,7 @@ Each one is enforced in code and covered by a test.
 | `COLLAB_CATCH_UP_INTERVAL_MS` | `5000` | Pull other replicas' updates (multi-replica only). |
 | `COLLAB_COMPACT_EVERY` | `100` | Appends between log compactions. |
 | `COLLAB_MAX_DOCUMENT_BYTES` | `5242880` | Matches the API's content limit. |
+| `COLLAB_LEASE_TTL_MS` | `30000` | Lifetime of this replica's lease on each loaded document (renewed every third of it). A schema re-seed waits for other replicas' leases, so this bounds how long a crashed replica can delay one. |
 | `COLLAB_SHUTDOWN_DRAIN_MS` | `20000` | On SIGTERM, how long to keep retrying documents whose updates aren't persisted yet (e.g. during a database outage) before dropping them with an error log. Keep it below the pod's termination grace period. |
 
 The API side: `COLLAB_ENABLED=true` and `COLLAB_SERVICE_TOKEN`. Helm: `collab.enabled`,
@@ -83,6 +84,15 @@ The API side: `COLLAB_ENABLED=true` and `COLLAB_SERVICE_TOKEN`. Helm: `collab.en
   level): collaborators are read-only. Restore a version
   (`POST /api/v1/pages/:id/content/versions/:vid/restore`) to recover; that
   starts a clean epoch.
+- **Schema upgrades during a rolling deploy:** the first new-build editor to
+  open a note written under the old schema re-seeds it into a new epoch. While
+  a replica of the other build still has that note loaded (it holds a lease in
+  `page_collab_leases`), the re-seed is refused and the new editor retries
+  (`unavailable`) until the old replica unloads it or its lease expires, so the
+  old replica's not-yet-appended edits aren't thrown away. Collab builds from
+  before leases don't take them: for the rollout that *introduces* leases, drain
+  the old collab pods before new-build editors connect if the editor schema
+  changed in the same release.
 - **Replicas:** one is recommended. More are safe (invariant 3 plus epoch and
   sequence checks on snapshots), but editors on different replicas see each
   other's changes every `COLLAB_CATCH_UP_INTERVAL_MS` rather than live.
