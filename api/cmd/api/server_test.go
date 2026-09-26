@@ -45,7 +45,7 @@ func TestRequestDeadlineMiddleware_SetsContextDeadline(t *testing.T) {
 	base := serve(t, newHTTPServer("127.0.0.1:0", r, defaultTimeouts()))
 	resp, err := http.Get(base + "/")
 	require.NoError(t, err)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	require.True(t, ok, "handler context has a deadline")
 	assert.WithinDuration(t, time.Now().Add(time.Minute), deadline, 5*time.Second)
@@ -69,7 +69,7 @@ func TestServerTimeouts_SlowHandlerGetsResponseOut(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPut, base+"/slow", nil)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err, "response must arrive, not a dropped connection")
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
 
