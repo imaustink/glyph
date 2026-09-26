@@ -104,6 +104,8 @@ export interface RequestOptions {
 	 * bodies at 64 KiB, so larger bodies are sent normally.
 	 */
 	keepalive?: boolean;
+	/** Sent as X-Glyph-Change-Source (see WriteOptions.source). */
+	source?: 'bullet';
 }
 
 const KEEPALIVE_MAX_BODY = 60_000;
@@ -113,14 +115,16 @@ async function request<T>(method: string, path: string, body?: unknown, opts?: R
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
+	const headers: Record<string, string> = {
+		'Content-Type': 'application/json',
+		'X-Requested-With': 'XMLHttpRequest'
+	};
+	if (opts?.source) headers['X-Glyph-Change-Source'] = opts.source;
 	const init: RequestInit = {
 		method,
 		credentials: 'include',
 		signal: controller.signal,
-		headers: {
-			'Content-Type': 'application/json',
-			'X-Requested-With': 'XMLHttpRequest'
-		}
+		headers
 	};
 	if (body !== undefined) {
 		init.body = JSON.stringify(body);

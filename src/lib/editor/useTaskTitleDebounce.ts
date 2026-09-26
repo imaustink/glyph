@@ -48,7 +48,9 @@ export async function flushTaskTitleUpdate(taskId: string, opts?: WriteOptions):
   if (title == null) return;
   uiStore.markSaving();
   try {
-    await (opts ? tasksStore.updateTask(taskId, { title }, opts) : tasksStore.updateTask(taskId, { title }));
+    // Marked as the bullet's own text, so the API doesn't take it for a
+    // rename and push it back into the note (DI-29).
+    await tasksStore.updateTask(taskId, { title }, { ...opts, source: 'bullet' });
   } finally {
     uiStore.markSaved();
   }
