@@ -22,3 +22,7 @@ var ErrCollaborative = errors.New("page is being edited collaboratively")
 // ErrStaleSnapshot is returned when a collaborative snapshot was produced for
 // an epoch that is no longer current, or would move the snapshot backwards.
 var ErrStaleSnapshot = errors.New("stale collaborative snapshot")
+
+// ErrCycle is returned when a write would make a page its own ancestor
+// (parent_id pointing at itself or at one of its descendants).
+var ErrCycle = errors.New("a node cannot be moved under itself or one of its descendants")

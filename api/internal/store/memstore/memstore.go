@@ -418,11 +418,17 @@ func (s *pageStore) Upsert(_ context.Context, p *model.Page) (*model.Page, error
 		if existing.UserID != p.UserID {
 			return nil, store.ErrNotFound
 		}
+		if s.r.wouldCycle(p.ID, p.ParentID) {
+			return nil, store.ErrCycle
+		}
 		p.CreatedAt = existing.CreatedAt
 		p.UpdatedAt = time.Now()
 		stored := clonePage(p)
 		s.r.pages[stored.ID] = stored
 		return clonePage(stored), nil
+	}
+	if s.r.wouldCycle(p.ID, p.ParentID) {
+		return nil, store.ErrCycle
 	}
 	now := time.Now()
 	p.CreatedAt = now
@@ -431,6 +437,26 @@ func (s *pageStore) Upsert(_ context.Context, p *model.Page) (*model.Page, error
 	s.r.pages[stored.ID] = stored
 	return clonePage(stored), nil
 }
+
+// wouldCycle mirrors the Postgres cycle check: whether making parentID the
+// parent of id would make id its own ancestor. Terminates on a cycle already
+// in the data. Must be called with the lock held.
+func (r *Registry) wouldCycle(id uuid.UUID, parentID *uuid.UUID) bool {
+	seen := map[uuid.UUID]bool{}
+	for cur := parentID; cur != nil && !seen[*cur]; {
+		if *cur == id {
+			return true
+		}
+		seen[*cur] = true
+		p, ok := r.pages[*cur]
+		if !ok {
+			return false
+		}
+		cur = p.ParentID
+	}
+	return false
+}
+
 func (s *pageStore) Create(_ context.Context, p *model.Page) (*model.Page, error) {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
@@ -451,6 +477,9 @@ func (s *pageStore) Update(_ context.Context, p *model.Page) (*model.Page, error
 	existing, ok := s.r.pages[p.ID]
 	if !ok || existing.UserID != p.UserID {
 		return nil, fmt.Errorf("pages update: not found")
+	}
+	if s.r.wouldCycle(p.ID, p.ParentID) {
+		return nil, store.ErrCycle
 	}
 	p.CreatedAt = existing.CreatedAt
 	p.UpdatedAt = time.Now()
@@ -668,8 +697,12 @@ func (s *pageStore) ListContentVersions(_ context.Context, pageID, userID uuid.U
 func (s *pageStore) IsAncestor(_ context.Context, candidateAncestorID, nodeID uuid.UUID) (bool, error) {
 	s.r.mu.RLock()
 	defer s.r.mu.RUnlock()
+	// seen guards against a parent_id cycle already in the data, which
+	// would otherwise loop forever while holding the lock.
+	seen := map[uuid.UUID]bool{}
 	current := nodeID
-	for {
+	for !seen[current] {
+		seen[current] = true
 		p, ok := s.r.pages[current]
 		if !ok || p.ParentID == nil {
 			return false, nil
@@ -679,6 +712,7 @@ func (s *pageStore) IsAncestor(_ context.Context, candidateAncestorID, nodeID uu
 		}
 		current = *p.ParentID
 	}
+	return false, nil
 }
 
 func (s *pageStore) GetDescendantIDs(_ context.Context, folderID uuid.UUID) ([]uuid.UUID, error) {
@@ -687,11 +721,13 @@ func (s *pageStore) GetDescendantIDs(_ context.Context, folderID uuid.UUID) ([]u
 	// BFS to collect all descendants.
 	result := []uuid.UUID{folderID}
 	queue := []uuid.UUID{folderID}
+	seen := map[uuid.UUID]bool{folderID: true} // terminates on a cycle
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
 		for _, p := range s.r.pages {
-			if p.ParentID != nil && *p.ParentID == current {
+			if p.ParentID != nil && *p.ParentID == current && !seen[p.ID] {
+				seen[p.ID] = true
 				result = append(result, p.ID)
 				queue = append(queue, p.ID)
 			}

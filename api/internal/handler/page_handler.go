@@ -194,6 +194,12 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 
 	page, err := h.Pages.Update(c.Request.Context(), existing)
 	if err != nil {
+		// The store re-checks for a cycle under the tree-move lock, which
+		// catches a concurrent move the check above could not see.
+		if errors.Is(err, store.ErrCycle) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot move a node into one of its own descendants"})
+			return
+		}
 		internalError(c, err)
 		return
 	}
@@ -261,6 +267,12 @@ func (h *PageHandler) UpsertPage(c *gin.Context) {
 	}
 	page, err := h.Pages.Upsert(c.Request.Context(), &body)
 	if err != nil {
+		// PUT shares PATCH's cycle check; the store runs it in the writing
+		// transaction under the tree-move lock.
+		if errors.Is(err, store.ErrCycle) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot move a node into one of its own descendants"})
+			return
+		}
 		notFoundOrError(c, err)
 		return
 	}

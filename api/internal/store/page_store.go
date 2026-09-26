@@ -144,13 +144,9 @@ func (s *pgPageStore) Upsert(ctx context.Context, p *model.Page) (*model.Page, e
 		    updated_at = NOW()
 		  WHERE pages.user_id = $2
 		  RETURNING ` + pageColumns
-	result, err := scanPage(s.pool.QueryRow(ctx, q,
+	return s.writeWithParent(ctx, p.ID, p.ParentID, q,
 		p.ID, p.UserID, p.ParentID, p.Type, p.Title, p.Order, p.Tags, p.Priority, triggerJSON, p.OrgID, p.IsPrivate,
-	))
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
+	)
 }
 func (s *pgPageStore) Create(ctx context.Context, p *model.Page) (*model.Page, error) {
 	triggerJSON, err := marshalNullableJSON(p.TodoTrigger)
@@ -184,10 +180,66 @@ func (s *pgPageStore) Update(ctx context.Context, p *model.Page) (*model.Page, e
 		      org_id=$8, is_private=$9, updated_at=NOW()
 		  WHERE id=$10 AND user_id=$11
 		  RETURNING ` + pageColumns
-	return scanPage(s.pool.QueryRow(ctx, q,
+	return s.writeWithParent(ctx, p.ID, p.ParentID, q,
 		p.Type, p.Title, p.ParentID, p.Order, p.Tags, p.Priority, triggerJSON,
 		p.OrgID, p.IsPrivate, p.ID, p.UserID,
-	))
+	)
+}
+
+// pageTreeMoveLockSQL serialises every write that sets a page's parent, so
+// two moves that are each acyclic on their own (A under B, B under A) cannot
+// both pass the cycle check. Transaction-scoped: released at commit/rollback.
+// Moves are rare, so one lock for the whole tree costs nothing noticeable.
+const pageTreeMoveLockSQL = `SELECT pg_advisory_xact_lock(hashtext('glyph.pages.tree_move'))`
+
+// wouldCycleSQL reports whether page $1 is $2 or one of $2's ancestors, i.e.
+// whether making $2 the parent of $1 would close a cycle. UNION keeps the
+// walk finite even if a cycle is already stored.
+const wouldCycleSQL = `
+	WITH RECURSIVE chain AS (
+		SELECT id, parent_id FROM pages WHERE id = $2
+		UNION
+		SELECT p.id, p.parent_id FROM pages p JOIN chain c ON p.id = c.parent_id
+	)
+	SELECT EXISTS (SELECT 1 FROM chain WHERE id = $1)`
+
+// writeWithParent runs a single-row page write (q, returning pageColumns)
+// that sets parent_id to parentID. When parentID is non-nil the write runs in
+// a transaction holding the tree-move lock, after checking it would not make
+// the page its own ancestor (ErrCycle). PUT and PATCH share this check, and
+// running it under the lock in the writing transaction closes the race
+// between two concurrent moves.
+func (s *pgPageStore) writeWithParent(ctx context.Context, id uuid.UUID, parentID *uuid.UUID, q string, args ...any) (*model.Page, error) {
+	if parentID == nil {
+		return scanPage(s.pool.QueryRow(ctx, q, args...))
+	}
+	if *parentID == id {
+		return nil, ErrCycle
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("page write — begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, pageTreeMoveLockSQL); err != nil {
+		return nil, fmt.Errorf("page write — tree lock: %w", err)
+	}
+	var cycle bool
+	if err := tx.QueryRow(ctx, wouldCycleSQL, id, *parentID).Scan(&cycle); err != nil {
+		return nil, fmt.Errorf("page write — cycle check: %w", err)
+	}
+	if cycle {
+		return nil, ErrCycle
+	}
+	out, err := scanPage(tx.QueryRow(ctx, q, args...))
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("page write — commit: %w", err)
+	}
+	return out, nil
 }
 
 func (s *pgPageStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
@@ -203,12 +255,13 @@ func (s *pgPageStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
 
 // IsAncestor walks the parent_id chain upward from nodeID using a recursive
 // CTE and reports whether candidateAncestorID appears anywhere in that chain.
-// Returns false (not an error) when either ID does not exist.
+// Returns false (not an error) when either ID does not exist. The tree CTEs
+// use UNION so they terminate even on a parent_id cycle already in the data.
 func (s *pgPageStore) IsAncestor(ctx context.Context, candidateAncestorID, nodeID uuid.UUID) (bool, error) {
 	const q = `
 		WITH RECURSIVE ancestors AS (
 			SELECT parent_id FROM pages WHERE id = $2
-			UNION ALL
+			UNION
 			SELECT p.parent_id FROM pages p JOIN ancestors a ON p.id = a.parent_id
 			WHERE a.parent_id IS NOT NULL
 		)
@@ -226,7 +279,7 @@ func (s *pgPageStore) GetDescendantIDs(ctx context.Context, folderID uuid.UUID) 
 	const q = `
 		WITH RECURSIVE descendants AS (
 			SELECT id FROM pages WHERE id = $1
-			UNION ALL
+			UNION
 			SELECT p.id FROM pages p JOIN descendants d ON p.parent_id = d.id
 		)
 		SELECT id FROM descendants`
