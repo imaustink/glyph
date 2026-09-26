@@ -211,6 +211,56 @@ func TestPageIntegrity(t *testing.T) {
 			}
 		},
 
+		// ── PUT /pages/:id must not reset fields it wasn't given ─────────
+		// Omitting isPrivate used to make a private page org-visible, and
+		// order/tags/priority/todoTrigger were reset to zero values.
+		"PutOmittedFieldsKeepTheirValues": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			f := createFolder(t, h, h.UserA.ID, "F")
+			w := h.Do(t, "POST", "/api/v1/pages", map[string]interface{}{
+				"title": "Full", "type": "page", "parentId": f.ID.String(), "order": 7, "tags": []string{"t"},
+				"priority": "high", "todoTrigger": map[string]interface{}{"pattern": "TODO", "matchMode": "prefix", "blockTypes": []string{"listItem"}},
+			}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+			p := Decode[model.Page](t, w)
+			require.True(t, p.IsPrivate)
+
+			w = h.Do(t, "PUT", "/api/v1/pages/"+p.ID.String(), map[string]interface{}{"title": "Renamed", "type": "page"}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			got := getPage(t, h, h.UserA.ID, p.ID)
+			assert.Equal(t, "Renamed", got.Title)
+			assert.True(t, got.IsPrivate, "omitted isPrivate must not make the page visible")
+			assert.Equal(t, 7, got.Order)
+			assert.Equal(t, []string{"t"}, got.Tags)
+			assert.Equal(t, model.PriorityHigh, got.Priority)
+			if assert.NotNil(t, got.TodoTrigger) {
+				assert.Equal(t, "TODO", got.TodoTrigger.Pattern)
+			}
+			if assert.NotNil(t, got.ParentID) {
+				assert.Equal(t, f.ID, *got.ParentID)
+			}
+
+			// Explicit values (including null parent) still replace.
+			w = h.Do(t, "PUT", "/api/v1/pages/"+p.ID.String(), map[string]interface{}{
+				"title": "Renamed", "type": "page", "isPrivate": false, "parentId": nil, "tags": []string{},
+			}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			got = getPage(t, h, h.UserA.ID, p.ID)
+			assert.False(t, got.IsPrivate)
+			assert.Nil(t, got.ParentID)
+			assert.Equal(t, []string{}, got.Tags)
+		},
+
+		// A page created through PUT is private unless it says otherwise,
+		// like POST.
+		"PutCreateDefaultsToPrivate": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			id := uuid.New()
+			w := h.Do(t, "PUT", "/api/v1/pages/"+id.String(), map[string]interface{}{"title": "New", "type": "page"}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.True(t, getPage(t, h, h.UserA.ID, id).IsPrivate)
+		},
+
 		// ── DI-02: folder delete must not destroy other users' work ──────
 		"DI02_DeleteFolderContainingOtherUsersPageRefused": func(t *testing.T, h *Harness) {
 			h.ResetDB(t)
