@@ -179,8 +179,60 @@ describe('seeding', () => {
 		expect(normaliseForSeed(out).content!.map((n) => n.type)).toEqual(['bulletList', 'paragraph']);
 	});
 
-	it('refuses to seed content the schema cannot represent rather than dropping it', () => {
-		expect(() => seedUpdate(schema, { type: 'doc', content: [{ type: 'mystery' }] })).toThrow();
+	// DI-01: content saved before the API's allowlist matched the editor
+	// schema can hold nodes and marks the editor lacks. The API serves such
+	// content downgraded (NormalizeStoredContent); seeding must do the same,
+	// or the note can never be opened collaboratively.
+	describe('downgrades legacy content the way the API does', () => {
+		const seeded = (content: unknown[]) => {
+			const doc = new Y.Doc();
+			Y.applyUpdate(doc, seedUpdate(schema, { type: 'doc', content } as never));
+			return toJSON(doc).content;
+		};
+
+		it('turns a block image into a paragraph linking to its source', () => {
+			expect(seeded([{ type: 'image', attrs: { src: 'https://e.com/a.png', alt: 'diagram' } }])[0]).toEqual({
+				type: 'paragraph',
+				content: [{ type: 'text', text: 'diagram', marks: [{ type: 'link', attrs: expect.objectContaining({ href: 'https://e.com/a.png' }) }] }]
+			});
+		});
+
+		it('keeps an image with an unsafe source as plain text', () => {
+			expect(seeded([{ type: 'image', attrs: { src: 'javascript:alert(1)', alt: 'x' } }])[0]).toEqual({
+				type: 'paragraph',
+				content: [{ type: 'text', text: 'x' }]
+			});
+		});
+
+		it('drops a mark the editor lacks but keeps its text', () => {
+			const content = seeded([
+				{ type: 'paragraph', content: [{ type: 'text', text: 'hot', marks: [{ type: 'highlight' }, { type: 'bold' }] }] }
+			]);
+			expect(content[0]).toEqual({ type: 'paragraph', content: [{ type: 'text', text: 'hot', marks: [{ type: 'bold' }] }] });
+		});
+
+		it('keeps the text and known children of an unknown block', () => {
+			const content = seeded([
+				{
+					type: 'mystery',
+					content: [
+						{ type: 'text', text: 'loose' },
+						{ type: 'paragraph', content: [{ type: 'text', text: 'kept' }] }
+					]
+				}
+			]);
+			expect(content.slice(0, 2)).toEqual([
+				{ type: 'paragraph', content: [{ type: 'text', text: 'loose' }] },
+				{ type: 'paragraph', content: [{ type: 'text', text: 'kept' }] }
+			]);
+		});
+
+		it('flattens an unknown inline node to its text', () => {
+			const content = seeded([
+				{ type: 'paragraph', content: [{ type: 'text', text: 'a ' }, { type: 'mention', content: [{ type: 'text', text: '@bo' }] }] }
+			]);
+			expect(content[0]).toEqual({ type: 'paragraph', content: [{ type: 'text', text: 'a @bo' }] });
+		});
 	});
 });
 
