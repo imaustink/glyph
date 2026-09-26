@@ -5,6 +5,8 @@
 
 import { tasksStore } from '$lib/stores/tasks.svelte';
 import { uiStore } from '$lib/stores/ui.svelte';
+
+const pendingKey = (taskId: string) => `task-title:${taskId}`;
 import { DEBOUNCE } from '$lib/models/constants';
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -16,9 +18,15 @@ const pendingUpdates = new Map<string, string>();
  */
 export function debouncedTaskTitleUpdate(taskId: string, title: string): void {
   pendingUpdates.set(taskId, title);
+  uiStore.trackPendingWrite(pendingKey(taskId), true);
   const existing = timers.get(taskId);
   if (existing) clearTimeout(existing);
   timers.set(taskId, setTimeout(() => flushTaskTitleUpdate(taskId), DEBOUNCE.TASK_TITLE));
+}
+
+/** Whether any task title write is waiting on its debounce timer. */
+export function hasPendingTaskTitleUpdates(): boolean {
+  return pendingUpdates.size > 0;
 }
 
 /** Whether a title write for this task is waiting on its debounce timer. */
@@ -35,6 +43,7 @@ export async function flushTaskTitleUpdate(taskId: string): Promise<void> {
   timers.delete(taskId);
   const title = pendingUpdates.get(taskId);
   pendingUpdates.delete(taskId);
+  uiStore.trackPendingWrite(pendingKey(taskId), false);
   if (title == null) return;
   uiStore.markSaving();
   try {

@@ -99,6 +99,8 @@
   // Block SvelteKit client-side navigation while saves are in-flight.
   // The navigation is cancelled and retried once all pending writes resolve.
   let navRetrying = false;
+  /** Where to go once pending writes settle: the latest navigation requested meanwhile. */
+  let retryTarget: string | null = null;
   beforeNavigate((navigation) => {
     // Close sidebar on mobile when navigating
     if (window.innerWidth <= 768) {
@@ -110,11 +112,22 @@
 
     if (uiStore.hasPendingWrites && navigation.to) {
       navigation.cancel();
-      navRetrying = true;
-      // Wait for saves with a 2-second timeout to prevent blocking the user
-      uiStore.waitForSaveComplete(2000).finally(() => {
-        navRetrying = false;
-        goto(navigation.to!.url.pathname);
+      // A navigation requested while waiting replaces the earlier one rather
+      // than slipping through and then being undone by the earlier retry.
+      const alreadyWaiting = retryTarget !== null;
+      retryTarget = navigation.to.url.pathname;
+      if (alreadyWaiting) return;
+      // Wait for saves with a 2-second timeout to prevent blocking the user.
+      // navRetrying stays set until the retried navigation has run, so it
+      // passes this guard even if a write is still pending (e.g. timed out) —
+      // otherwise the guard would cancel and retry it forever.
+      uiStore.waitForSaveComplete(2000).catch(() => {}).finally(() => {
+        const target = retryTarget!;
+        retryTarget = null;
+        navRetrying = true;
+        goto(target).finally(() => {
+          navRetrying = false;
+        });
       });
     }
   });

@@ -33,6 +33,9 @@ test.describe('Editor data integrity', () => {
 		test.skip(storageMode !== 'local', 'seeds the stored document directly in localStorage');
 		const pageId = new URL(page.url()).pathname.split('/').pop()!;
 		const key = `glyph:content:${pageId}`;
+		// Let the landing page's own saves (e.g. nodeId assignment) land first,
+		// so they can't overwrite the document seeded below.
+		await page.waitForTimeout(1000);
 		// An image node: accepted by the API (and produced by MCP markdown), but
 		// not part of the editor schema.
 		await page.evaluate((key) => {

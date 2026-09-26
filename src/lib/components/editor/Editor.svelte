@@ -19,6 +19,7 @@
   import { useContentSave } from '$lib/editor/useContentSave';
   import { useTaskCreation, type PendingTaskDetails } from '$lib/editor/useTaskCreation';
   import { useTaskSync } from '$lib/editor/useTaskSync';
+  import { hasPendingTaskTitleUpdates } from '$lib/editor/useTaskTitleDebounce';
   import { useBulletRemoval } from '$lib/editor/useBulletRemoval';
   import { applyStoredContent, checkStoredContent } from '$lib/editor/loadDocument';
   import { storageMode } from '$lib/storage/config';
@@ -516,9 +517,17 @@
       .catch((err) => console.error('[Editor] Settling removed bullets failed:', err));
   }
 
-  /** Warn before leaving with collaborative edits the server hasn't acknowledged. */
+  /**
+   * Warn before leaving with edits that aren't stored yet: collaborative
+   * edits the server hasn't acknowledged, or — single-writer — a content save
+   * or task title write still waiting on its debounce or in flight (DI-30).
+   */
   function handleBeforeUnload(e: BeforeUnloadEvent) {
-    if (mode === 'collab' && session?.hasUnsyncedChanges) {
+    const unsaved =
+      (mode === 'collab' && session?.hasUnsyncedChanges) ||
+      contentSave.hasPendingWork() ||
+      hasPendingTaskTitleUpdates();
+    if (unsaved) {
       e.preventDefault();
       // WebKit/Safari (and older engines) only show the leave-confirmation when
       // returnValue is set to a non-empty value; preventDefault() alone is
@@ -527,11 +536,29 @@
     }
   }
 
+  /**
+   * The page is being hidden (tab switch, app switch on mobile) or unloaded:
+   * send the debounced writes now rather than when their timers fire, which
+   * may be never. The API client sends them with keepalive while the page is
+   * hidden so they survive the tab closing (DI-30).
+   */
+  function handleVisibilityChange() {
+    if (document.visibilityState === 'hidden') void contentSave.flushAll();
+  }
+
+  function handlePageHide() {
+    void contentSave.flushAll();
+    // Leaving for good: apply deferred local-mode task deletions too.
+    void settleBulletRemoval();
+  }
+
   onMount(async () => {
     if (!editorEl) return;
     mounted = true;
     prevPageId = pageId;
     window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handlePageHide);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     await openPage(pageId);
   });
 
@@ -565,7 +592,11 @@
     openGeneration++;
     const flushPromise = Promise.all([contentSave.flushAll(), settleBulletRemoval()]).then(() => {});
     uiStore.registerPendingFlush(flushPromise);
-    if (typeof window !== 'undefined') window.removeEventListener('beforeunload', handleBeforeUnload);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handlePageHide);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    }
     contentSave.destroy();
     bulletRemoval.destroy();
     teardownEditor();

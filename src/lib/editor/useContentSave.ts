@@ -11,8 +11,10 @@ export interface ContentSaveHandle {
 	scheduleSave(editor: Editor, pageId: string): void;
 	/** Immediately persist any pending content save. */
 	flushContentSave(): Promise<void>;
-	/** Flush all pending writes (content + task titles). */
+	/** Flush all pending writes (content + task titles). Never rejects. */
 	flushAll(): Promise<void>;
+	/** Whether a content save is waiting on its timer, queued, or in flight. */
+	hasPendingWork(): boolean;
 	/** Clean up timers. */
 	destroy(): void;
 }
@@ -24,11 +26,20 @@ export interface ContentSaveHandle {
  */
 export type ContentConflictHandler = (pageId: string) => void;
 
+let instanceCounter = 0;
+
 export function useContentSave(
 	onchange?: () => void,
 	onConflict?: ContentConflictHandler
 ): ContentSaveHandle {
 	let saveTimer: ReturnType<typeof setTimeout> | null = null;
+	// Registered with uiStore while the debounce timer is armed, so the
+	// navigation guard and tab-close warning see the waiting save (DI-30).
+	const pendingKey = `content-save:${++instanceCounter}`;
+	function clearTimer() {
+		if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+		uiStore.trackPendingWrite(pendingKey, false);
+	}
 	let pendingContentJson: Record<string, unknown> | null = null;
 	let pendingContentPageId: string | null = null;
 	// At most one save may be in flight at a time. saveContent reads the known
@@ -64,7 +75,7 @@ export function useContentSave(
 				// stale copy. Sent after the reload it would carry the fresh
 				// revision and overwrite the other writer's content (DI-04).
 				if (pendingContentPageId === pid) {
-					if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+					clearTimer();
 					pendingContentJson = null;
 					pendingContentPageId = null;
 				}
@@ -84,7 +95,7 @@ export function useContentSave(
 	}
 
 	async function flushContentSave(): Promise<void> {
-		if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+		clearTimer();
 		// A save is already running: wait for it to settle rather than starting a
 		// concurrent PUT with a stale precondition. Once it finishes, persist the
 		// latest pending content — unless another waiter already claimed it.
@@ -119,14 +130,19 @@ export function useContentSave(
 		pendingContentJson = editor.getJSON() as Record<string, unknown>;
 		pendingContentPageId = pageId;
 		if (saveTimer) clearTimeout(saveTimer);
+		uiStore.trackPendingWrite(pendingKey, true);
 		saveTimer = setTimeout(async () => {
 			await flushContentSave();
 		}, DEBOUNCE.CONTENT_SAVE);
 	}
 
-	function destroy() {
-		if (saveTimer) clearTimeout(saveTimer);
+	function hasPendingWork(): boolean {
+		return saveTimer !== null || pendingContentJson !== null || inFlight !== null;
 	}
 
-	return { scheduleSave, flushContentSave, flushAll, destroy };
+	function destroy() {
+		clearTimer();
+	}
+
+	return { scheduleSave, flushContentSave, flushAll, hasPendingWork, destroy };
 }

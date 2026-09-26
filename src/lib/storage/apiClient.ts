@@ -69,6 +69,12 @@ export function handleAuthError(err: unknown): never {
 
 // ─── Request ───────────────────────────────────────────────────────────────────
 
+/**
+ * Browsers refuse keepalive requests whose bodies (all in flight together)
+ * exceed 64 KiB; stay under it with some room.
+ */
+const KEEPALIVE_MAX_BODY = 60_000;
+
 /** Default request timeout in milliseconds (15 seconds). */
 const REQUEST_TIMEOUT_MS = 15_000;
 
@@ -98,6 +104,16 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 	};
 	if (body !== undefined) {
 		init.body = JSON.stringify(body);
+		// A write started while the page is hidden — the editor flushes on
+		// visibilitychange/pagehide — must outlive the page, or closing the
+		// tab cancels it and drops the last edits (DI-30).
+		if (
+			typeof document !== 'undefined' &&
+			document.visibilityState === 'hidden' &&
+			init.body.length <= KEEPALIVE_MAX_BODY
+		) {
+			init.keepalive = true;
+		}
 	}
 
 	let res: Response;
