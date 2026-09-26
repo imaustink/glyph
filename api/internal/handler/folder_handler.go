@@ -67,6 +67,9 @@ func (h *FolderHandler) CreateFolderLane(c *gin.Context) {
 	if !bindJSON(c, &body) {
 		return
 	}
+	if !checkLaneConfig(c, &body.FilterSet, &body.SortConfig) {
+		return
+	}
 	body.UserID = user.ID
 	body.FolderID = &folderID
 	if body.FilterSet.Rules == nil {
@@ -115,6 +118,9 @@ func (h *FolderHandler) UpdateFolderLane(c *gin.Context) {
 	}
 	var req UpdateFolderLaneRequest
 	if !bindJSON(c, &req) {
+		return
+	}
+	if !checkLaneConfig(c, req.FilterSet, req.SortConfig) {
 		return
 	}
 	// Merge only the fields the client actually sent. Assigning every field
