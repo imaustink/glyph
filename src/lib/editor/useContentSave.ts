@@ -59,6 +59,15 @@ export function useContentSave(
 				// of silently overwriting it with our stale copy. The reload
 				// also switches to the collaborative editor where applicable.
 				pagesStore.forgetRevision(pid);
+				// Anything still waiting for this page — its debounce timer
+				// armed, or queued behind this save — was built on the same
+				// stale copy. Sent after the reload it would carry the fresh
+				// revision and overwrite the other writer's content (DI-04).
+				if (pendingContentPageId === pid) {
+					if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+					pendingContentJson = null;
+					pendingContentPageId = null;
+				}
 				notificationsStore.error(
 					apiErrorCode(err) === 'collaborative'
 						? 'This note is now being edited collaboratively. Reloading it — your last few seconds of edits were not applied.'
