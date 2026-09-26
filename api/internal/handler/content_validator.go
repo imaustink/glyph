@@ -340,8 +340,8 @@ func inlineOf(n map[string]interface{}) []map[string]interface{} {
 	var out []map[string]interface{}
 	for _, c := range childNodes(n) {
 		ct, _ := c["type"].(string)
-		switch {
-		case ct == "text" || ct == "hardBreak":
+		switch ct {
+		case "text", "hardBreak":
 			if ct == "text" {
 				if s, _ := c["text"].(string); s == "" {
 					continue
