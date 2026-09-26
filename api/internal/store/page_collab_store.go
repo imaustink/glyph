@@ -213,7 +213,10 @@ func (s *pgPageStore) RestoreContentVersion(ctx context.Context, pageID uuid.UUI
 		schemaVersion int
 	)
 	if err := tx.QueryRow(ctx,
-		`SELECT content, schema_version FROM page_content_versions WHERE id = $1 AND page_id = $2`,
+		// History outlives a deleted page; a page re-created under the same
+		// id (PUT with a client-chosen id) must not reach the old one's.
+		`SELECT v.content, v.schema_version FROM page_content_versions v JOIN pages p ON p.id = v.page_id
+		 WHERE v.id = $1 AND v.page_id = $2 AND v.replaced_at >= p.created_at`,
 		versionID, pageID,
 	).Scan(&content, &schemaVersion); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

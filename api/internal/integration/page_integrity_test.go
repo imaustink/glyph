@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -240,6 +241,31 @@ func TestPageIntegrity(t *testing.T) {
 			}
 			rows.Close()
 			assert.Equal(t, []string{"first", "second"}, texts, "history and last content must survive the delete")
+		},
+
+		// Kept history must not leak to whoever re-creates a page under the
+		// deleted page's id (PUT takes a client-chosen id).
+		"DI02_RecreatedPageIDDoesNotSeeOldHistory": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			p := createPage(t, h, h.UserA.ID, "Secret")
+			_, pc := putContent(t, h, p.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("secret")})
+			code, _ := putContent(t, h, p.ID.String(), h.UserA.ID, map[string]interface{}{"content": doc("v2"), "expectedRevision": pc.Revision})
+			require.Equal(t, http.StatusOK, code)
+			w := h.Do(t, "GET", "/api/v1/pages/"+p.ID.String()+"/content/versions", nil, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code)
+			old := Decode[[]model.PageContentVersion](t, w)
+			require.Len(t, old, 1)
+
+			require.Equal(t, http.StatusNoContent, h.Do(t, "DELETE", "/api/v1/pages/"+p.ID.String(), nil, h.UserA.ID).Code)
+			time.Sleep(5 * time.Millisecond) // created_at strictly after the archived versions
+
+			w = h.Do(t, "PUT", "/api/v1/pages/"+p.ID.String(), map[string]interface{}{"title": "Mine now", "type": "page"}, h.UserB.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			w = h.Do(t, "GET", "/api/v1/pages/"+p.ID.String()+"/content/versions", nil, h.UserB.ID)
+			require.Equal(t, http.StatusOK, w.Code)
+			assert.Empty(t, Decode[[]model.PageContentVersion](t, w))
+			w = h.Do(t, "POST", fmt.Sprintf("/api/v1/pages/%s/content/versions/%d/restore", p.ID, old[0].ID), nil, h.UserB.ID)
+			assert.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
 		},
 	})
 }

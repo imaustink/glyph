@@ -242,13 +242,76 @@ func (s *pgPageStore) writeWithParent(ctx context.Context, id uuid.UUID, parentI
 	return out, nil
 }
 
+// pageSubtreeCTE collects page $1 and all its descendants. UNION keeps it
+// finite on a parent_id cycle.
+const pageSubtreeCTE = `
+	WITH RECURSIVE subtree AS (
+		SELECT id FROM pages WHERE id = $1
+		UNION
+		SELECT p.id FROM pages p JOIN subtree s ON p.parent_id = s.id
+	)`
+
+// Delete removes a page or folder and its whole subtree, in one transaction.
+//
+// The pages.parent_id cascade deletes every descendant regardless of owner,
+// and editor shares / org roles let other users create pages inside someone
+// else's folder. Deleting such a subtree is therefore refused
+// (ErrSubtreeNotOwned) unless the caller owns every page in it. Before the
+// rows go, each page's current content is archived into
+// page_content_versions, which no longer cascades with its page, so a deleted
+// note is recoverable.
 func (s *pgPageStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM pages WHERE id=$1 AND user_id=$2`, id, userID)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("page delete — begin: %w", err)
 	}
-	if result.RowsAffected() == 0 {
-		return ErrNotFound
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var rootID uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`SELECT id FROM pages WHERE id = $1 AND user_id = $2 FOR UPDATE`, id, userID,
+	).Scan(&rootID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("page delete — lookup: %w", err)
+	}
+
+	// Lock the subtree so nothing can be created in or moved into it (both
+	// need a key-share lock on the parent row) while we check and delete.
+	// The read below is a new statement, so it also sees any child that
+	// committed while we were acquiring the locks.
+	if _, err := tx.Exec(ctx,
+		pageSubtreeCTE+` SELECT 1 FROM pages p JOIN subtree s ON s.id = p.id FOR UPDATE OF p`, id,
+	); err != nil {
+		return fmt.Errorf("page delete — lock subtree: %w", err)
+	}
+	var (
+		ids     []uuid.UUID
+		foreign int
+	)
+	if err := tx.QueryRow(ctx,
+		pageSubtreeCTE+` SELECT COALESCE(array_agg(p.id), '{}'), COUNT(*) FILTER (WHERE p.user_id <> $2)
+		FROM pages p JOIN subtree s ON s.id = p.id`, id, userID,
+	).Scan(&ids, &foreign); err != nil {
+		return fmt.Errorf("page delete — read subtree: %w", err)
+	}
+	if foreign > 0 {
+		return ErrSubtreeNotOwned
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO page_content_versions (page_id, content, revision, schema_version, replaced_at)
+		 SELECT page_id, content, revision, schema_version, updated_at
+		 FROM page_contents WHERE page_id = ANY($1) AND content IS NOT NULL`, ids,
+	); err != nil {
+		return fmt.Errorf("page delete — archive content: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM pages WHERE id = ANY($1)`, ids); err != nil {
+		return fmt.Errorf("page delete: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("page delete — commit: %w", err)
 	}
 	return nil
 }
@@ -543,7 +606,9 @@ func reconcileSourceTasksLocked(ctx context.Context, tx pgx.Tx, pageID uuid.UUID
 }
 
 // ListContentVersions returns superseded revisions for a page, newest first.
-// Access is gated by the same read filter used by GetContent.
+// Access is gated by the same read filter used by GetContent. Versions older
+// than the page row belong to a deleted page that had the same id and are
+// not returned.
 func (s *pgPageStore) ListContentVersions(ctx context.Context, pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error) {
 	if limit <= 0 || limit > maxContentVersionList {
 		limit = maxContentVersionList
@@ -552,7 +617,7 @@ func (s *pgPageStore) ListContentVersions(ctx context.Context, pageID, userID uu
 		SELECT v.id, v.page_id, v.content, v.revision, v.schema_version, v.replaced_at
 		FROM page_content_versions v
 		JOIN pages p ON p.id = v.page_id
-		WHERE v.page_id = $2 AND (
+		WHERE v.page_id = $2 AND v.replaced_at >= p.created_at AND (
 			p.user_id = $1
 			OR (p.org_id IS NOT NULL AND p.is_private = false
 			    AND p.org_id IN (SELECT org_id FROM org_members WHERE user_id = $1))

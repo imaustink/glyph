@@ -488,16 +488,75 @@ func (s *pageStore) Update(_ context.Context, p *model.Page) (*model.Page, error
 	return clonePage(stored), nil
 }
 
+// Delete mirrors the Postgres store: ErrNotFound unless the caller owns the
+// page, ErrSubtreeNotOwned if any descendant belongs to someone else, and
+// otherwise the whole subtree goes, as the parent_id cascade does — with each
+// page's content archived into the history, which outlives the page.
 func (s *pageStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
 	p, ok := s.r.pages[id]
 	if !ok || p.UserID != userID {
-		return nil
+		return store.ErrNotFound
 	}
-	delete(s.r.pages, id)
-	delete(s.r.contents, id)
+	ids := s.r.subtreeIDs(id)
+	for _, pid := range ids {
+		if s.r.pages[pid].UserID != userID {
+			return store.ErrSubtreeNotOwned
+		}
+	}
+	inSubtree := make(map[uuid.UUID]bool, len(ids))
+	for _, pid := range ids {
+		inSubtree[pid] = true
+		if cur, ok := s.r.contents[pid]; ok {
+			s.r.versionSeq++
+			s.r.contentVersions[pid] = append(s.r.contentVersions[pid], model.PageContentVersion{
+				ID: s.r.versionSeq, PageID: pid, Content: cur.Content, Revision: cur.Revision,
+				SchemaVersion: cur.SchemaVersion, ReplacedAt: cur.UpdatedAt,
+			})
+		}
+		delete(s.r.pages, pid)
+		delete(s.r.contents, pid)
+		delete(s.r.collab, pid)
+	}
+	// Mirror the remaining foreign keys: lanes.folder_id cascades, and the
+	// task references are SET NULL.
+	for lid, l := range s.r.lanes {
+		if l.FolderID != nil && inSubtree[*l.FolderID] {
+			delete(s.r.lanes, lid)
+		}
+	}
+	clearRefs := func(t *model.Task) {
+		if t.SourcePageID != nil && inSubtree[*t.SourcePageID] {
+			t.SourcePageID = nil
+		}
+		if t.FolderID != nil && inSubtree[*t.FolderID] {
+			t.FolderID = nil
+		}
+	}
+	for _, t := range s.r.tasks {
+		clearRefs(t)
+	}
+	for _, d := range s.r.deletedTasks {
+		clearRefs(d.task)
+	}
 	return nil
+}
+
+// subtreeIDs returns id and all its descendants, terminating on a cycle.
+// Must be called with the lock held.
+func (r *Registry) subtreeIDs(id uuid.UUID) []uuid.UUID {
+	out := []uuid.UUID{id}
+	seen := map[uuid.UUID]bool{id: true}
+	for i := 0; i < len(out); i++ {
+		for _, p := range r.pages {
+			if p.ParentID != nil && *p.ParentID == out[i] && !seen[p.ID] {
+				seen[p.ID] = true
+				out = append(out, p.ID)
+			}
+		}
+	}
+	return out
 }
 
 func (s *pageStore) GetContent(_ context.Context, pageID, userID uuid.UUID) (*model.PageContent, error) {
@@ -685,8 +744,12 @@ func (s *pageStore) ListContentVersions(_ context.Context, pageID, userID uuid.U
 	}
 	src := s.r.contentVersions[pageID]
 	out := []model.PageContentVersion{}
-	// Newest first.
+	// Newest first. Versions older than the page belong to a deleted page
+	// that had the same id (mirrors the Postgres replaced_at >= created_at).
 	for i := len(src) - 1; i >= 0 && len(out) < limit; i-- {
+		if src[i].ReplacedAt.Before(p.CreatedAt) {
+			continue
+		}
 		out = append(out, src[i])
 	}
 	return out, nil

@@ -227,6 +227,12 @@ func (h *PageHandler) DeletePage(c *gin.Context) {
 		return
 	}
 	if err := h.Pages.Delete(c.Request.Context(), id, user.ID); err != nil {
+		if errors.Is(err, store.ErrSubtreeNotOwned) {
+			// Deleting would cascade to pages other users created inside
+			// this folder. They must move or delete their pages first.
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "subtree_has_other_owners"})
+			return
+		}
 		notFoundOrError(c, err)
 		return
 	}

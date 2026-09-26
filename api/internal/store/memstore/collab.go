@@ -121,7 +121,7 @@ func (s *pageStore) RestoreContentVersion(_ context.Context, pageID uuid.UUID, v
 	}
 	var version *model.PageContentVersion
 	for i := range s.r.contentVersions[pageID] {
-		if s.r.contentVersions[pageID][i].ID == versionID {
+		if s.r.contentVersions[pageID][i].ID == versionID && !s.r.contentVersions[pageID][i].ReplacedAt.Before(p.CreatedAt) {
 			v := s.r.contentVersions[pageID][i]
 			version = &v
 		}

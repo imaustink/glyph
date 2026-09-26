@@ -174,8 +174,10 @@ func TestPageStore_ListByUserPaginated_RowsErr(t *testing.T) {
 
 func TestPageStore_Delete_ExecError(t *testing.T) {
 	pool := &mockPool{
-		execFn: func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-			return pgconn.CommandTag{}, errors.New("exec error")
+		beginFn: func(ctx context.Context) (pgx.Tx, error) {
+			return &mockTx{execFn: func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+				return pgconn.CommandTag{}, errors.New("exec error")
+			}}, nil
 		},
 	}
 	s := NewPageStore(pool)
@@ -187,8 +189,10 @@ func TestPageStore_Delete_ExecError(t *testing.T) {
 
 func TestPageStore_Delete_NotFound(t *testing.T) {
 	pool := &mockPool{
-		execFn: func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-			return pgconn.NewCommandTag("DELETE 0"), nil
+		beginFn: func(ctx context.Context) (pgx.Tx, error) {
+			return &mockTx{queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+				return &mockRow{scanFn: func(dest ...any) error { return pgx.ErrNoRows }}
+			}}, nil
 		},
 	}
 	s := NewPageStore(pool)
