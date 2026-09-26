@@ -96,7 +96,19 @@ export class TimeoutError extends Error {
 	}
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+/** Per-request options. */
+export interface RequestOptions {
+	/**
+	 * Send with `keepalive` so the request survives the page unloading (used
+	 * to flush pending edits on pagehide/beforeunload). Browsers cap keepalive
+	 * bodies at 64 KiB, so larger bodies are sent normally.
+	 */
+	keepalive?: boolean;
+}
+
+const KEEPALIVE_MAX_BODY = 60_000;
+
+async function request<T>(method: string, path: string, body?: unknown, opts?: RequestOptions): Promise<T> {
 	const url = `${API_BASE}${path}`;
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -112,6 +124,9 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 	};
 	if (body !== undefined) {
 		init.body = JSON.stringify(body);
+	}
+	if (opts?.keepalive && (typeof init.body !== 'string' || init.body.length <= KEEPALIVE_MAX_BODY)) {
+		init.keepalive = true;
 	}
 
 	let res: Response;
@@ -146,7 +161,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const api = {
 	get: <T>(path: string) => request<T>('GET', path),
 	post: <T>(path: string, body: unknown) => request<T>('POST', path, body),
-	patch: <T>(path: string, body: unknown) => request<T>('PATCH', path, body),
+	patch: <T>(path: string, body: unknown, opts?: RequestOptions) => request<T>('PATCH', path, body, opts),
 	put: <T>(path: string, body: unknown) => request<T>('PUT', path, body),
 	del: (path: string) => request<void>('DELETE', path),
 	getOrNull: <T>(path: string): Promise<T | null> =>

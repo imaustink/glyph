@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { tasksStore } from '$lib/stores/tasks.svelte';
   import { pagesStore } from '$lib/stores/pages.svelte';
@@ -12,6 +12,7 @@
   import MarkdownEditor from '$lib/components/shared/MarkdownEditor.svelte';
   import { authStore } from '$lib/stores/auth.svelte';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
+  import { uiStore } from '$lib/stores/ui.svelte';
   import { storageMode } from '$lib/storage/config';
   import { api } from '$lib/storage/apiClient';
   import type { Priority, TaskStatus, LinkMeta } from '$lib/models/types';
@@ -111,39 +112,68 @@
   let _pendingDesc = '';
   let _pendingDescTaskId: string | null = null;
   let _descTimer: ReturnType<typeof setTimeout> | null = null;
+  /** uiStore key while the debounce is armed, so navigation waits for it. */
+  const DESC_DEBOUNCE_KEY = 'task-description';
+
   function handleDescChange(markdown: string) {
     if (!task) return;
     _pendingDesc = markdown;
     _pendingDescTaskId = task.id;
     if (_descTimer) clearTimeout(_descTimer);
+    uiStore.setPendingDebounce(DESC_DEBOUNCE_KEY, true);
     _descTimer = setTimeout(() => {
-      _descTimer = null;
-      const targetTaskId = _pendingDescTaskId;
-      const markdownToSave = _pendingDesc;
-      _pendingDescTaskId = null;
-      if (!targetTaskId) return;
-      tasksStore
-        .updateTask(targetTaskId, { description: markdownToSave })
-        .catch((err) => {
-          notificationsStore.error('Failed to save changes. Please try again.');
-          console.error('description save failed:', err);
-        });
+      flushDescription().catch((err) => {
+        notificationsStore.error('Failed to save changes. Please try again.');
+        console.error('description save failed:', err);
+      });
     }, 600);
   }
+
+  /**
+   * Send the pending description now, against the task it was typed for.
+   * `keepalive` lets the request outlive the page (unload flush).
+   */
+  function flushDescription(opts?: { keepalive?: boolean }): Promise<void> {
+    if (_descTimer) { clearTimeout(_descTimer); _descTimer = null; }
+    uiStore.setPendingDebounce(DESC_DEBOUNCE_KEY, false);
+    const targetTaskId = _pendingDescTaskId;
+    const markdownToSave = _pendingDesc;
+    _pendingDescTaskId = null;
+    if (!targetTaskId) return Promise.resolve();
+    return tasksStore.updateTask(targetTaskId, { description: markdownToSave }, opts);
+  }
+
+  // Closing or reloading the tab inside the debounce window used to drop the
+  // edit. Flush on the first unload signal; beforeunload and pagehide both
+  // fire on a reload, visibilitychange covers mobile tab switches and closes.
+  function flushOnUnload() {
+    if (!_pendingDescTaskId) return;
+    flushDescription({ keepalive: true }).catch((err) => console.error('description unload flush failed:', err));
+  }
+  function flushWhenHidden() {
+    if (document.visibilityState === 'hidden') flushOnUnload();
+  }
+
+  onMount(() => {
+    window.addEventListener('beforeunload', flushOnUnload);
+    window.addEventListener('pagehide', flushOnUnload);
+    document.addEventListener('visibilitychange', flushWhenHidden);
+  });
 
   // Flush any pending description edit immediately on unmount so it lands
   // against its captured task rather than waiting out the debounce window.
   onDestroy(() => {
-    if (!_descTimer) return;
-    clearTimeout(_descTimer);
-    _descTimer = null;
-    const targetTaskId = _pendingDescTaskId;
-    const markdownToSave = _pendingDesc;
-    _pendingDescTaskId = null;
-    if (!targetTaskId) return;
-    tasksStore
-      .updateTask(targetTaskId, { description: markdownToSave })
-      .catch((err) => console.error('description flush failed:', err));
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('beforeunload', flushOnUnload);
+      window.removeEventListener('pagehide', flushOnUnload);
+      document.removeEventListener('visibilitychange', flushWhenHidden);
+    }
+    if (!_pendingDescTaskId) {
+      uiStore.setPendingDebounce(DESC_DEBOUNCE_KEY, false);
+      return;
+    }
+    const flush = flushDescription().catch((err) => console.error('description flush failed:', err));
+    uiStore.registerPendingFlush(flush);
   });
 
   // ── Link / URL unfurl ────────────────────────────────────────────────────

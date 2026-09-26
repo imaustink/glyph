@@ -1,6 +1,6 @@
 import { repositories } from '$lib/storage/config';
 import { ApiError } from '$lib/storage/apiClient';
-import type { ITaskRepository } from '$lib/storage/interfaces';
+import type { ITaskRepository, WriteOptions } from '$lib/storage/interfaces';
 import type { FilterContext } from '$lib/storage/filterUtils';
 import type { Task, FilterSet, Priority, TaskStatus, TreeNode } from '$lib/models/types';
 import { now, makeTimestamps } from '$lib/utils/time';
@@ -161,9 +161,13 @@ export function createTasksStore(injectedRepo?: ITaskRepository) {
     replace: (task) => setTasks(tasks.map((t) => (t.id === task.id ? task : t)))
   });
 
-  async function updateTask(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>): Promise<void> {
+  async function updateTask(
+    id: string,
+    patch: Partial<Omit<Task, 'id' | 'createdAt'>>,
+    opts?: WriteOptions
+  ): Promise<void> {
     const full = { ...patch, updatedAt: now() };
-    return _writer.update(id, full, () => repo.update(id, full), () => repo.getById(id));
+    return _writer.update(id, full, () => repo.update(id, full, opts), () => repo.getById(id));
   }
 
   async function deleteTask(id: string): Promise<void> {

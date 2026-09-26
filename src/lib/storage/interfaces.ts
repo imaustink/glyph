@@ -11,11 +11,17 @@ import type { FilterContext } from '$lib/storage/filterUtils';
 
 // ─── Base Repository Interface ────────────────────────────────────────────────
 
+/** Options for a single write. */
+export interface WriteOptions {
+  /** Send so it survives the page unloading (API: fetch keepalive). */
+  keepalive?: boolean;
+}
+
 export interface IRepository<T extends { id: string }> {
   getAll(): Promise<T[]>;
   getById(id: string): Promise<T | null>;
   create(item: T): Promise<T>;
-  update(id: string, patch: Partial<Omit<T, 'id'>>): Promise<T | null>;
+  update(id: string, patch: Partial<Omit<T, 'id'>>, opts?: WriteOptions): Promise<T | null>;
   delete(id: string): Promise<boolean>;
   upsert(item: T): Promise<T>;
   deleteMany?(ids: string[]): Promise<void>;

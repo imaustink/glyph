@@ -71,6 +71,21 @@ describe('apiClient', () => {
       await api.patch('/api/v1/items/1', { title: 'updated' });
       const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
       expect(init?.body).toBe(JSON.stringify({ title: 'updated' }));
+      expect(init?.keepalive).toBeUndefined();
+    });
+
+    it('sends a PATCH with keepalive when asked (unload flush) [DI-30]', async () => {
+      mockFetch(200, {});
+      await api.patch('/api/v1/items/1', { title: 'updated' }, { keepalive: true });
+      const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      expect(init?.keepalive).toBe(true);
+    });
+
+    it('drops keepalive for bodies over the browser keepalive cap [DI-30]', async () => {
+      mockFetch(200, {});
+      await api.patch('/api/v1/items/1', { description: 'x'.repeat(70_000) }, { keepalive: true });
+      const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      expect(init?.keepalive).toBeUndefined();
     });
 
     it('sends PUT body as JSON', async () => {

@@ -27,6 +27,12 @@ export function createUiStore() {
   /** Pending flush promises registered by destroyed components. */
   let _pendingFlushes = $state<Promise<void>[]>([]);
 
+  /**
+   * Keys of debounced writes that are armed but not sent yet (e.g. the task
+   * description's 600 ms debounce). They count as pending writes.
+   */
+  let _pendingDebounces = $state<string[]>([]);
+
   function setCurrentPage(id: string | null) {
     currentPageId = id;
   }
@@ -140,6 +146,13 @@ export function createUiStore() {
     });
   }
 
+  /** Mark a debounced write as armed (`true`) or sent/cancelled (`false`). */
+  function setPendingDebounce(key: string, pending: boolean) {
+    const has = _pendingDebounces.includes(key);
+    if (pending && !has) _pendingDebounces = [..._pendingDebounces, key];
+    else if (!pending && has) _pendingDebounces = _pendingDebounces.filter((k) => k !== key);
+  }
+
   /**
    * State of the open page's collaborative session, or null when the page is
    * edited in single-writer mode. Drives the save indicator.
@@ -163,7 +176,7 @@ export function createUiStore() {
     get saveState() { return saveState; },
     get isSaving() { return saveState === 'saving'; },
     /** True when there are actual in-flight writes or pending flushes, regardless of display state. */
-    get hasPendingWrites() { return _inflightCount > 0 || _pendingFlushes.length > 0; },
+    get hasPendingWrites() { return _inflightCount > 0 || _pendingFlushes.length > 0 || _pendingDebounces.length > 0; },
     setCurrentPage,
     toggleSidebar,
     closeSidebar,
@@ -176,7 +189,8 @@ export function createUiStore() {
     markSaving,
     markSaved,
     waitForSaveComplete,
-    registerPendingFlush
+    registerPendingFlush,
+    setPendingDebounce
   };
 }
 
