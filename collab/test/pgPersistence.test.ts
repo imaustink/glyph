@@ -202,6 +202,38 @@ describe.skipIf(!url)('PgPersistence (Postgres)', () => {
 		}
 	});
 
+	it('appendExclusive builds from the latest log under the log lock, one writer at a time (DI-29)', async () => {
+		const loaded = await persistence.loadOrSeed(pageId, seeder, fingerprint);
+		const after = Math.max(...loaded.updates.map((u) => u.seq));
+		const seen: number[][] = [];
+		const build = (rows: { seq: number }[]) => {
+			seen.push(rows.map((r) => r.seq));
+			// Like a title edit: only the first writer (seeing no one else's row) writes.
+			return rows.length === 0 ? new Uint8Array([0, 0]) : null;
+		};
+		const results = await Promise.all([
+			persistence.appendExclusive(pageId, loaded.epoch, after, build),
+			persistence.appendExclusive(pageId, loaded.epoch, after, build)
+		]);
+		const written = results.filter((r): r is number => typeof r === 'number');
+		expect(written).toHaveLength(1);
+		expect(results.filter((r) => r === null)).toHaveLength(1);
+		// The second writer saw the first one's row.
+		expect(seen).toEqual([[], [written[0]]]);
+	});
+
+	it('appendExclusive refuses a replaced epoch (DI-29)', async () => {
+		const loaded = await persistence.loadOrSeed(pageId, seeder, fingerprint);
+		await pool.query(`UPDATE page_collab_docs SET attached = false WHERE page_id = $1`, [pageId]);
+		let built = false;
+		const result = await persistence.appendExclusive(pageId, loaded.epoch, 0, () => {
+			built = true;
+			return new Uint8Array([0, 0]);
+		});
+		expect(result).toBe('stale');
+		expect(built).toBe(false);
+	});
+
 	it('quarantine is visible in state and cleared by the next epoch', async () => {
 		const loaded = await persistence.loadOrSeed(pageId, seeder, fingerprint);
 		await persistence.quarantine(pageId, loaded.epoch, 'test');
