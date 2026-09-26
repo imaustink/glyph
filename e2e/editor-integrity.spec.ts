@@ -29,6 +29,43 @@ async function createLinkedBullet(page: Page, text: string): Promise<string> {
 test.describe('Editor data integrity', () => {
 	test.describe.configure({ mode: 'serial' });
 
+	test('a note with content the editor cannot show opens read-only and is never saved (DI-01)', async ({ page, storageMode }) => {
+		test.skip(storageMode !== 'local', 'seeds the stored document directly in localStorage');
+		const pageId = new URL(page.url()).pathname.split('/').pop()!;
+		const key = `glyph:content:${pageId}`;
+		// An image node: accepted by the API (and produced by MCP markdown), but
+		// not part of the editor schema.
+		await page.evaluate((key) => {
+			localStorage.setItem(
+				key,
+				JSON.stringify({
+					content: {
+						type: 'doc',
+						content: [
+							{ type: 'paragraph', content: [{ type: 'text', text: 'Keep me' }] },
+							{ type: 'image', attrs: { src: 'https://example.com/a.png', alt: 'a' } }
+						]
+					},
+					updatedAt: new Date().toISOString(),
+					schemaVersion: 1
+				})
+			);
+		}, key);
+		const before = await page.evaluate((key) => localStorage.getItem(key), key);
+
+		await page.reload();
+		await page.waitForSelector('main .tiptap-editor', { timeout: 15_000 });
+
+		await expect(page.locator('.editor-wrapper [role="alert"]')).toContainText(/can.t be shown|read-only/i, { timeout: 15_000 });
+		await expect(page.locator('main .tiptap-editor')).toHaveAttribute('contenteditable', 'false');
+
+		// Typing must not reach the stored document.
+		await page.locator('main .tiptap-editor').click({ force: true });
+		await page.keyboard.type('oops');
+		await page.waitForTimeout(1500);
+		expect(await page.evaluate((key) => localStorage.getItem(key), key)).toBe(before);
+	});
+
 	test('Enter at the start of a linked bullet keeps its task on the text (DI-09)', async ({ page }) => {
 		const taskId = await createLinkedBullet(page, 'Buy milk');
 
