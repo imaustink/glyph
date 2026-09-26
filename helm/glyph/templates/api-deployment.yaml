@@ -69,6 +69,16 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+          {{- if and .Values.api.preStopSleepSeconds (semverCompare ">=1.30-0" .Capabilities.KubeVersion.Version) }}
+          # Keep serving while the pod is removed from the Service's endpoints,
+          # so in-flight saves aren't cut off by a SIGTERM that arrives first.
+          # The image is distroless (no sleep binary), hence the native sleep
+          # action (Kubernetes 1.30+).
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.api.preStopSleepSeconds }}
+          {{- end }}
           env:
             - name: PORT
               value: "8080"

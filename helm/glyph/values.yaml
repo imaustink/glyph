@@ -25,6 +25,12 @@ frontend:
   # (e.g. API_PROXY_TARGET / E2E_RESET_ENABLED — see src/hooks.server.ts).
   extraEnv: []
 
+  # SvelteKit's request body limit (BODY_SIZE_LIMIT; K/M/G suffixes). Only
+  # matters when the frontend proxies the API (API_PROXY_TARGET): the 512K
+  # default would reject large page saves. Keep it above the API's 5 MiB
+  # content limit. Empty = SvelteKit's default.
+  bodySizeLimit: "8M"
+
   service:
     type: ClusterIP
     port: 3000
@@ -95,6 +101,11 @@ api:
   # -- Extra environment variables for the API container, in full
   # `name`/`value` (or `valueFrom`) form.
   extraEnv: []
+
+  # Seconds the API keeps serving after it is taken out of the Service and
+  # before it gets SIGTERM (then it drains for up to 10s). Needs Kubernetes
+  # 1.30+ (the preStop sleep action); skipped on older clusters. 0 disables.
+  preStopSleepSeconds: 5
 
   service:
     type: ClusterIP
@@ -269,14 +280,25 @@ migrate:
   imagePullSecrets: []
 
 # =============================================================================
+# PodDisruptionBudgets
+# =============================================================================
+# One per api / frontend / collab Deployment, rendered only when it runs more
+# than one replica (a PDB on a single replica would block node drains).
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# =============================================================================
 # Ingress
 # =============================================================================
 ingress:
   enabled: false
   className: ""
-  annotations: {}
+  annotations:
+    # ingress-nginx defaults to 1m, below the API's 5 MiB content limit (plus
+    # JSON envelope; MCP accepts 6 MiB). Other controllers ignore it.
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
     # cert-manager.io/cluster-issuer: letsencrypt-prod
-    # nginx.ingress.kubernetes.io/proxy-body-size: "10m"
   hosts:
     - host: glyph.example.com
   tls: []

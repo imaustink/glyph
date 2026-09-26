@@ -72,3 +72,9 @@ test_api_prestop_sleep() {
   assert_contains "$d" 'sleep:' "uses the lifecycle sleep action"
   assert_contains "$d" 'seconds: 5' "sleeps 5s"
 }
+
+test_api_prestop_skipped_before_kubernetes_1_30() {
+  render --kube-version 1.29.0
+  assert_ok
+  assert_not_contains "$(doc Deployment glyph-api)" 'preStop:' "the sleep action needs 1.30+"
+}
