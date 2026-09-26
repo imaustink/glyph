@@ -185,6 +185,32 @@ func TestPageIntegrity(t *testing.T) {
 			assert.Equal(t, 2, n)
 		},
 
+		// ── DI-05: concurrent PATCHes of different fields both stick ─────
+		"DI05_ConcurrentPatchesOfDifferentFieldsBothPersist": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			for round := 0; round < 40; round++ {
+				p := createPage(t, h, h.UserA.ID, "Original")
+				var wg sync.WaitGroup
+				start := make(chan struct{})
+				patch := func(body map[string]interface{}) {
+					defer wg.Done()
+					<-start
+					h.Do(t, "PATCH", "/api/v1/pages/"+p.ID.String(), body, h.UserA.ID)
+				}
+				wg.Add(3)
+				go patch(map[string]interface{}{"title": "Renamed"})
+				go patch(map[string]interface{}{"tags": []string{"work"}})
+				go patch(map[string]interface{}{"priority": "high"})
+				close(start)
+				wg.Wait()
+
+				got := getPage(t, h, h.UserA.ID, p.ID)
+				require.Equal(t, "Renamed", got.Title, "round %d: title lost", round)
+				require.Equal(t, []string{"work"}, got.Tags, "round %d: tags lost", round)
+				require.Equal(t, model.PriorityHigh, got.Priority, "round %d: priority lost", round)
+			}
+		},
+
 		// ── DI-02: folder delete must not destroy other users' work ──────
 		"DI02_DeleteFolderContainingOtherUsersPageRefused": func(t *testing.T, h *Harness) {
 			h.ResetDB(t)
