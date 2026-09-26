@@ -1004,6 +1004,38 @@ describe('task titles renamed while the note was closed (DI-29)', () => {
 		await bob.synced();
 		expect(bulletText(bob)).toBe('Buy milk');
 	});
+
+	it('a title written over unsaved edits survives a crash before they are saved', async () => {
+		// The title edit is built on this copy, which holds edits not yet in
+		// the log (the store debounce). If the row it appends depends on them
+		// and the process dies before they're saved, no replica can integrate
+		// it; recording the rename as applied in the same append would leave
+		// the bullet on its old text for good.
+		persistence.detach(PAGE, linkedDoc('Buy milk'));
+		const slow = await startServer(persistence, api, { debounce: 60_000, maxDebounce: 60_000 });
+		try {
+			const alice = open({ user: 'alice' }, slow);
+			await alice.synced();
+			const run = bulletRun(alice);
+			run.delete(0, 3);
+			run.insert(0, 'Get'); // "Get milk", not saved yet
+			await eventually(() => (slow.collab.inspectState(`page:${PAGE}`)?.pending ?? 0) > 0, 3000, 'edit reached the server');
+			persistence.renameTask(PAGE, 'n1', 'Get oat milk');
+			await slow.collab.onTaskTitle(PAGE, 'n1', 'Get oat milk');
+
+			// The process dies here: what a fresh replica gets is the log and
+			// the rename records, nothing else.
+			const shown = (toJSON(persistence.replay(PAGE)).content!.find((n) => n.type === 'bulletList')?.content?.[0].content?.[0].content ?? [])
+				.map((n) => n.text)
+				.join('');
+			const owed = (await persistence.renamedTaskTitles(PAGE)).some((t) => t.nodeId === 'n1');
+			// Either the logged title integrates, or the rename is still owed
+			// and the next load applies it.
+			expect(shown === 'Get oat milk' || owed, `a fresh load shows "${shown}"; rename still owed: ${owed}`).toBe(true);
+		} finally {
+			await slow.stop();
+		}
+	});
 });
 
 describe('server edits', () => {

@@ -162,7 +162,10 @@ title, on two paths:
 Either way the edit is written once, even when several replicas hold the
 note. It is built and appended under the page's log lock from the latest log
 (`appendExclusive`). A replica that finds the title already there writes
-nothing.
+nothing. The replica's own edits that aren't in the log yet (waiting for the
+store debounce) go into the same row. The title edit is built on top of them,
+so a row without them could be one no replica can integrate after a crash,
+while the rename was already recorded as applied.
 
 **Which renames are owed.** This is tracked per task, because nothing records
 which bullet an edit touched. The note's newest write can't be used: an edit
