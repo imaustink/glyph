@@ -559,6 +559,7 @@ export class GlyphCollab implements Extension {
 			case 'ok':
 				state.lastSnapshot = serialised;
 				state.retryDelayMs = 1000;
+				if (res.disabled) this.windDown(state);
 				return 'ok';
 			case 'behind':
 				return 'behind';
@@ -637,6 +638,19 @@ export class GlyphCollab implements Extension {
 			connection.close({ code: 4409, reason });
 		}
 		void this.instance?.unloadDocument(state.document);
+	}
+
+	/**
+	 * The kill switch is off, but the document is still attached and its
+	 * snapshots are still accepted. Unlike evict(), keep the copy: close every
+	 * connection with Disabled (editors fall back to single-writer mode) and
+	 * let the unload flush append and snapshot whatever arrived meanwhile.
+	 */
+	private windDown(state: DocState) {
+		const connections = [...state.document.connections.keys()];
+		if (connections.length === 0) return;
+		this.opts.log.info('collaboration disabled: closing connections after the final snapshot', { pageId: state.pageId });
+		for (const connection of connections) connection.close({ code: 4403, reason: CollabReason.Disabled });
 	}
 
 	/** The API replaced a page's shared document (restore, or a write while disabled). */

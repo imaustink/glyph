@@ -9,7 +9,12 @@ export interface CollabSession {
 }
 
 export type SnapshotResult =
-	| { kind: 'ok'; revision: number }
+	/**
+	 * Written. `disabled`: the API's kill switch is off — it still takes
+	 * snapshots of attached pages so nothing is stranded, but the session
+	 * should wind down (editors fall back to single-writer mode).
+	 */
+	| { kind: 'ok'; revision: number; disabled?: true }
 	/** The epoch was replaced (or the page detached): evict our copy. */
 	| { kind: 'stale' }
 	/**
@@ -21,7 +26,7 @@ export type SnapshotResult =
 	| { kind: 'behind' }
 	/** The API refused the content: quarantine. */
 	| { kind: 'invalid'; message: string }
-	/** Collaborative editing is switched off: evict. */
+	/** Collaborative editing is switched off (an API from before DI-14, which refuses): evict. */
 	| { kind: 'disabled' };
 
 export interface SnapshotBody {
@@ -72,8 +77,8 @@ export class HttpApi implements Api {
 			signal: AbortSignal.timeout(this.timeoutMs)
 		});
 		if (res.ok) {
-			const out = (await res.json()) as { revision: number };
-			return { kind: 'ok', revision: out.revision };
+			const out = (await res.json()) as { revision: number; disabled?: boolean };
+			return out.disabled ? { kind: 'ok', revision: out.revision, disabled: true } : { kind: 'ok', revision: out.revision };
 		}
 		const err = (await res.json().catch(() => ({}))) as { code?: string; error?: string };
 		if (res.status === 409 && err.code === 'disabled') return { kind: 'disabled' };

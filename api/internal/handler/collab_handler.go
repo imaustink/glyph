@@ -110,10 +110,15 @@ func (h *CollabHandler) WriteSnapshot(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !h.Enabled {
-		c.JSON(http.StatusConflict, gin.H{"error": "collaborative editing is disabled", "code": "disabled"})
-		return
-	}
+	// The kill switch (Enabled=false) does not refuse snapshots. A page that
+	// is still attached holds edits in its log that only a snapshot puts into
+	// page_contents; refusing them would leave the next REST save to detach
+	// the page from stale content and silently drop those edits (DI-14). The
+	// store's epoch/attached checks still apply: once a REST save has
+	// detached the page, late snapshots are refused as stale. An accepted
+	// snapshot says `disabled` so the collab service winds the session down.
+	// (Collab builds that predate this ignore the field; their connections
+	// are dropped by the periodic access re-check instead.)
 	var body model.CollabSnapshot
 	if !bindJSON(c, &body) {
 		return
@@ -142,5 +147,9 @@ func (h *CollabHandler) WriteSnapshot(c *gin.Context) {
 		}
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"revision": out.Revision})
+	resp := gin.H{"revision": out.Revision}
+	if !h.Enabled {
+		resp["disabled"] = true
+	}
+	c.JSON(http.StatusOK, resp)
 }

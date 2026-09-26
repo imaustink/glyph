@@ -53,7 +53,6 @@ export class FakeApi implements Api {
 		await this.beforeSnapshot?.(pageId, body);
 		const override = this.onSnapshot?.(pageId, body);
 		if (override) return override;
-		if (!this.enabled) return { kind: 'disabled' };
 		const d = this.persistence.docs.get(pageId);
 		if (!d || !d.attached || d.epoch !== body.epoch || d.quarantined) return { kind: 'stale' };
 		if (body.upToSeq < (this.lastSeq.get(pageId) ?? 0)) return { kind: 'behind' };
@@ -62,7 +61,8 @@ export class FakeApi implements Api {
 		list.push({ body, revision: list.length + 1 });
 		this.snapshots.set(pageId, list);
 		this.persistence.pages.set(pageId, { content: body.content, schemaVersion: body.schemaVersion });
-		return { kind: 'ok', revision: list.length };
+		// Like the API: the kill switch doesn't refuse snapshots of attached pages.
+		return this.enabled ? { kind: 'ok', revision: list.length } : { kind: 'ok', revision: list.length, disabled: true };
 	}
 
 	latest(pageId: string) {

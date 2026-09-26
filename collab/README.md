@@ -72,8 +72,12 @@ The API side: `COLLAB_ENABLED=true` and `COLLAB_SERVICE_TOKEN`. Helm: `collab.en
 
 - **Kill switch:** set `COLLAB_ENABLED=false` on the API. Browsers fall back to
   single-writer editing; each attached page detaches on its next save, and the
-  collab service's snapshots for it are refused. Turning it back on re-seeds
-  pages in new epochs.
+  collab service's snapshots for it are refused from then on. Until that save,
+  the API still accepts the service's snapshots of the attached page (answering
+  `disabled: true`, which closes its editors with `disabled` after the write),
+  so edits made since the last snapshot reach `page_contents` before the detach.
+  Keep the collab service and the API's `COLLAB_SERVICE_TOKEN` running while
+  sessions drain. Turning it back on re-seeds detached pages in new epochs.
 - **Quarantined page** (`page_collab_docs.quarantined_at` set, logged at error
   level): collaborators are read-only. Restore a version
   (`POST /api/v1/pages/:id/content/versions/:vid/restore`) to recover; that
