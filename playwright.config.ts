@@ -35,6 +35,11 @@ const collabPort = process.env.TEST_COLLAB_PORT ?? '1236';
 // to run it single-writer), so every editing spec exercises the collaborative path.
 const collabEnabled = process.env.TEST_COLLAB_ENABLED !== 'false';
 const collabToken = 'e2e-collab-service-token';
+// An app that is already deployed somewhere (scripts/test-e2e-k8s.sh points
+// these at a cluster's Ingress). When set, that project's tests run against
+// the URL and none of its webServer entries are started.
+const externalLocalUrl = process.env.TEST_LOCAL_URL;
+const externalApiUiUrl = process.env.TEST_API_UI_URL;
 const databaseUrl = process.env.DATABASE_URL ?? 'postgres://glyph:glyph@localhost:5432/glyph?sslmode=disable';
 
 export default defineConfig({
@@ -59,14 +64,14 @@ export default defineConfig({
 			name: 'local',
 			use: {
 				storageMode: 'local' as const,
-				baseURL: `http://localhost:${localPort}`
+				baseURL: externalLocalUrl ?? `http://localhost:${localPort}`
 			}
 		},
 		{
 			name: 'api',
 			use: {
 				storageMode: 'api' as const,
-				baseURL: `http://localhost:${apiUiPort}`
+				baseURL: externalApiUiUrl ?? `http://localhost:${apiUiPort}`
 			}
 		}
 	],
@@ -75,7 +80,7 @@ export default defineConfig({
 		// ── Local-mode SvelteKit dev server ────────────────────────────────
 		// Uses a dedicated port (5175) so it never collides with a normal
 		// `pnpm dev` session on 5173 (which defaults to api mode via .env).
-		...(wantLocal
+		...(wantLocal && !externalLocalUrl
 			? [
 					{
 						command: process.env.CI
@@ -89,7 +94,7 @@ export default defineConfig({
 			: []),
 		// ── Go API (OIDC disabled → dev auth middleware) ───────────────────
 		// Only started when the api project is requested.
-		...(wantApi
+		...(wantApi && !externalApiUiUrl
 			? [
 					{
 						command: process.env.API_SERVER_CMD ?? 'cd api && go run ./cmd/api',

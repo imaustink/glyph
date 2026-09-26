@@ -8,8 +8,10 @@
 #     /test/become, which e2e/fixtures.ts calls before every test.
 #   * Everything is scaled to one replica and sized for a laptop.
 #
-# frontend.origin and api.frontendUrl are overridden with --set by the script,
-# since the host port the suite runs on is allocated per invocation.
+# The suite reaches the app through the chart's own Ingress, served by ferry's
+# Traefik addon. frontend.origin, api.frontendUrl and collab.allowedOrigins are
+# overridden with --set by the script: the origin includes Traefik's node port,
+# which ferry allocates per profile.
 
 frontend:
   replicaCount: 1
@@ -19,14 +21,15 @@ frontend:
     tag: e2e
     pullPolicy: Never
 
-  # Overridden by the script with the actual forwarded port.
-  origin: "http://localhost:5174"
+  # Overridden by the script with the Ingress origin.
+  origin: "http://localhost"
 
-  # The Playwright fixtures talk to the API through the frontend origin
-  # (`${baseURL}/test/reset`, `/api/...`), so the SvelteKit process has to
-  # proxy those paths — the Ingress that normally does this routing is not
-  # in play here. E2E_RESET_ENABLED is what lets /test/* through the proxy
-  # (see src/hooks.server.ts).
+  # The Playwright fixtures call `${baseURL}/test/reset` and `/test/become`.
+  # The Ingress deliberately has no /test route — it is not a production path
+  # — so /test falls through to the frontend, which proxies it to the API.
+  # E2E_RESET_ENABLED is what lets /test/* through that proxy (see
+  # src/hooks.server.ts). /api and /collab go straight from the Ingress to
+  # their services, as in production.
   extraEnv:
     - name: API_PROXY_TARGET
       value: "http://glyph-api:8080"
@@ -59,8 +62,8 @@ api:
   # obviously fake — dev-auth mode never validates a signed session.
   sessionSecret: "e2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee2ee"
 
-  # Overridden by the script with the actual forwarded port.
-  frontendUrl: "http://localhost:5174"
+  # Overridden by the script with the Ingress origin.
+  frontendUrl: "http://localhost"
   # Plain http on localhost: a Secure cookie would never be stored, and a
   # cookie Domain would not match `localhost`. /test/become sets dev_user_id
   # this way, and the user-switching specs depend on it coming back.
@@ -85,17 +88,6 @@ cnpg:
   parameters:
     shared_buffers: "64MB"
     max_connections: "100"
-    # ferry backs `emptyDir: {medium: Memory}` — which is what CNPG mounts over
-    # /dev/shm — with an ext4 disk image rather than a tmpfs. Ordinary writes to
-    # it succeed, but shm_open(3) returns EROFS, and that is the exact call
-    # PostgreSQL's POSIX dynamic-shared-memory backend makes, so the primary
-    # never finishes bootstrapping:
-    #   FATAL: could not open shared memory segment "/PostgreSQL.NNNNNNNNNN":
-    #          Read-only file system
-    # SysV segments do not go through /dev/shm. initdb independently probes and
-    # picks sysv on this kernel, so this only overrides the posix default that
-    # CNPG writes into its own postgresql.conf afterwards.
-    dynamic_shared_memory_type: "sysv"
 
   resources:
     requests:
@@ -105,6 +97,49 @@ cnpg:
       cpu: "1"
       memory: 1Gi
 
-# Ingress stays off: the suite reaches the services over kubectl port-forward.
+# The api project runs with realtime collaboration on (playwright.config.ts),
+# so every editing spec goes through this service — as it does in the Compose
+# stack. The browser reaches it at same-origin /collab through the Ingress.
+collab:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: glyph-collab
+    tag: e2e
+    pullPolicy: Never
+
+  # Matches docker-compose.test.yml; fixed and obviously fake.
+  serviceToken: "e2e-collab-service-token"
+
+  # Overridden by the script with the Ingress origin.
+  allowedOrigins: "http://localhost"
+
+  # Tests reload quickly after typing; persist promptly (same as Compose).
+  extraEnv:
+    - name: COLLAB_STORE_DEBOUNCE_MS
+      value: "300"
+    - name: COLLAB_STORE_MAX_DEBOUNCE_MS
+      value: "1000"
+    - name: COLLAB_REAUTH_INTERVAL_MS
+      value: "5000"
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+# The chart's own Ingress, so its routing is under test along with the app.
+# `localhost` needs no DNS or /etc/hosts entry, and the local-mode frontend
+# (e2e/k8s/frontend-local.yaml) takes every other host, which the suite reaches
+# as 127.0.0.1. The browser gets HTTP on Traefik's node port; see
+# scripts/test-e2e-k8s.sh for why not port 80.
 ingress:
-  enabled: false
+  enabled: true
+  className: traefik
+  hosts:
+    - host: localhost
+  tls: []
