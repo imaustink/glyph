@@ -9,7 +9,7 @@
  * 409. The client must reload rather than retry; retrying is the clobber.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ApiError } from '$lib/storage/apiClient';
 
 const saveContent = vi.fn();
@@ -142,5 +142,80 @@ describe('useContentSave conflict handling', () => {
 		// No stale-precondition self-conflict, so no reload of the user's own edits.
 		expect(onConflict).not.toHaveBeenCalled();
 		expect(notifyError).not.toHaveBeenCalled();
+	});
+
+	// DI-04: a 409 means the document we based our edits on is stale, and the
+	// page is reloaded. A save that was already waiting (its debounce timer
+	// armed, or queued behind the rejected save) was built on the same stale
+	// copy — sending it with the freshly reloaded revision would overwrite the
+	// other writer's content.
+	describe('409 while another save is waiting (DI-04)', () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('drops a save whose debounce timer was armed when the 409 arrived', async () => {
+			let rejectFirst!: (err: unknown) => void;
+			saveContent.mockImplementationOnce(
+				() => new Promise<void>((_resolve, reject) => { rejectFirst = reject; })
+			);
+			const onConflict = vi.fn();
+			const handle = useContentSave(undefined, onConflict);
+
+			handle.scheduleSave(fakeEditor('ours-1'), 'page-A');
+			const first = handle.flushContentSave();
+			await Promise.resolve();
+
+			// The user keeps typing while save #1 is in flight: #2 waits on its timer.
+			handle.scheduleSave(fakeEditor('ours-2-stale'), 'page-A');
+
+			rejectFirst(new ApiError(409, 'PUT', '/api/v1/pages/page-A/content', { error: 'stale' }));
+			await first;
+			expect(onConflict).toHaveBeenCalledWith('page-A');
+
+			await vi.advanceTimersByTimeAsync(2000);
+
+			// Only the rejected save was ever sent.
+			expect(saveContent).not.toHaveBeenCalledWith('page-A', { type: 'doc', text: 'ours-2-stale' });
+			expect(saveContent).toHaveBeenCalledTimes(1);
+		});
+
+		it('drops a save queued behind the rejected one', async () => {
+			let rejectFirst!: (err: unknown) => void;
+			saveContent.mockImplementationOnce(
+				() => new Promise<void>((_resolve, reject) => { rejectFirst = reject; })
+			);
+			const handle = useContentSave(undefined, vi.fn());
+
+			handle.scheduleSave(fakeEditor('ours-1'), 'page-A');
+			const first = handle.flushContentSave();
+			await Promise.resolve();
+			handle.scheduleSave(fakeEditor('ours-2-stale'), 'page-A');
+			const second = handle.flushContentSave();
+
+			rejectFirst(new ApiError(409, 'PUT', '/api/v1/pages/page-A/content', { error: 'stale' }));
+			await Promise.all([first, second]);
+			await vi.advanceTimersByTimeAsync(2000);
+
+			expect(saveContent).not.toHaveBeenCalledWith('page-A', { type: 'doc', text: 'ours-2-stale' });
+			expect(saveContent).toHaveBeenCalledTimes(1);
+		});
+
+		it('still saves pending edits for a different page after a 409', async () => {
+			saveContent.mockRejectedValueOnce(
+				new ApiError(409, 'PUT', '/api/v1/pages/page-A/content', { error: 'stale' })
+			);
+			const handle = useContentSave(undefined, vi.fn());
+			handle.scheduleSave(fakeEditor('a'), 'page-A');
+			await handle.flushContentSave();
+
+			handle.scheduleSave(fakeEditor('b'), 'page-B');
+			await vi.advanceTimersByTimeAsync(2000);
+
+			expect(saveContent).toHaveBeenLastCalledWith('page-B', { type: 'doc', text: 'b' });
+		});
 	});
 });
