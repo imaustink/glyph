@@ -15,3 +15,5 @@
 .idea
 *.tmproj
 .vscode
+# Chart tests (helm/glyph/tests/run.sh) are not part of the packaged chart.
+tests/

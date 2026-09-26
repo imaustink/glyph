@@ -25,6 +25,12 @@ frontend:
   # (e.g. API_PROXY_TARGET / E2E_RESET_ENABLED — see src/hooks.server.ts).
   extraEnv: []
 
+  # SvelteKit's request body limit (BODY_SIZE_LIMIT; K/M/G suffixes). Only
+  # matters when the frontend proxies the API (API_PROXY_TARGET): the 512K
+  # default would reject large page saves. Keep it above the API's 5 MiB
+  # content limit. Empty = SvelteKit's default.
+  bodySizeLimit: "8M"
+
   service:
     type: ClusterIP
     port: 3000
@@ -96,6 +102,11 @@ api:
   # `name`/`value` (or `valueFrom`) form.
   extraEnv: []
 
+  # Seconds the API keeps serving after it is taken out of the Service and
+  # before it gets SIGTERM (then it drains for up to 10s). Needs Kubernetes
+  # 1.30+ (the preStop sleep action); skipped on older clusters. 0 disables.
+  preStopSleepSeconds: 5
+
   service:
     type: ClusterIP
     port: 8080
@@ -153,6 +164,12 @@ collab:
   # (Traefik, the k3s default, needs nothing.)
   ingressAnnotationsHint: {}
 
+  # On SIGTERM the service flushes every open document (retrying ones parked
+  # by a database outage) before exiting. The preStop sleep runs first, while
+  # the pod is taken out of the Service; the grace period covers both.
+  terminationGracePeriodSeconds: 60
+  preStopSleepSeconds: 5
+
   service:
     type: ClusterIP
     port: 1235
@@ -172,6 +189,15 @@ collab:
 # Database — CloudNativePG (CNPG)
 # =============================================================================
 cnpg:
+  # -- Name of the CNPG Cluster. Empty = "<fullname>-db" (e.g. "glyph-db"),
+  # which is what existing installs already use. Set it explicitly in
+  # production so renaming the release or fullnameOverride can never point
+  # the chart at a new, empty database. Never change it on an existing
+  # install: a different name is a different (empty) cluster.
+  # The Cluster is annotated helm.sh/resource-policy: keep, so `helm
+  # uninstall` leaves it (and its data) in place.
+  clusterName: ""
+
   # Number of PostgreSQL instances (1 primary + N-1 replicas)
   instances: 3
 
@@ -191,18 +217,29 @@ cnpg:
     size: 10Gi
     # storageClass: ""  # Uses default StorageClass if not set
 
+  # Without backups there is no point-in-time recovery: three instances
+  # protect against losing a node, not against a bug that overwrites data.
   backup:
     enabled: false
-    # Cron schedule for backups
-    schedule: "0 0 * * *"
+    # -- Guard for production values files: when true, the chart refuses to
+    # render unless backups are enabled and configured.
+    required: false
+    # Cron schedule for base backups. CNPG takes six fields, seconds first
+    # ("0 0 0 * * *" = daily at midnight); a five-field crontab expression
+    # is given a leading "0".
+    schedule: "0 0 0 * * *"
     retentionPolicy: "30d"
     # S3-compatible object storage destination: s3://<bucket>/<prefix>
     destinationPath: ""
     # Custom S3 endpoint (required for non-AWS providers like Cloudflare R2, MinIO).
     # Leave empty for AWS S3.
     endpointURL: ""
+    # Object-store credentials. One of the two is required when backups are
+    # enabled.
     s3:
       secretName: ""  # Secret with ACCESS_KEY_ID and ACCESS_SECRET_KEY keys
+      # Use the pod's IAM role (e.g. IRSA on EKS) instead of a secret.
+      inheritFromIAMRole: false
 
   resources:
     requests:
@@ -213,7 +250,23 @@ cnpg:
       memory: 1Gi
 
   monitoring:
+    # Scrape the instances (CNPG's enablePodMonitor; needs the Prometheus
+    # Operator CRDs).
     enabled: false
+    # -- Alerts (a PrometheusRule) for WAL archiving failures, stalled
+    # archiving and stale base backups. Needs the metrics scraped, by
+    # monitoring.enabled above or a PodMonitor of your own.
+    prometheusRule:
+      enabled: false
+      # Extra labels on the PrometheusRule (e.g. the `release` label your
+      # Prometheus selects rules by).
+      labels: {}
+      # Alert when no WAL segment has been archived for this long. Postgres
+      # archives on segment switch, so leave room for quiet periods.
+      maxSecondsSinceLastArchival: 3600
+      # Alert when the newest completed base backup is older than this.
+      # Leave headroom over the schedule (daily → 26h).
+      maxBackupAgeHours: 26
 
 # =============================================================================
 # Database migrations (golang-migrate)
@@ -227,14 +280,25 @@ migrate:
   imagePullSecrets: []
 
 # =============================================================================
+# PodDisruptionBudgets
+# =============================================================================
+# One per api / frontend / collab Deployment, rendered only when it runs more
+# than one replica (a PDB on a single replica would block node drains).
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# =============================================================================
 # Ingress
 # =============================================================================
 ingress:
   enabled: false
   className: ""
-  annotations: {}
+  annotations:
+    # ingress-nginx defaults to 1m, below the API's 5 MiB content limit (plus
+    # JSON envelope; MCP accepts 6 MiB). Other controllers ignore it.
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
     # cert-manager.io/cluster-issuer: letsencrypt-prod
-    # nginx.ingress.kubernetes.io/proxy-body-size: "10m"
   hosts:
     - host: glyph.example.com
   tls: []
