@@ -421,6 +421,7 @@ func (s *pageStore) Upsert(_ context.Context, p *model.Page) (*model.Page, error
 		if s.r.wouldCycle(p.ID, p.ParentID) {
 			return nil, store.ErrCycle
 		}
+		p.Type = existing.Type // fixed at creation, as in Postgres
 		p.CreatedAt = existing.CreatedAt
 		p.UpdatedAt = time.Now()
 		stored := clonePage(p)
@@ -481,6 +482,7 @@ func (s *pageStore) Update(_ context.Context, p *model.Page) (*model.Page, error
 	if s.r.wouldCycle(p.ID, p.ParentID) {
 		return nil, store.ErrCycle
 	}
+	p.Type = existing.Type // fixed at creation, as in Postgres
 	p.CreatedAt = existing.CreatedAt
 	p.UpdatedAt = time.Now()
 	stored := clonePage(p)
@@ -518,6 +520,11 @@ func (s *pageStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 		delete(s.r.pages, pid)
 		delete(s.r.contents, pid)
 		delete(s.r.collab, pid)
+	}
+	for sid, sh := range s.r.shares {
+		if (sh.ResourceType == model.ShareResourcePage || sh.ResourceType == model.ShareResourceFolder) && inSubtree[sh.ResourceID] {
+			delete(s.r.shares, sid)
+		}
 	}
 	// The subtree's tasks are soft-deleted, as in Postgres.
 	now := time.Now()
@@ -1481,6 +1488,11 @@ func (s *templateStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 		return nil
 	}
 	delete(s.r.templates, id)
+	for sid, sh := range s.r.shares {
+		if sh.ResourceType == model.ShareResourceTemplate && sh.ResourceID == id {
+			delete(s.r.shares, sid)
+		}
+	}
 	return nil
 }
 
@@ -1646,6 +1658,13 @@ func (s *shareStore) Create(_ context.Context, sh *model.Share) (*model.Share, e
 	defer s.r.mu.Unlock()
 	if sh.ID == uuid.Nil {
 		sh.ID = uuid.New()
+	}
+	// Mirrors UNIQUE (resource_type, resource_id, shared_with_id).
+	for _, existing := range s.r.shares {
+		if existing.ResourceType == sh.ResourceType && existing.ResourceID == sh.ResourceID &&
+			existing.SharedWith.ID == sh.SharedWith.ID {
+			return nil, fmt.Errorf("%w: already shared with this user", store.ErrConflict)
+		}
 	}
 	sh.CreatedAt = time.Now()
 	if u, ok := s.r.usersByID[sh.SharedWith.ID]; ok {

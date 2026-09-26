@@ -130,7 +130,16 @@ func (s *pgTemplateStore) Update(ctx context.Context, t *model.Template) (*model
 }
 
 func (s *pgTemplateStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM templates WHERE id=$1 AND user_id=$2`, id, userID)
+	// One statement, so the template and its shares go atomically.
+	// shares.resource_id has no foreign key; a share left behind would
+	// re-grant access to a template later created under the same id.
+	result, err := s.pool.Exec(ctx, `
+		WITH gone_shares AS (
+			DELETE FROM shares
+			WHERE resource_type = 'template' AND resource_id = $1
+			  AND EXISTS (SELECT 1 FROM templates WHERE id = $1 AND user_id = $2)
+		)
+		DELETE FROM templates WHERE id=$1 AND user_id=$2`, id, userID)
 	if err != nil {
 		return err
 	}

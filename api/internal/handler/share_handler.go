@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -135,6 +136,10 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 	}
 	created, err := h.Shares.Create(c.Request.Context(), share)
 	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": "already shared with this user; update the existing share instead", "code": "already_shared"})
+			return
+		}
 		internalError(c, err)
 		return
 	}

@@ -153,6 +153,10 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if req.Type != nil && *req.Type != existing.Type {
+		typeImmutable(c)
+		return
+	}
 	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
 		return
 	}
@@ -268,8 +272,22 @@ func (h *PageHandler) UpsertPage(c *gin.Context) {
 	if body.Tags == nil {
 		body.Tags = []string{}
 	}
+	existing, err := h.Pages.GetByID(c.Request.Context(), id, user.ID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		internalError(c, err)
+		return
+	}
 	if body.Type == "" {
 		body.Type = model.NodeTypePage
+		if existing != nil {
+			body.Type = existing.Type
+		}
+	}
+	// The type is fixed at creation. The store never rewrites it either; this
+	// turns an attempt into a clear 400 instead of a silently ignored field.
+	if existing != nil && body.Type != existing.Type {
+		typeImmutable(c)
+		return
 	}
 	page, err := h.Pages.Upsert(c.Request.Context(), &body)
 	if err != nil {
@@ -283,6 +301,13 @@ func (h *PageHandler) UpsertPage(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, page)
+}
+
+// typeImmutable rejects a request that would turn a page into a folder or
+// back. Shares are typed ('page' vs 'folder'), so a changed type made the
+// existing shares impossible to list or revoke.
+func typeImmutable(c *gin.Context) {
+	c.JSON(http.StatusBadRequest, gin.H{"error": store.ErrTypeImmutable.Error(), "code": "type_immutable"})
 }
 
 // GET /pages/:id/content

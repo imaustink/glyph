@@ -133,7 +133,6 @@ func (s *pgPageStore) Upsert(ctx context.Context, p *model.Page) (*model.Page, e
 		  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		  ON CONFLICT (id) DO UPDATE SET
 		    parent_id = EXCLUDED.parent_id,
-		    type = EXCLUDED.type,
 		    title = EXCLUDED.title,
 		    "order" = EXCLUDED."order",
 		    tags = EXCLUDED.tags,
@@ -175,13 +174,14 @@ func (s *pgPageStore) Update(ctx context.Context, p *model.Page) (*model.Page, e
 	if p.Priority == "" {
 		p.Priority = model.PriorityNone
 	}
+	// type is never written: it is fixed at creation (see ErrTypeImmutable).
 	q := `UPDATE pages
-		  SET type=$1, title=$2, parent_id=$3, "order"=$4, tags=$5, priority=$6, todo_trigger=$7,
-		      org_id=$8, is_private=$9, updated_at=NOW()
-		  WHERE id=$10 AND user_id=$11
+		  SET title=$1, parent_id=$2, "order"=$3, tags=$4, priority=$5, todo_trigger=$6,
+		      org_id=$7, is_private=$8, updated_at=NOW()
+		  WHERE id=$9 AND user_id=$10
 		  RETURNING ` + pageColumns
 	return s.writeWithParent(ctx, p.ID, p.ParentID, q,
-		p.Type, p.Title, p.ParentID, p.Order, p.Tags, p.Priority, triggerJSON,
+		p.Title, p.ParentID, p.Order, p.Tags, p.Priority, triggerJSON,
 		p.OrgID, p.IsPrivate, p.ID, p.UserID,
 	)
 }
@@ -259,7 +259,8 @@ const pageSubtreeCTE = `
 // (ErrSubtreeNotOwned) unless the caller owns every page in it. Before the
 // rows go, each page's current content is archived into
 // page_content_versions, which no longer cascades with its page, so a deleted
-// note is recoverable, and the subtree's tasks are soft-deleted.
+// note is recoverable; the subtree's tasks are soft-deleted and its shares
+// deleted.
 func (s *pgPageStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -316,6 +317,14 @@ func (s *pgPageStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
 		 WHERE deleted_at IS NULL AND (source_page_id = ANY($1) OR folder_id = ANY($1))`, ids,
 	); err != nil {
 		return fmt.Errorf("page delete — tasks: %w", err)
+	}
+	// shares.resource_id has no foreign key. A share left behind would
+	// re-grant its recipient access to any page later created under the same
+	// id (PUT takes the id from the URL).
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM shares WHERE resource_type IN ('page', 'folder') AND resource_id = ANY($1)`, ids,
+	); err != nil {
+		return fmt.Errorf("page delete — shares: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM pages WHERE id = ANY($1)`, ids); err != nil {
 		return fmt.Errorf("page delete: %w", err)

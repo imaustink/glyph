@@ -31,6 +31,10 @@ var ErrStaleSnapshot = errors.New("stale collaborative snapshot")
 // cascade would otherwise destroy other users' work (DI-02).
 var ErrSubtreeNotOwned = fmt.Errorf("%w: the folder contains pages owned by other users", ErrConflict)
 
+// ErrTypeImmutable is returned when a write would change a page's type
+// (page↔folder). Shares are typed, so a changed type left them unmanageable.
+var ErrTypeImmutable = errors.New("a page's type cannot be changed")
+
 // ErrCycle is returned when a write would make a page its own ancestor
 // (parent_id pointing at itself or at one of its descendants).
 var ErrCycle = errors.New("a node cannot be moved under itself or one of its descendants")
