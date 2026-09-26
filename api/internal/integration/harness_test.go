@@ -51,13 +51,17 @@ type Backend interface {
 
 // Harness holds the state shared across all specs within one backend run.
 type Harness struct {
-	Backend    Backend
-	Router     *gin.Engine
-	UserStore  store.UserStore
-	OrgStore   store.OrgStore
-	ShareStore store.ShareStore
-	UserA      *model.User
-	UserB      *model.User
+	Backend       Backend
+	Router        *gin.Engine
+	UserStore     store.UserStore
+	OrgStore      store.OrgStore
+	ShareStore    store.ShareStore
+	PageStore     store.PageStore
+	TaskStore     store.TaskStore
+	LaneStore     store.LaneStore
+	TemplateStore store.TemplateStore
+	UserA         *model.User
+	UserB         *model.User
 
 	// Exposed so specs can flip the collaborative-editing kill switch.
 	PageHandler   *handler.PageHandler
@@ -142,7 +146,7 @@ func NewHarness(t *testing.T, b Backend) *Harness {
 	collabH := &handler.CollabHandler{Pages: pages, Perms: perms, Enabled: true, ServiceToken: collabServiceToken}
 	notifier := &recordingNotifier{}
 	taskH := &handler.TaskHandler{Tasks: tasks, Perms: perms, Pages: pages, Collab: notifier}
-	laneH := &handler.LaneHandler{Lanes: lanes, Pages: pages}
+	laneH := &handler.LaneHandler{Lanes: lanes, Pages: pages, Perms: perms}
 	tmplH := &handler.TemplateHandler{Templates: templates, Perms: perms}
 	folderH := &handler.FolderHandler{Pages: pages, Lanes: lanes, Tasks: tasks, Perms: perms}
 	orgH := &handler.OrgHandler{Orgs: orgs, Users: users}
@@ -166,6 +170,10 @@ func NewHarness(t *testing.T, b Backend) *Harness {
 		UserStore:     users,
 		OrgStore:      orgs,
 		ShareStore:    shares,
+		PageStore:     pages,
+		TaskStore:     tasks,
+		LaneStore:     lanes,
+		TemplateStore: templates,
 		PageHandler:   pageH,
 		Notifier:      notifier,
 		CollabHandler: collabH,

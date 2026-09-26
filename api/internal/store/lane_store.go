@@ -213,6 +213,54 @@ func (s *pgLaneStore) Update(ctx context.Context, l *model.Lane) (*model.Lane, e
 	return scanLane(s.pool.QueryRow(ctx, q, l.Title, filterJSON, sortJSON, l.Order, l.ID, l.UserID))
 }
 
+func (s *pgLaneStore) Patch(ctx context.Context, id, userID uuid.UUID, fn func(*model.Lane) error) (*model.Lane, error) {
+	return s.patch(ctx, `id = $1 AND user_id = $2`, []any{id, userID}, fn)
+}
+
+// PatchByIDAndFolder is Patch for a folder-scoped lane. Access control
+// (folder write permission) is assumed to be already verified by the caller.
+func (s *pgLaneStore) PatchByIDAndFolder(ctx context.Context, id, folderID uuid.UUID, fn func(*model.Lane) error) (*model.Lane, error) {
+	return s.patch(ctx, `id = $1 AND folder_id = $2`, []any{id, folderID}, fn)
+}
+
+// patch locks the lane matching where, applies fn and writes the editable
+// columns back in the same transaction, so a concurrent edit to another
+// field is seen instead of overwritten.
+func (s *pgLaneStore) patch(ctx context.Context, where string, args []any, fn func(*model.Lane) error) (*model.Lane, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("patch lane — begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	l, err := scanLane(tx.QueryRow(ctx, `SELECT `+laneColumns+` FROM lanes WHERE `+where+` FOR UPDATE`, args...))
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(l); err != nil {
+		return nil, err
+	}
+	filterJSON, err := jsonMarshal(l.FilterSet)
+	if err != nil {
+		return nil, fmt.Errorf("marshal filter_set: %w", err)
+	}
+	sortJSON, err := jsonMarshal(l.SortConfig)
+	if err != nil {
+		return nil, fmt.Errorf("marshal sort_config: %w", err)
+	}
+	out, err := scanLane(tx.QueryRow(ctx, `UPDATE lanes
+		  SET title=$1, filter_set=$2, sort_config=$3, "order"=$4, updated_at=NOW()
+		  WHERE id=$5
+		  RETURNING `+laneColumns, l.Title, filterJSON, sortJSON, l.Order, l.ID))
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("patch lane — commit: %w", err)
+	}
+	return out, nil
+}
+
 // UpdateByIDAndFolder updates a folder-scoped lane regardless of who created it.
 // Access control (folder write permission) is assumed to be already verified by the caller.
 func (s *pgLaneStore) UpdateByIDAndFolder(ctx context.Context, l *model.Lane, folderID uuid.UUID) (*model.Lane, error) {

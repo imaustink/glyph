@@ -263,6 +263,30 @@ func (s *pgTaskStore) CreateLinked(ctx context.Context, t *model.Task) (*model.T
 		return nil, false, fmt.Errorf("%w: task id already in use", ErrConflict)
 	}
 	if deleted {
+		var reason string
+		if err := tx.QueryRow(ctx, `SELECT deleted_reason FROM tasks WHERE id = $1`, existing.ID).Scan(&reason); err != nil {
+			return nil, false, fmt.Errorf("create linked task — deleted reason: %w", err)
+		}
+		if reason == "user" {
+			// Someone deleted this task on purpose: it is never brought back.
+			// Release the bullet from it and give the bullet a new task.
+			if _, err := tx.Exec(ctx, `UPDATE tasks SET source_node_id = NULL WHERE id = $1`, existing.ID); err != nil {
+				return nil, false, fmt.Errorf("create linked task — detach deleted: %w", err)
+			}
+			created, err := scanTask(tx.QueryRow(ctx, `INSERT INTO tasks (id, user_id, title, description, status, priority, tags, due_date, source_page_id, source_node_id, link, "order", org_id, is_private, folder_id)
+				  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+				  RETURNING `+taskColumns,
+				t.ID, t.UserID, t.Title, t.Description, t.Status, t.Priority,
+				t.Tags, t.DueDate, t.SourcePageID, t.SourceNodeID, linkJSON, t.Order, t.OrgID, t.IsPrivate, t.FolderID,
+			))
+			if err != nil {
+				return nil, false, mapUniqueViolation(err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return nil, false, fmt.Errorf("create linked task — commit: %w", err)
+			}
+			return created, true, nil
+		}
 		// Restoring someone else's deleted task would let any editor of the
 		// page resurrect (and so read) a task they were never shown.
 		if existing.UserID != t.UserID {
@@ -334,6 +358,49 @@ func (s *pgTaskStore) Update(ctx context.Context, t *model.Task) (*model.Task, e
 	))
 	if err != nil {
 		return nil, mapUniqueViolation(err)
+	}
+	return out, nil
+}
+
+// Patch is the read-modify-write behind PATCH /tasks/:id, done under a row
+// lock: reading outside the lock let two PATCHes to different fields each
+// write back the other's field with its old value.
+func (s *pgTaskStore) Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error) (*model.Task, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("patch task — begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	t, err := scanTask(tx.QueryRow(ctx,
+		`SELECT `+taskColumns+` FROM tasks
+		 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+		 FOR UPDATE`, id, ownerID))
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(t); err != nil {
+		return nil, err
+	}
+	var linkJSON []byte
+	if t.Link != nil {
+		linkJSON, _ = json.Marshal(t.Link)
+	}
+	out, err := scanTask(tx.QueryRow(ctx, `UPDATE tasks
+		  SET user_id=$1, title=$2, description=$3, status=$4, priority=$5, tags=$6,
+		      due_date=$7, source_page_id=$8, source_node_id=$9, link=$10, "order"=$11,
+		      org_id=$12, is_private=$13, folder_id=$14, updated_at=NOW()
+		  WHERE id=$15
+		  RETURNING `+taskColumns,
+		t.UserID, t.Title, t.Description, t.Status, t.Priority, t.Tags,
+		t.DueDate, t.SourcePageID, t.SourceNodeID, linkJSON, t.Order,
+		t.OrgID, t.IsPrivate, t.FolderID, id,
+	))
+	if err != nil {
+		return nil, mapUniqueViolation(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("patch task — commit: %w", err)
 	}
 	return out, nil
 }
