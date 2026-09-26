@@ -99,4 +99,34 @@ func TestMigrations(t *testing.T) {
 		).Scan(&versioned))
 		require.JSONEq(t, `{"type":"doc","content":[]}`, versioned)
 	})
+
+	// DI-07: rows written as JSONB null (instead of SQL NULL) by the typed-nil
+	// bug are backfilled to SQL NULL, on pages and templates alike. Real
+	// configs are left alone.
+	t.Run("000022_BackfillsJSONNullTodoTrigger", func(t *testing.T) {
+		pool := startMigrationDB(t)
+		ctx := context.Background()
+		applyMigrations(t, pool, "000001", "000021")
+		_, err := pool.Exec(ctx, `
+			INSERT INTO users (id, sub, issuer) VALUES ('00000000-0000-0000-0000-000000000001', 's', 'i');
+			INSERT INTO pages (id, user_id, type, todo_trigger) VALUES
+			  ('00000000-0000-0000-0000-00000000000a', '00000000-0000-0000-0000-000000000001', 'page', 'null'::jsonb),
+			  ('00000000-0000-0000-0000-00000000000b', '00000000-0000-0000-0000-000000000001', 'page', '{"pattern":"TODO","matchMode":"prefix","blockTypes":["listItem"]}');
+			INSERT INTO templates (id, user_id, todo_trigger) VALUES
+			  ('00000000-0000-0000-0000-00000000000c', '00000000-0000-0000-0000-000000000001', 'null'::jsonb);`)
+		require.NoError(t, err)
+
+		applyMigrations(t, pool, "000022", "000022")
+
+		var pageNull, pageKept, tmplNull bool
+		require.NoError(t, pool.QueryRow(ctx, `
+			SELECT
+			  (SELECT todo_trigger IS NULL FROM pages WHERE id = '00000000-0000-0000-0000-00000000000a'),
+			  (SELECT todo_trigger ->> 'pattern' = 'TODO' FROM pages WHERE id = '00000000-0000-0000-0000-00000000000b'),
+			  (SELECT todo_trigger IS NULL FROM templates WHERE id = '00000000-0000-0000-0000-00000000000c')`,
+		).Scan(&pageNull, &pageKept, &tmplNull))
+		require.True(t, pageNull, "page JSONB null todo_trigger should become SQL NULL")
+		require.True(t, pageKept, "a real page todo_trigger must be kept")
+		require.True(t, tmplNull, "template JSONB null todo_trigger should become SQL NULL")
+	})
 }
