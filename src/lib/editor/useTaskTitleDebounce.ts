@@ -21,6 +21,11 @@ export function debouncedTaskTitleUpdate(taskId: string, title: string): void {
   timers.set(taskId, setTimeout(() => flushTaskTitleUpdate(taskId), DEBOUNCE.TASK_TITLE));
 }
 
+/** Whether a title write for this task is waiting on its debounce timer. */
+export function hasPendingTaskTitleUpdate(taskId: string): boolean {
+  return pendingUpdates.has(taskId);
+}
+
 /**
  * Immediately flush a pending title update for a specific task.
  */

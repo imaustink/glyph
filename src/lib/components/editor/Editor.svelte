@@ -71,7 +71,9 @@
     () => loadedPageId
   );
 
-  const taskSync = useTaskSync(() => editor, () => pageId);
+  // Task titles flow back into bullets only in single-writer mode: in a
+  // collaborative note every client would make the same text edit.
+  const taskSync = useTaskSync(() => editor, () => pageId, { syncTitlesToBullets: () => mode === 'rest' });
 
   // In API mode the server reconciles tasks with the saved document; the
   // editor only mirrors that locally and never deletes tasks itself.
