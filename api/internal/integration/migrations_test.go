@@ -129,4 +129,50 @@ func TestMigrations(t *testing.T) {
 		require.True(t, pageKept, "a real page todo_trigger must be kept")
 		require.True(t, tmplNull, "template JSONB null todo_trigger should become SQL NULL")
 	})
+
+	// DI-22: shares left behind by deleted resources are garbage-collected,
+	// and a share whose type no longer matches its page (page↔folder) is
+	// re-typed so its owner can manage it again. Live shares are kept.
+	t.Run("000022_GCsOrphanAndMistypedShares", func(t *testing.T) {
+		pool := startMigrationDB(t)
+		ctx := context.Background()
+		applyMigrations(t, pool, "000001", "000021")
+		_, err := pool.Exec(ctx, `
+			INSERT INTO users (id, sub, issuer) VALUES
+			  ('00000000-0000-0000-0000-000000000001', 'a', 'i'),
+			  ('00000000-0000-0000-0000-000000000002', 'b', 'i');
+			INSERT INTO pages (id, user_id, type) VALUES
+			  ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-000000000001', 'page'),
+			  ('00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-000000000001', 'folder');
+			INSERT INTO templates (id, user_id) VALUES ('00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-000000000001');
+			INSERT INTO shares (id, resource_type, resource_id, shared_by_id, shared_with_id, permission) VALUES
+			  -- live
+			  ('00000000-0000-0000-0000-0000000000b1', 'page',     '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'viewer'),
+			  ('00000000-0000-0000-0000-0000000000b2', 'template', '00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'viewer'),
+			  -- mistyped: a 'page' share on what is now a folder
+			  ('00000000-0000-0000-0000-0000000000b3', 'page',     '00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'editor'),
+			  -- orphans
+			  ('00000000-0000-0000-0000-0000000000c1', 'page',     '00000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'viewer'),
+			  ('00000000-0000-0000-0000-0000000000c2', 'folder',   '00000000-0000-0000-0000-0000000000f2', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'viewer'),
+			  ('00000000-0000-0000-0000-0000000000c3', 'template', '00000000-0000-0000-0000-0000000000f3', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'viewer'),
+			  ('00000000-0000-0000-0000-0000000000c4', 'task',     '00000000-0000-0000-0000-0000000000f4', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'viewer');`)
+		require.NoError(t, err)
+
+		applyMigrations(t, pool, "000022", "000022")
+
+		rows, err := pool.Query(ctx, `SELECT id::text, resource_type FROM shares ORDER BY id`)
+		require.NoError(t, err)
+		got := map[string]string{}
+		for rows.Next() {
+			var id, typ string
+			require.NoError(t, rows.Scan(&id, &typ))
+			got[id] = typ
+		}
+		rows.Close()
+		require.Equal(t, map[string]string{
+			"00000000-0000-0000-0000-0000000000b1": "page",
+			"00000000-0000-0000-0000-0000000000b2": "template",
+			"00000000-0000-0000-0000-0000000000b3": "folder",
+		}, got)
+	})
 }

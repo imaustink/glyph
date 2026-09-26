@@ -283,6 +283,90 @@ func TestPageIntegrity(t *testing.T) {
 			}
 		},
 
+		// ── DI-22: shares die with their resource; page type is fixed ────
+		"DI22_DeletedPageSharesDoNotRegrantOnRecreate": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			p := createPage(t, h, h.UserA.ID, "Shared")
+			sharePage(t, h, p.ID, h.UserA.ID, h.UserB.ID, "viewer")
+			require.Equal(t, http.StatusNoContent, h.Do(t, "DELETE", "/api/v1/pages/"+p.ID.String(), nil, h.UserA.ID).Code)
+
+			// Alice re-creates a page with the same id (PUT takes it from the URL).
+			w := h.Do(t, "PUT", "/api/v1/pages/"+p.ID.String(),
+				map[string]interface{}{"title": "Private again", "type": "page", "isPrivate": true}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+			w = h.Do(t, "GET", "/api/v1/pages/"+p.ID.String(), nil, h.UserB.ID)
+			assert.Equal(t, http.StatusNotFound, w.Code, "the deleted page's share must not grant access to the new one")
+		},
+
+		"DI22_DeleteFolderRemovesSubtreeShares": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			pool := rawPool(t, h)
+			f := createFolder(t, h, h.UserA.ID, "F")
+			sub := createChild(t, h, h.UserA.ID, f.ID, "folder", "Sub")
+			note := createChild(t, h, h.UserA.ID, sub.ID, "page", "Note")
+			shareFolder(t, h, f.ID.String(), h.UserA.ID, h.UserB.ID, "viewer")
+			shareFolder(t, h, sub.ID.String(), h.UserA.ID, h.UserB.ID, "editor")
+			sharePage(t, h, note.ID, h.UserA.ID, h.UserB.ID, "viewer")
+
+			require.Equal(t, http.StatusNoContent, h.Do(t, "DELETE", "/api/v1/pages/"+f.ID.String(), nil, h.UserA.ID).Code)
+
+			var n int
+			require.NoError(t, pool.QueryRow(context.Background(),
+				`SELECT COUNT(*) FROM shares WHERE resource_id = ANY($1)`, []uuid.UUID{f.ID, sub.ID, note.ID},
+			).Scan(&n))
+			assert.Zero(t, n, "shares on the deleted subtree must be deleted with it")
+		},
+
+		"DI22_DeletedTemplateSharesDoNotRegrantOnRecreate": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			w := h.Do(t, "POST", "/api/v1/templates", map[string]interface{}{"name": "T"}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+			tmplID := Decode[struct{ ID string }](t, w).ID
+			w = h.Do(t, "POST", "/api/v1/shares", map[string]interface{}{
+				"resourceType": "template", "resourceId": tmplID,
+				"sharedWithId": h.UserB.ID.String(), "permission": "viewer",
+			}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+			require.Equal(t, http.StatusNoContent, h.Do(t, "DELETE", "/api/v1/templates/"+tmplID, nil, h.UserA.ID).Code)
+
+			w = h.Do(t, "PUT", "/api/v1/templates/"+tmplID, map[string]interface{}{"name": "T again", "isPrivate": true}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			w = h.Do(t, "GET", "/api/v1/templates/"+tmplID, nil, h.UserB.ID)
+			assert.Equal(t, http.StatusNotFound, w.Code, "the deleted template's share must not grant access to the new one")
+		},
+
+		// Changing page↔folder made existing shares unmanageable (the share
+		// handler matches on type), so the type is fixed at creation.
+		"DI22_PageTypeCannotChange": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			p := createPage(t, h, h.UserA.ID, "Page")
+
+			w := h.Do(t, "PATCH", "/api/v1/pages/"+p.ID.String(), map[string]interface{}{"type": "folder"}, h.UserA.ID)
+			assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+			w = h.Do(t, "PUT", "/api/v1/pages/"+p.ID.String(), map[string]interface{}{"title": "Page", "type": "folder"}, h.UserA.ID)
+			assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+			assert.Equal(t, model.NodeTypePage, getPage(t, h, h.UserA.ID, p.ID).Type)
+
+			// Sending the current type is fine.
+			w = h.Do(t, "PATCH", "/api/v1/pages/"+p.ID.String(), map[string]interface{}{"type": "page", "title": "Renamed"}, h.UserA.ID)
+			assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		},
+
+		// A second share for the same resource and recipient is a conflict,
+		// not a 500 (Postgres unique violation) or a silent duplicate
+		// (memstore).
+		"DI22_DuplicateShareIsConflict": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			p := createPage(t, h, h.UserA.ID, "Shared")
+			sharePage(t, h, p.ID, h.UserA.ID, h.UserB.ID, "viewer")
+			w := h.Do(t, "POST", "/api/v1/shares", map[string]interface{}{
+				"resourceType": "page", "resourceId": p.ID.String(),
+				"sharedWithId": h.UserB.ID.String(), "permission": "editor",
+			}, h.UserA.ID)
+			assert.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+		},
+
 		// Kept history must not leak to whoever re-creates a page under the
 		// deleted page's id (PUT takes a client-chosen id).
 		"DI02_RecreatedPageIDDoesNotSeeOldHistory": func(t *testing.T, h *Harness) {
