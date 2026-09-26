@@ -148,5 +148,53 @@ describe('titleTemplate', () => {
       expect(result.content[0].content[0].text).toMatch(/\{\{unknown-token\}\}/);
       expect(result.content[0].content[0].text).not.toMatch(/\{\{date\}\}/);
     });
+
+    // A note created from a template must not share bullet identity with the
+    // template (or with every other note made from it): a copied taskId links
+    // the new note's bullet to someone else's task, and a copied nodeId makes
+    // tasksStore.getByNodeId resolve to the wrong note's task.
+    it('strips list-item identity attributes (nodeId, taskId, task state)', () => {
+      const doc = {
+        type: 'doc',
+        content: [
+          { type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: 'TODO' }] },
+          {
+            type: 'bulletList',
+            content: [
+              {
+                type: 'listItem',
+                attrs: { nodeId: 'n-1', taskId: 't-1', checked: true, taskStatus: 'done' },
+                content: [
+                  { type: 'paragraph', content: [{ type: 'text', text: 'Review {{date}}' }] },
+                  {
+                    type: 'bulletList',
+                    content: [
+                      {
+                        type: 'listItem',
+                        attrs: { nodeId: 'n-2', taskId: null, checked: false, taskStatus: 'todo' },
+                        content: [{ type: 'paragraph', content: [{ type: 'text', text: 'nested' }] }]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      };
+      const result = JSON.parse(evaluateContentTemplate(JSON.stringify(doc)));
+      const outer = result.content[1].content[0];
+      const inner = outer.content[1].content[0];
+      for (const item of [outer, inner]) {
+        expect(item.attrs?.nodeId ?? null).toBeNull();
+        expect(item.attrs?.taskId ?? null).toBeNull();
+        expect(item.attrs?.checked ?? false).toBe(false);
+        expect(item.attrs?.taskStatus ?? 'todo').toBe('todo');
+      }
+      // Text is still evaluated.
+      expect(outer.content[0].content[0].text).not.toMatch(/\{\{date\}\}/);
+      // Other attributes survive.
+      expect(result.content[0].attrs.level).toBe(1);
+    });
   });
 });
