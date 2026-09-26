@@ -524,7 +524,7 @@ func (s *pageStore) Update(_ context.Context, p *model.Page) (*model.Page, error
 	defer s.r.mu.Unlock()
 	existing, ok := s.r.pages[p.ID]
 	if !ok || existing.UserID != p.UserID {
-		return nil, fmt.Errorf("pages update: not found")
+		return nil, fmt.Errorf("pages update: %w", store.ErrNotFound)
 	}
 	if s.r.wouldCycle(p.ID, p.ParentID) {
 		return nil, store.ErrCycle
@@ -627,11 +627,11 @@ func (s *pageStore) GetContent(_ context.Context, pageID, userID uuid.UUID) (*mo
 	defer s.r.mu.RUnlock()
 	p, ok := s.r.pages[pageID]
 	if !ok || !s.r.canRead(userID, p.UserID, p.OrgID, p.IsPrivate, model.ShareResourcePage, p.ID) {
-		return nil, fmt.Errorf("get content: not found")
+		return nil, fmt.Errorf("get content: %w", store.ErrNotFound)
 	}
 	pc, ok := s.r.contents[pageID]
 	if !ok {
-		return nil, fmt.Errorf("get content: not found")
+		return nil, fmt.Errorf("get content: %w", store.ErrNotFound)
 	}
 	cp := *pc
 	return &cp, nil
@@ -1728,7 +1728,7 @@ func (s *shareStore) GetByID(_ context.Context, id uuid.UUID) (*model.Share, err
 	defer s.r.mu.RUnlock()
 	sh, ok := s.r.shares[id]
 	if !ok {
-		return nil, fmt.Errorf("share get: not found")
+		return nil, fmt.Errorf("share get: %w", store.ErrNotFound)
 	}
 	return cloneShare(sh), nil
 }
@@ -1762,7 +1762,7 @@ func (s *shareStore) UpdatePermission(_ context.Context, id uuid.UUID, permissio
 	defer s.r.mu.Unlock()
 	sh, ok := s.r.shares[id]
 	if !ok {
-		return nil, fmt.Errorf("share update: not found")
+		return nil, fmt.Errorf("share update: %w", store.ErrNotFound)
 	}
 	sh.Permission = permission
 	return cloneShare(sh), nil
