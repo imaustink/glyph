@@ -118,3 +118,56 @@ func TestPageOrgMove(t *testing.T) {
 		},
 	})
 }
+
+// TestPageOrgMoveViaPut covers PUT /pages/:id changing an existing page's
+// org: it is the same move as PATCH's, so it must take the subtree and its
+// tasks along, and refuse a subtree holding other users' pages.
+func TestPageOrgMoveViaPut(t *testing.T) {
+	RunSpecs(t, map[string]func(t *testing.T, h *Harness){
+		"PutOrgChangeMovesSubtreeAndTasks": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			orgID := createOrgAs(t, h, h.UserA.ID, "Org")
+			f := createFolder(t, h, h.UserA.ID, "F")
+			note := createChild(t, h, h.UserA.ID, f.ID, "page", "Note")
+			writeDoc(t, h, h.UserA.ID, note.ID, todoDoc(bullet{nodeID: "n1"}))
+			noteTask := createLinkedTask(t, h, h.UserA.ID, note.ID, "n1")
+			w := h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{"title": "board task", "folderId": f.ID.String()}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+			boardTask := Decode[model.Task](t, w)
+
+			w = h.Do(t, "PUT", "/api/v1/pages/"+f.ID.String(), map[string]interface{}{"title": "F", "type": "folder", "orgId": orgID}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assertInOrg(t, orgID, Decode[model.Page](t, w).OrgID, "PUT did not move the folder")
+			assertInOrg(t, orgID, getPage(t, h, h.UserA.ID, note.ID).OrgID, "PUT left the sub-page in the old workspace")
+			assertInOrg(t, orgID, getTask(t, h, h.UserA.ID, noteTask.ID).OrgID, "PUT left the note's task in the old workspace")
+			assertInOrg(t, orgID, getTask(t, h, h.UserA.ID, boardTask.ID).OrgID, "PUT left the board task in the old workspace")
+			assert.Equal(t, "F", getPage(t, h, h.UserA.ID, f.ID).Title)
+
+			// Back to Personal: orgId omitted from a PUT is kept, so send null.
+			w = h.Do(t, "PUT", "/api/v1/pages/"+f.ID.String(), map[string]interface{}{"title": "F2", "orgId": nil}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Nil(t, getPage(t, h, h.UserA.ID, f.ID).OrgID)
+			assert.Equal(t, "F2", getPage(t, h, h.UserA.ID, f.ID).Title, "the rest of the PUT must still be written")
+			assert.Nil(t, getPage(t, h, h.UserA.ID, note.ID).OrgID, "PUT left the sub-page in the org")
+			assert.Nil(t, getTask(t, h, h.UserA.ID, noteTask.ID).OrgID, "PUT left the note's task in the org")
+			assert.Nil(t, getTask(t, h, h.UserA.ID, boardTask.ID).OrgID, "PUT left the board task in the org")
+		},
+
+		"PutOrgChangeOfFolderContainingOtherUsersPageRefused": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			orgID := createOrgAs(t, h, h.UserA.ID, "Alice's org")
+			f := createFolder(t, h, h.UserA.ID, "Alice's folder")
+			shareFolder(t, h, f.ID.String(), h.UserA.ID, h.UserB.ID, "editor")
+			bobs := createChild(t, h, h.UserB.ID, f.ID, "page", "Bob's page")
+
+			w := h.Do(t, "PUT", "/api/v1/pages/"+f.ID.String(), map[string]interface{}{"title": "Renamed", "orgId": orgID}, h.UserA.ID)
+			require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+			assert.Equal(t, "subtree_has_other_owners", Decode[map[string]interface{}](t, w)["code"])
+
+			assert.Nil(t, getPage(t, h, h.UserB.ID, bobs.ID).OrgID, "Bob's page was moved into Alice's org")
+			got := getPage(t, h, h.UserA.ID, f.ID)
+			assert.Nil(t, got.OrgID, "the refused PUT still moved the folder")
+			assert.Equal(t, "Alice's folder", got.Title, "the refused PUT still wrote the folder")
+		},
+	})
+}
