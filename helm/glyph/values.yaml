@@ -153,6 +153,12 @@ collab:
   # (Traefik, the k3s default, needs nothing.)
   ingressAnnotationsHint: {}
 
+  # On SIGTERM the service flushes every open document (retrying ones parked
+  # by a database outage) before exiting. The preStop sleep runs first, while
+  # the pod is taken out of the Service; the grace period covers both.
+  terminationGracePeriodSeconds: 60
+  preStopSleepSeconds: 5
+
   service:
     type: ClusterIP
     port: 1235
