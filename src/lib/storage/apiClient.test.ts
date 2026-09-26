@@ -128,6 +128,16 @@ describe('apiClient', () => {
       expect((init?.headers as Record<string, string>)?.['X-Requested-With']).toBe('XMLHttpRequest');
     });
 
+    it('marks a write whose change comes from a bullet, and only that one [DI-29]', async () => {
+      mockFetch(200, {});
+      await api.patch('/api/v1/tasks/1', { title: 'typed' }, { source: 'bullet' });
+      mockFetch(200, {});
+      await api.patch('/api/v1/tasks/1', { title: 'renamed' });
+      const headersOf = (i: number) => (fetchSpy.mock.calls[i] as [string, RequestInit])[1]?.headers as Record<string, string>;
+      expect(headersOf(0)['X-Glyph-Change-Source']).toBe('bullet');
+      expect(headersOf(1)['X-Glyph-Change-Source']).toBeUndefined();
+    });
+
     it('prepends API_BASE to the path', async () => {
       mockFetch(200, {});
       await api.get('/api/v1/test');

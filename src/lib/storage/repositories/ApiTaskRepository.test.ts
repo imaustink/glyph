@@ -109,6 +109,12 @@ describe('ApiTaskRepository', () => {
       expect(await repo.update('t1', { title: 'Updated' })).toEqual(task);
     });
 
+    it('passes write options (keepalive, change source) to the request [DI-29]', async () => {
+      mockPatch.mockResolvedValueOnce(makeTask({ id: 't1' }));
+      await repo.update('t1', { title: 'typed' }, { keepalive: true, source: 'bullet' });
+      expect(mockPatch).toHaveBeenLastCalledWith('/api/v1/tasks/t1', { title: 'typed' }, { keepalive: true, source: 'bullet' });
+    });
+
     it('propagates errors', async () => {
       mockPatch.mockRejectedValueOnce(new Error('fail'));
       await expect(repo.update('t1', {})).rejects.toThrow('fail');
