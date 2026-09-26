@@ -96,10 +96,10 @@ func (s *pageStore) WriteCollabSnapshot(_ context.Context, snap *model.CollabSna
 		return nil, fmt.Errorf("%w: page is detached", store.ErrStaleSnapshot)
 	case d.epoch != snap.Epoch:
 		return nil, fmt.Errorf("%w: epoch %d is not current (%d)", store.ErrStaleSnapshot, snap.Epoch, d.epoch)
-	case snap.UpToSeq < d.snapshotSeq:
-		return nil, fmt.Errorf("%w: seq %d is behind %d", store.ErrStaleSnapshot, snap.UpToSeq, d.snapshotSeq)
 	case d.quarantined:
 		return nil, fmt.Errorf("%w: page is quarantined", store.ErrStaleSnapshot)
+	case snap.UpToSeq < d.snapshotSeq:
+		return nil, fmt.Errorf("%w: seq %d is behind %d", store.ErrSnapshotBehind, snap.UpToSeq, d.snapshotSeq)
 	}
 	var out *model.PageContent
 	if cur, ok := s.r.contents[snap.PageID]; ok && jsonEqual(cur.Content, snap.Content) {

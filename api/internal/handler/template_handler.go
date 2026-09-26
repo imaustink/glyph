@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -95,15 +96,33 @@ func (h *TemplateHandler) UpdateTemplate(c *gin.Context) {
 		return
 	}
 	var req UpdateTemplateRequest
-	if !bindJSON(c, &req) {
+	keys, ok := bindJSONWithKeys(c, &req)
+	if !ok {
 		return
 	}
 	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
 		return
 	}
-	req.ApplyTo(existing)
-	tmpl, err := h.Templates.Update(c.Request.Context(), existing)
+	tmpl, err := h.Templates.Patch(c.Request.Context(), id, existing.UserID, func(t *model.Template) error {
+		req.ApplyTo(t)
+		// ApplyTo can't tell an explicit null from an omitted field: null
+		// clears these (move to Personal, no default folder, no trigger).
+		if raw, present := keys["orgId"]; present && isJSONNull(raw) {
+			t.OrgID = nil
+		}
+		if raw, present := keys["defaultFolderId"]; present && isJSONNull(raw) {
+			t.DefaultFolderID = nil
+		}
+		if raw, present := keys["todoTrigger"]; present && isJSONNull(raw) {
+			t.TodoTrigger = nil
+		}
+		return nil
+	})
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			notFoundOrError(c, err)
+			return
+		}
 		internalError(c, err)
 		return
 	}

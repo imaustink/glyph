@@ -99,17 +99,26 @@ func (h *CollabHandler) ServiceAuth() gin.HandlerFunc {
 // page_contents. The content goes through the same validation and
 // sanitisation as a REST write, and the same write path (history, task
 // reconciliation). Stale snapshots — from an epoch that has since been
-// replaced, or older than one already accepted — are refused with 409 so the
-// collab service knows to evict its copy.
+// replaced — are refused with 409 "stale_snapshot" so the collab service
+// knows to evict its copy. A snapshot for the current epoch that is merely
+// older than one already accepted (another replica got there first) is
+// refused with 409 "snapshot_behind": the sender catches up and retries
+// instead of evicting. Collab builds that predate the code treat it like any
+// 409 (evict), exactly as before.
 func (h *CollabHandler) WriteSnapshot(c *gin.Context) {
 	id, ok := parseUUID(c, "id")
 	if !ok {
 		return
 	}
-	if !h.Enabled {
-		c.JSON(http.StatusConflict, gin.H{"error": "collaborative editing is disabled", "code": "disabled"})
-		return
-	}
+	// The kill switch (Enabled=false) does not refuse snapshots. A page that
+	// is still attached holds edits in its log that only a snapshot puts into
+	// page_contents; refusing them would leave the next REST save to detach
+	// the page from stale content and silently drop those edits (DI-14). The
+	// store's epoch/attached checks still apply: once a REST save has
+	// detached the page, late snapshots are refused as stale. An accepted
+	// snapshot says `disabled` so the collab service winds the session down.
+	// (Collab builds that predate this ignore the field; their connections
+	// are dropped by the periodic access re-check instead.)
 	var body model.CollabSnapshot
 	if !bindJSON(c, &body) {
 		return
@@ -125,6 +134,9 @@ func (h *CollabHandler) WriteSnapshot(c *gin.Context) {
 	out, err := h.Pages.WriteCollabSnapshot(c.Request.Context(), &body)
 	if err != nil {
 		switch {
+		case errors.Is(err, store.ErrSnapshotBehind):
+			slog.Info("rejected collab snapshot behind a newer one", "page_id", id, "epoch", body.Epoch, "seq", body.UpToSeq, "reason", err)
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "snapshot_behind"})
 		case errors.Is(err, store.ErrStaleSnapshot):
 			slog.Info("rejected stale collab snapshot", "page_id", id, "epoch", body.Epoch, "seq", body.UpToSeq, "reason", err)
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "stale_snapshot"})
@@ -135,5 +147,9 @@ func (h *CollabHandler) WriteSnapshot(c *gin.Context) {
 		}
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"revision": out.Revision})
+	resp := gin.H{"revision": out.Revision}
+	if !h.Enabled {
+		resp["disabled"] = true
+	}
+	c.JSON(http.StatusOK, resp)
 }

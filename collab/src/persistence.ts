@@ -12,6 +12,22 @@
  *
  *  - Updates are only ever appended. Compaction replaces exactly the rows it
  *    merged, in one transaction, so a concurrent append is never lost.
+ *
+ *  - A page's seqs become visible in seq order. BIGSERIAL hands out a seq
+ *    when the row is inserted, not when it commits, so two unserialised
+ *    appends can commit out of order — and a reader that has already moved
+ *    past the later seq (fetchSince is strictly seq > afterSeq) skips the
+ *    earlier one forever. Every writer of page_collab_updates therefore
+ *    takes the page's page_collab_docs row lock *before* its INSERT draws a
+ *    seq, and holds it to commit: the next writer can only draw a seq after
+ *    the previous one is visible. (Collab pods from before this rule append
+ *    without the lock; during a rollout that overlaps them the old race
+ *    remains, and it is gone once they are.)
+ *
+ *  - A schema re-seed never replaces an epoch another replica has loaded
+ *    (api/migrations/000024_page_collab_leases.up.sql). Loading takes a lease
+ *    under the page_collab_docs row lock; re-seeding checks for other
+ *    holders' unexpired leases under the same lock.
  */
 import * as Y from 'yjs';
 import pg from 'pg';
@@ -43,6 +59,15 @@ export interface StoredPageContent {
 	schemaVersion: number;
 }
 
+/**
+ * This replica's claim on the documents it has loaded: `holder` is unique per
+ * process, and a lease not renewed within `ttlMs` expires.
+ */
+export interface Lease {
+	holder: string;
+	ttlMs: number;
+}
+
 /** Builds the first update of a new epoch from the page's stored content (null = no content yet). */
 export type Seeder = (content: StoredPageContent | null) => Uint8Array;
 
@@ -52,14 +77,24 @@ export interface Persistence {
 	/**
 	 * Load the page's shared document, seeding a new epoch from page_contents
 	 * if the page isn't attached. Throws NotFoundError if the page is gone.
+	 * With `lease`, the caller holds the loaded epoch from then on — unless
+	 * the log's fingerprint differs from `schemaFingerprint`, in which case
+	 * the caller is about to reseed() and takes its lease there.
 	 */
-	loadOrSeed(pageId: string, seed: Seeder, schemaFingerprint: string): Promise<LoadedDoc>;
+	loadOrSeed(pageId: string, seed: Seeder, schemaFingerprint: string, lease?: Lease): Promise<LoadedDoc>;
 	/**
 	 * Replace an attached document's log with a fresh epoch built from the
 	 * given update (used when the stored log predates the current schema).
-	 * Returns the new epoch, or null if `fromEpoch` is no longer current.
+	 * Returns the new epoch (held by `lease`, if given), null if `fromEpoch`
+	 * is no longer current, or 'held' if another replica holds an unexpired
+	 * lease on `fromEpoch` — it may have edits not yet in the log, which a
+	 * new epoch would make it unable to append.
 	 */
-	reseed(pageId: string, fromEpoch: number, update: Uint8Array, schemaFingerprint: string): Promise<number | null>;
+	reseed(pageId: string, fromEpoch: number, update: Uint8Array, schemaFingerprint: string, lease?: Lease): Promise<number | 'held' | null>;
+	/** Extend (or re-take) `holder`'s leases on the given loaded copies. */
+	renewLeases(holder: string, held: { pageId: string; epoch: number }[], ttlMs: number): Promise<void>;
+	/** Give up `holder`'s lease on the page's `epoch` (its copy unloaded). */
+	releaseLease(pageId: string, holder: string, epoch: number): Promise<void>;
 	/** Append an update. Returns its seq, or null if the epoch is no longer current and attached. */
 	append(pageId: string, epoch: number, data: Uint8Array): Promise<number | null>;
 	/** Updates in the epoch with seq > afterSeq, in seq order. */
@@ -78,8 +113,28 @@ export class NotFoundError extends Error {
 	}
 }
 
+const UPSERT_LEASE = `
+	INSERT INTO page_collab_leases (page_id, holder, epoch, expires_at)
+	VALUES ($1, $2, $3, NOW() + $4 * INTERVAL '1 millisecond')
+	ON CONFLICT (page_id, holder) DO UPDATE SET epoch = EXCLUDED.epoch, expires_at = EXCLUDED.expires_at`;
+
 export class PgPersistence implements Persistence {
+	/**
+	 * Whether page_collab_leases exists. The migrate Job and a collab rollout
+	 * can race, so a new build may start against a database that doesn't
+	 * have the table yet: until it does, leasing is skipped (re-seeding
+	 * behaves as it did before leases). Re-checked at most every 30 s.
+	 */
+	private leases: { available: boolean; checkedAt: number } | null = null;
+
 	constructor(private readonly pool: pg.Pool) {}
+
+	private async leasesAvailable(c: pg.PoolClient | pg.Pool = this.pool): Promise<boolean> {
+		if (this.leases && (this.leases.available || Date.now() - this.leases.checkedAt < 30000)) return this.leases.available;
+		const { rows } = await c.query(`SELECT to_regclass('page_collab_leases') IS NOT NULL AS ok`);
+		this.leases = { available: rows[0].ok, checkedAt: Date.now() };
+		return this.leases.available;
+	}
 
 	static fromUrl(url: string): PgPersistence {
 		return new PgPersistence(new pg.Pool({ connectionString: url, max: 10 }));
@@ -115,7 +170,7 @@ export class PgPersistence implements Persistence {
 		};
 	}
 
-	async loadOrSeed(pageId: string, seed: Seeder, schemaFingerprint: string): Promise<LoadedDoc> {
+	async loadOrSeed(pageId: string, seed: Seeder, schemaFingerprint: string, lease?: Lease): Promise<LoadedDoc> {
 		return this.tx(async (c) => {
 			// Same lock as the API's content writes: serialises seeding against
 			// REST writes and against other replicas seeding the same page.
@@ -135,6 +190,11 @@ export class PgPersistence implements Persistence {
 					`SELECT seq, data FROM page_collab_updates WHERE page_id = $1 AND epoch = $2 ORDER BY seq`,
 					[pageId, st.epoch]
 				);
+				// Held from inside the row lock, so a reseed either sees this
+				// lease or ran first (and we loaded its new epoch).
+				if (lease && st.schema_fingerprint === schemaFingerprint && (await this.leasesAvailable(c))) {
+					await c.query(UPSERT_LEASE, [pageId, lease.holder, st.epoch, lease.ttlMs]);
+				}
 				return {
 					epoch: st.epoch,
 					quarantined: st.quarantined,
@@ -153,11 +213,18 @@ export class PgPersistence implements Persistence {
 			);
 			const epoch = st.epoch + 1;
 			const seq = await this.startEpoch(c, pageId, epoch, initial, schemaFingerprint);
+			if (lease && (await this.leasesAvailable(c))) await c.query(UPSERT_LEASE, [pageId, lease.holder, epoch, lease.ttlMs]);
 			return { epoch, quarantined: false, schemaFingerprint, seeded: true, updates: [{ seq, data: initial }] };
 		});
 	}
 
-	async reseed(pageId: string, fromEpoch: number, update: Uint8Array, schemaFingerprint: string): Promise<number | null> {
+	async reseed(
+		pageId: string,
+		fromEpoch: number,
+		update: Uint8Array,
+		schemaFingerprint: string,
+		lease?: Lease
+	): Promise<number | 'held' | null> {
 		return this.tx(async (c) => {
 			await c.query(`SELECT id FROM pages WHERE id = $1 FOR UPDATE`, [pageId]);
 			const { rows } = await c.query(
@@ -165,10 +232,46 @@ export class PgPersistence implements Persistence {
 				[pageId]
 			);
 			if (rows.length === 0 || !rows[0].attached || rows[0].epoch !== fromEpoch) return null;
+			const leasing = await this.leasesAvailable(c);
+			if (leasing) {
+				const held = await c.query(
+					`SELECT 1 FROM page_collab_leases
+					 WHERE page_id = $1 AND epoch = $2 AND holder <> $3 AND expires_at > NOW() LIMIT 1`,
+					[pageId, fromEpoch, lease?.holder ?? '']
+				);
+				if (held.rowCount) return 'held';
+			}
 			const epoch = fromEpoch + 1;
 			await this.startEpoch(c, pageId, epoch, update, schemaFingerprint);
+			if (leasing && lease) await c.query(UPSERT_LEASE, [pageId, lease.holder, epoch, lease.ttlMs]);
 			return epoch;
 		});
+	}
+
+	async renewLeases(holder: string, held: { pageId: string; epoch: number }[], ttlMs: number): Promise<void> {
+		if (!(await this.leasesAvailable())) return;
+		if (held.length > 0) {
+			// An upsert, not an UPDATE: it also re-takes a lease that a racing
+			// release (of an earlier copy of the same page) deleted. Pages
+			// deleted meanwhile are skipped rather than failing the batch on
+			// the foreign key.
+			await this.pool.query(
+				`INSERT INTO page_collab_leases (page_id, holder, epoch, expires_at)
+				 SELECT t.page_id, $1, t.epoch, NOW() + $4 * INTERVAL '1 millisecond'
+				 FROM unnest($2::uuid[], $3::int[]) AS t(page_id, epoch)
+				 WHERE EXISTS (SELECT 1 FROM pages WHERE id = t.page_id)
+				 ON CONFLICT (page_id, holder) DO UPDATE SET epoch = EXCLUDED.epoch, expires_at = EXCLUDED.expires_at`,
+				[holder, held.map((h) => h.pageId), held.map((h) => h.epoch), ttlMs]
+			);
+		}
+		// Leases of replicas that died without releasing them. Expired ones
+		// already don't count; this only keeps the table small.
+		await this.pool.query(`DELETE FROM page_collab_leases WHERE expires_at < NOW() - INTERVAL '1 hour'`);
+	}
+
+	async releaseLease(pageId: string, holder: string, epoch: number): Promise<void> {
+		if (!(await this.leasesAvailable())) return;
+		await this.pool.query(`DELETE FROM page_collab_leases WHERE page_id = $1 AND holder = $2 AND epoch = $3`, [pageId, holder, epoch]);
 	}
 
 	/** Replace the log with a single initial update under a new epoch. Caller holds the locks. */
@@ -192,11 +295,16 @@ export class PgPersistence implements Persistence {
 
 	async append(pageId: string, epoch: number, data: Uint8Array): Promise<number | null> {
 		// Conditional on the epoch still being live, so a replica holding a
-		// replaced document finds out on its next write.
+		// replaced document finds out on its next write. The CTE locks the
+		// page_collab_docs row before the INSERT draws its seq, and the lock is
+		// held until this (single, autocommitted) statement commits — so seqs
+		// for a page commit in seq order (see the header).
 		const { rows } = await this.pool.query(
-			`INSERT INTO page_collab_updates (page_id, epoch, data)
-			 SELECT $1, $2, $3
-			 WHERE EXISTS (SELECT 1 FROM page_collab_docs WHERE page_id = $1 AND epoch = $2 AND attached)
+			`WITH live AS (
+			   SELECT 1 FROM page_collab_docs WHERE page_id = $1 AND epoch = $2 AND attached FOR UPDATE
+			 )
+			 INSERT INTO page_collab_updates (page_id, epoch, data)
+			 SELECT $1, $2, $3 FROM live
 			 RETURNING seq`,
 			[pageId, epoch, Buffer.from(data)]
 		);
@@ -213,6 +321,10 @@ export class PgPersistence implements Persistence {
 
 	async compact(pageId: string, epoch: number): Promise<number | null> {
 		return this.tx(async (c) => {
+			// The merged row draws a new seq: take the seq-order lock first,
+			// like append (see the header). Appends wait for the compaction,
+			// and every append that committed before it is in the SELECT below.
+			await c.query(`SELECT 1 FROM page_collab_docs WHERE page_id = $1 FOR UPDATE`, [pageId]);
 			const { rows } = await c.query(
 				`SELECT seq, data FROM page_collab_updates WHERE page_id = $1 AND epoch = $2 ORDER BY seq FOR UPDATE`,
 				[pageId, epoch]

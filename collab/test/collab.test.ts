@@ -17,6 +17,7 @@ import {
 	textOf,
 	eventually,
 	sleep,
+	recordingLogger,
 	type TestServer,
 	type TestClient
 } from './support/harness.js';
@@ -38,6 +39,24 @@ function open(o: Parameters<typeof connect>[2], s: TestServer = server): TestCli
 	const c = connect(s, PAGE, o);
 	clients.push(c);
 	return c;
+}
+
+/** A gate a persistence hook can wait on until the test releases it. */
+function hold() {
+	let release!: () => void;
+	const gate = new Promise<void>((r) => (release = r));
+	return { wait: () => gate, release };
+}
+
+/**
+ * A valid update another replica could have appended: a paragraph inserted at
+ * the top of the document as it is currently stored.
+ */
+function foreignEdit(text: string): Uint8Array {
+	const foreign = persistence.replay(PAGE);
+	const before = Y.encodeStateVector(foreign);
+	foreign.getXmlFragment(COLLAB_FRAGMENT).insert(0, [paragraph(text)]);
+	return Y.encodeStateAsUpdate(foreign, before);
 }
 
 beforeEach(async () => {
@@ -159,6 +178,102 @@ describe('convergence and persistence', () => {
 		await eventually(() => textOf(persistence.replay(PAGE)).includes('parked edit'), 5000, 'parked edit persisted');
 	});
 
+	it('a reopen during the unload flush keeps the new session persisting [DI-12]', async () => {
+		// A failed persist leaves a retry pending, so the last client leaving
+		// runs a real (awaited) flush. Someone reopens the note while that
+		// flush is in flight. When the flush finishes it must tear down only
+		// its own copy — deleting the new session's state would leave every
+		// later edit unpersisted and Reset the new editor.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		persistence.failAppends = 1;
+		alice.fragment.insert(alice.fragment.length, [paragraph('before leaving')]);
+		await sleep(150); // the first persist fails; a retry is scheduled
+
+		const flush = hold();
+		persistence.beforeAppend = () => flush.wait();
+		alice.destroy(); // the unload flush's append is now held in flight
+		await sleep(100);
+
+		const bob = open({ user: 'bob' });
+		await sleep(100); // bob's document is loading while the flush is held
+		flush.release();
+		persistence.beforeAppend = null;
+		await bob.synced();
+
+		bob.fragment.insert(bob.fragment.length, [paragraph('after reopening')]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('after reopening'), 5000, 'new session persisted');
+		expect(textOf(persistence.replay(PAGE))).toContain('before leaving');
+		expect(bob.closeReasons).not.toContain(CollabReason.Reset);
+	});
+
+	it('a batch that fails during the unload flush moves to the reopened copy [DI-12]', async () => {
+		// Same race, but the held flush append fails. Its batch goes back onto
+		// the parked copy — which the reopen has already replaced. The reopen
+		// must wait for the parked copy's in-flight work before carrying its
+		// updates over, or the batch lands on a dead copy that never retries.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		persistence.failAppends = 1;
+		alice.fragment.insert(alice.fragment.length, [paragraph('batch in flight')]);
+		await sleep(150);
+
+		const flush = hold();
+		persistence.beforeAppend = async () => {
+			persistence.beforeAppend = null;
+			await flush.wait();
+			persistence.failAppends = 1; // this (the flush's) append fails
+		};
+		alice.destroy();
+		await sleep(100);
+
+		const bob = open({ user: 'bob' });
+		await sleep(100);
+		flush.release();
+		await bob.synced();
+
+		await eventually(() => textOf(bob.doc).includes('batch in flight'), 5000, 'reopened copy has the failed batch');
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('batch in flight'), 5000, 'failed batch persisted');
+	});
+
+	it('shutdown keeps retrying parked edits until persistence recovers [DI-15]', async () => {
+		// SIGTERM during an outage. Hocuspocus considers itself destroyed once
+		// no documents are loaded, but a parked copy (its last client left
+		// while appends failed) still holds edits the client was told were
+		// saved. Closing the pool then loses them.
+		const s2 = await startServer(persistence, api, { shutdownDrainMs: 5000 });
+		const alice = open({ user: 'alice' }, s2);
+		await alice.synced();
+		persistence.failAppends = 1000;
+		alice.fragment.insert(alice.fragment.length, [paragraph('unsaved at shutdown')]);
+		await sleep(150);
+		alice.destroy();
+		await sleep(150); // the unload flush failed: the copy is parked
+
+		setTimeout(() => (persistence.failAppends = 0), 400); // recovers mid-shutdown
+		await s2.stop();
+		expect(textOf(persistence.replay(PAGE))).toContain('unsaved at shutdown');
+	});
+
+	it('shutdown gives up at its deadline and says what it dropped [DI-15]', async () => {
+		const rec = recordingLogger();
+		const s2 = await startServer(persistence, api, { shutdownDrainMs: 300, log: rec.log });
+		const alice = open({ user: 'alice' }, s2);
+		await alice.synced();
+		persistence.failAppends = 1000;
+		alice.fragment.insert(alice.fragment.length, [paragraph('never saved')]);
+		await sleep(150);
+		alice.destroy();
+		await sleep(150);
+
+		const started = Date.now();
+		await s2.stop();
+		expect(Date.now() - started).toBeLessThan(3000);
+		const dropped = rec.entries.find((e) => e.level === 'error' && /shutting down/.test(e.msg) && e.fields?.pageId === PAGE);
+		expect(dropped, 'an error naming the page whose updates were dropped').toBeDefined();
+		persistence.failAppends = 0;
+	});
+
 	it('reloads the same document from the log after every client leaves', async () => {
 		const alice = open({ user: 'alice' });
 		await alice.synced();
@@ -229,6 +344,62 @@ describe('convergence and persistence', () => {
 			'foreign append survived compaction in the snapshot'
 		);
 		await eventually(() => textOf(alice.doc).includes('from another replica'));
+	});
+
+	it('a foreign append between catch-up and append is not skipped [DI-11]', async () => {
+		// Replica A catches up to seq N; replica B appends N+1; A appends N+2.
+		// Jumping A's lastSeq to N+2 would make every later catch-up (strictly
+		// seq > lastSeq) skip B's row, and A's snapshots would drop B's edit.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		const foreign = foreignEdit('appended by another replica');
+		persistence.beforeAppend = (pageId, epoch) => {
+			persistence.beforeAppend = null;
+			persistence.injectRow(pageId, epoch, foreign);
+		};
+		alice.fragment.insert(alice.fragment.length, [paragraph('local edit')]);
+
+		await eventually(() => textOf(alice.doc).includes('appended by another replica'), 3000, 'foreign row reached the replica');
+		await eventually(
+			() => JSON.stringify(api.latest(PAGE) ?? '').includes('appended by another replica'),
+			3000,
+			'foreign row reached the snapshot'
+		);
+	});
+
+	it('a snapshot that loses the race to another replica\'s newer one does not evict [DI-11]', async () => {
+		// Two replicas snapshot concurrently: A's (for seq N) arrives after B's
+		// (for N+1) and is refused as behind. That is not a replaced document —
+		// A must catch up, not Reset its editors and drop their pending edits.
+		const other = await startServer(persistence, api);
+		try {
+			const a = open({ user: 'alice' });
+			const b = open({ user: 'bob' }, other);
+			await Promise.all([a.synced(), b.synced()]);
+
+			const gate = hold();
+			let held = false;
+			api.beforeSnapshot = async () => {
+				if (held) return;
+				held = true;
+				await gate.wait();
+			};
+			a.fragment.insert(a.fragment.length, [paragraph('via replica A')]);
+			await eventually(() => held, 3000, "A's snapshot in flight");
+			b.fragment.insert(b.fragment.length, [paragraph('via replica B')]);
+			await eventually(() => JSON.stringify(api.latest(PAGE) ?? '').includes('via replica B'), 3000, "B's newer snapshot accepted");
+			gate.release();
+			await sleep(200);
+			expect(a.closeReasons).not.toContain(CollabReason.Reset);
+
+			a.fragment.insert(a.fragment.length, [paragraph('A keeps editing')]);
+			await eventually(() => {
+				const snap = JSON.stringify(api.latest(PAGE));
+				return snap.includes('A keeps editing') && snap.includes('via replica A') && snap.includes('via replica B');
+			}, 5000, 'A persists again after losing the race');
+		} finally {
+			await other.stop();
+		}
 	});
 
 	it('replicas pick up each other\'s updates before snapshotting', async () => {
@@ -356,6 +527,24 @@ describe('epochs', () => {
 		expect(textOf(persistence.replay(PAGE))).not.toContain('edit made before the restore');
 	});
 
+	it('the kill switch still takes the final snapshot of an attached page [DI-14]', async () => {
+		// COLLAB_ENABLED=false on the API. Edits since the last snapshot are
+		// in the log, but only a snapshot puts them in page_contents — which
+		// the next REST save detaches from. Refusing that snapshot (and
+		// evicting) strands them.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		api.enabled = false;
+		alice.fragment.insert(alice.fragment.length, [paragraph('typed as the switch flipped')]);
+		await eventually(
+			() => JSON.stringify(api.latest(PAGE) ?? '').includes('typed as the switch flipped'),
+			3000,
+			'final snapshot landed in page_contents'
+		);
+		// …and the session then winds down: editors fall back to single-writer.
+		await eventually(() => alice.closeReasons.includes(CollabReason.Disabled), 3000, 'editor told collab is off');
+	});
+
 	it('evicts when the API rejects a snapshot as stale', async () => {
 		const alice = open({ user: 'alice' });
 		await alice.synced();
@@ -372,6 +561,37 @@ describe('epochs', () => {
 		alice.fragment.insert(alice.fragment.length, [paragraph('lost to the restore')]);
 		await eventually(() => alice.closeReasons.includes(CollabReason.Reset));
 		expect(api.latest(PAGE) ? JSON.stringify(api.latest(PAGE)) : '').not.toContain('lost to the restore');
+	});
+
+	it('a schema upgrade does not reseed over another replica\'s unappended edits [DI-16]', async () => {
+		// Rolling deploy: a replica of the older build still has the note open,
+		// and its editor's latest edits are waiting out the store debounce.
+		// The first new-build editor, on a new replica, wants to re-seed the
+		// document for the new schema. Doing so replaces the epoch under the
+		// old replica: its append fails, it evicts, and those edits are gone.
+		const old = await startServer(persistence, api, { fingerprint: 'old-build', debounce: 1500, maxDebounce: 1500 });
+		try {
+			const alice = open({ user: 'alice', fingerprint: 'old-build' }, old);
+			await alice.synced();
+			alice.fragment.insert(alice.fragment.length, [paragraph('typed on the old build')]);
+			await sleep(100); // not yet appended by the old replica
+
+			const bob = open({ user: 'bob' }); // new build, new replica
+			await sleep(2000); // long enough for the old replica to have persisted
+			expect(alice.closeReasons).not.toContain(CollabReason.Reset);
+			expect(textOf(persistence.replay(PAGE))).toContain('typed on the old build');
+			bob.destroy();
+
+			// Once the old build's editor has gone, the upgrade goes ahead —
+			// and carries the edits over.
+			alice.destroy();
+			await sleep(300);
+			const later = open({ user: 'bob' });
+			await later.synced();
+			expect(textOf(later.doc)).toContain('typed on the old build');
+		} finally {
+			await old.stop();
+		}
 	});
 
 	it('re-seeds through JSON when the stored log predates the current schema', async () => {

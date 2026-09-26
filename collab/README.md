@@ -22,11 +22,11 @@ Each one is enforced in code and covered by a test.
 |---|---|---|---|
 | 1 | **One writer per document.** While a page is *attached*, only the collab service writes its content; REST `PUT /content` answers 409 `collaborative`. | `UpsertContent` (API) | `TestCollabWritePath` |
 | 2 | **Seeded once.** A page's shared document is created from `page_contents` exactly once per epoch, under the same row lock REST writes take. Two independent seeds would duplicate the page when merged. Clients never seed. | `PgPersistence.loadOrSeed` | `seeds exactly once …` (memory + Postgres) |
-| 3 | **Append-only log.** Updates are only appended; compaction replaces exactly the rows it merged in one transaction. Replicas can't lose each other's updates. | `PgPersistence` | `compaction never loses an append that races it` |
+| 3 | **Append-only log, visible in seq order.** Updates are only appended; compaction replaces exactly the rows it merged in one transaction. Every writer takes the page's `page_collab_docs` row lock before drawing a seq, so a page's seqs commit in order, and a replica never advances `lastSeq` past rows it hasn't applied (it catches up after its own append). Replicas can't lose each other's updates. | `PgPersistence`, `persistOnce` | `compaction never loses an append that races it`, `a reader that has seen a seq …`, `a foreign append between catch-up and append …` |
 | 4 | **Same schema or no sync.** Clients present `schemaFingerprint()`; a mismatch is refused before sync. y-prosemirror deletes content it can't build, so an outdated client would otherwise erase newer content for everyone. | `onAuthenticate` | `schema gate` |
 | 5 | **Epochs.** Every (re)seed starts a new epoch. A connection is bound to the document's epoch before any client state is applied; a Y.Doc that ever held another epoch's state (or state without a known epoch) is refused and must be discarded. So a version restore can't be undone by a client that still has the old document. | `beforeSync`, `CollabSession` | `epochs` |
 | 6 | **Every update is validated before it's applied** (against a shadow copy): unknown node/mark types and oversized documents are refused and the connection closed. | `validateIncoming` | `update validation` |
-| 7 | **Snapshots are checked twice.** The service writes a snapshot only if it converts under the schema; the API sanitises it and accepts it only for the current epoch and a non-decreasing sequence. An invalid document quarantines the page (collaborators become read-only) instead of being saved. | `persistOnce`, `WriteCollabSnapshot` | `quarantine`, `SnapshotFromAReplacedEpochIsRejected`, `SnapshotCannotGoBackwards` |
+| 7 | **Snapshots are checked twice.** The service writes a snapshot only if it converts under the schema; the API sanitises it and accepts it only for the current epoch and a non-decreasing sequence. A replaced epoch (`stale_snapshot`) evicts; a snapshot merely behind another replica's (`snapshot_behind`) catches up and retries instead. An invalid document quarantines the page (collaborators become read-only) instead of being saved. | `persistOnce`, `WriteCollabSnapshot` | `quarantine`, `SnapshotFromAReplacedEpochIsRejected`, `SnapshotCannotGoBackwards`, `a snapshot that loses the race …` |
 | 8 | **Side effects happen once.** Task creation, title sync and bullet identity only react to *local* transactions; tasks are reconciled server-side with the persisted document (soft delete + restore); repairs that two clients would make differently (duplicate `nodeId`s, unsafe links) are made by the server only. | `isLocalTransaction`, `CollabNodeIdExtension`, `reconcileSourceTasksLocked`, `repair` | `collabEditor.test.ts`, `TestTaskSourceIntegrity`, E2E |
 
 ## Lifecycle of a note
@@ -64,6 +64,8 @@ Each one is enforced in code and covered by a test.
 | `COLLAB_CATCH_UP_INTERVAL_MS` | `5000` | Pull other replicas' updates (multi-replica only). |
 | `COLLAB_COMPACT_EVERY` | `100` | Appends between log compactions. |
 | `COLLAB_MAX_DOCUMENT_BYTES` | `5242880` | Matches the API's content limit. |
+| `COLLAB_LEASE_TTL_MS` | `30000` | Lifetime of this replica's lease on each loaded document (renewed every third of it). A schema re-seed waits for other replicas' leases, so this bounds how long a crashed replica can delay one. |
+| `COLLAB_SHUTDOWN_DRAIN_MS` | `20000` | On SIGTERM, how long to keep retrying documents whose updates aren't persisted yet (e.g. during a database outage) before dropping them with an error log. Keep it below the pod's termination grace period. |
 
 The API side: `COLLAB_ENABLED=true` and `COLLAB_SERVICE_TOKEN`. Helm: `collab.enabled`,
 `collab.serviceToken` (see `helm/glyph/values.yaml`).
@@ -72,12 +74,25 @@ The API side: `COLLAB_ENABLED=true` and `COLLAB_SERVICE_TOKEN`. Helm: `collab.en
 
 - **Kill switch:** set `COLLAB_ENABLED=false` on the API. Browsers fall back to
   single-writer editing; each attached page detaches on its next save, and the
-  collab service's snapshots for it are refused. Turning it back on re-seeds
-  pages in new epochs.
+  collab service's snapshots for it are refused from then on. Until that save,
+  the API still accepts the service's snapshots of the attached page (answering
+  `disabled: true`, which closes its editors with `disabled` after the write),
+  so edits made since the last snapshot reach `page_contents` before the detach.
+  Keep the collab service and the API's `COLLAB_SERVICE_TOKEN` running while
+  sessions drain. Turning it back on re-seeds detached pages in new epochs.
 - **Quarantined page** (`page_collab_docs.quarantined_at` set, logged at error
   level): collaborators are read-only. Restore a version
   (`POST /api/v1/pages/:id/content/versions/:vid/restore`) to recover; that
   starts a clean epoch.
+- **Schema upgrades during a rolling deploy:** the first new-build editor to
+  open a note written under the old schema re-seeds it into a new epoch. While
+  a replica of the other build still has that note loaded (it holds a lease in
+  `page_collab_leases`), the re-seed is refused and the new editor retries
+  (`unavailable`) until the old replica unloads it or its lease expires, so the
+  old replica's not-yet-appended edits aren't thrown away. Collab builds from
+  before leases don't take them: for the rollout that *introduces* leases, drain
+  the old collab pods before new-build editors connect if the editor schema
+  changed in the same release.
 - **Replicas:** one is recommended. More are safe (invariant 3 plus epoch and
   sequence checks on snapshots), but editors on different replicas see each
   other's changes every `COLLAB_CATCH_UP_INTERVAL_MS` rather than live.
@@ -99,6 +114,15 @@ wire protocol can't drift between the two.
 - No offline persistence in the browser: edits made while disconnected are kept
   in memory and sync on reconnect, but are lost if the tab is closed first
   (the app warns before unload while changes are unsynced).
+- **"Synced" is not "durable".** A client counts an edit as synced once the
+  collab service has applied it in memory (the Yjs sync ack); the service
+  appends it to the log only on its next debounced store, up to
+  `COLLAB_STORE_MAX_DEBOUNCE_MS` later, or longer during a database outage.
+  The service holds such edits through outages (retrying, deferring unload,
+  draining for `COLLAB_SHUTDOWN_DRAIN_MS` on shutdown), but a crash or `SIGKILL`
+  of the collab process in that window loses them, even though every editor
+  showed them as saved. Editors that are still connected re-send them on
+  reconnect; an editor that has already closed the note cannot.
 - Two people typing their very first character into the same *newly created*
   empty paragraph at the same instant can have one character land out of
   order (a y-prosemirror quirk). Seeded paragraphs, including the trailing

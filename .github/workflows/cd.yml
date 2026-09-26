@@ -128,11 +128,12 @@ jobs:
           path: homelab
           persist-credentials: false
 
+      # Pinned: the upgrade below relies on Helm 3's --atomic (Helm 4 renames
+      # it), and an unpinned installer picks up new majors on its own.
       - name: Install Helm
         uses: azure/setup-helm@v4
-
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        with:
+          version: v3.18.4
 
       - name: Sync migrations
         run: |
@@ -147,6 +148,18 @@ jobs:
       # exists once collab.enabled is turned on in the production values.
       # The repositories are set here too (overriding the production values)
       # so they can't drift from where build-missing / ci.yml pushed.
+      #
+      # One step does the whole deploy, in order:
+      #   1. the pre-upgrade migrate hook Job applies this tree's migrations
+      #      (the only place migrations run; API pods just wait for them);
+      #   2. the Deployments roll to the new tree-hash tag, and --wait blocks
+      #      until every one of them (frontend, api and collab) is ready;
+      #   3. on any failure — a failed migration, a pod that never becomes
+      #      ready, the timeout — --atomic rolls the release back.
+      # No separate restart step: a new tag already rolls the pods, and
+      # restarting on top rolled the API twice per deploy. A migration that has
+      # applied is not undone by the rollback; the older pods tolerate a
+      # schema that is ahead of them (helm/glyph/files/glyph-migrate.sh).
       - name: Helm upgrade
         run: |
           tag=${{ steps.image.outputs.tag }}
@@ -158,9 +171,4 @@ jobs:
             --set api.image.tag="$tag" \
             --set collab.image.repository=docker.io/blackmarket/glyph-collab \
             --set collab.image.tag="$tag" \
-            -n glyph --timeout 5m
-
-      - name: Rollout restart
-        run: |
-          kubectl rollout restart deploy/glyph-frontend deploy/glyph-api -n glyph
-          kubectl rollout status deploy/glyph-frontend deploy/glyph-api -n glyph --timeout=5m
+            -n glyph --atomic --wait --cleanup-on-fail --timeout 10m

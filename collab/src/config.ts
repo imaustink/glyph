@@ -24,6 +24,18 @@ export interface CollabConfig {
 	compactEvery: number;
 	/** Maximum serialised document size accepted (bytes). Matches the API's limit. */
 	maxDocumentBytes: number;
+	/**
+	 * On SIGTERM, how long to keep retrying documents whose updates aren't
+	 * persisted yet (ms). Keep it below the pod's termination grace period
+	 * (Kubernetes' default is 30 s), or the kill cuts the drain short.
+	 */
+	shutdownDrainMs: number;
+	/**
+	 * How long this replica's lease on a loaded document lasts unless renewed
+	 * (renewed every third of it). A schema re-seed waits for other replicas'
+	 * leases, so this bounds how long a crashed replica can delay one.
+	 */
+	leaseTtlMs: number;
 }
 
 function int(name: string, fallback: number): number {
@@ -55,6 +67,8 @@ export function loadConfig(): CollabConfig {
 		reauthIntervalMs: int('COLLAB_REAUTH_INTERVAL_MS', 60000),
 		catchUpIntervalMs: int('COLLAB_CATCH_UP_INTERVAL_MS', 5000),
 		compactEvery: int('COLLAB_COMPACT_EVERY', 100),
-		maxDocumentBytes: int('COLLAB_MAX_DOCUMENT_BYTES', 5 * 1024 * 1024)
+		maxDocumentBytes: int('COLLAB_MAX_DOCUMENT_BYTES', 5 * 1024 * 1024),
+		shutdownDrainMs: int('COLLAB_SHUTDOWN_DRAIN_MS', 20000),
+		leaseTtlMs: int('COLLAB_LEASE_TTL_MS', 30000)
 	};
 }

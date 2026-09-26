@@ -38,3 +38,7 @@ var ErrTypeImmutable = errors.New("a page's type cannot be changed")
 // ErrCycle is returned when a write would make a page its own ancestor
 // (parent_id pointing at itself or at one of its descendants).
 var ErrCycle = errors.New("a node cannot be moved under itself or one of its descendants")
+
+// ErrLastOwner is returned when a membership change would leave an
+// organization with no owner.
+var ErrLastOwner = errors.New("organization must keep at least one owner")

@@ -25,6 +25,9 @@ type apiClient struct {
 type apiError struct {
 	Status  int
 	Message string
+	// Code is the response's machine-readable "code", if any (e.g. a 409's
+	// "collaborative" vs "stale_revision").
+	Code string
 }
 
 func (e *apiError) Error() string {
@@ -73,6 +76,7 @@ func (a *apiClient) do(method, path string, query url.Values, body, out interfac
 		var e struct {
 			Error       string `json:"error"`
 			Description string `json:"error_description"`
+			Code        string `json:"code"`
 		}
 		_ = json.Unmarshal(rec.Body.Bytes(), &e)
 		msg := e.Error
@@ -82,7 +86,7 @@ func (a *apiClient) do(method, path string, query url.Values, body, out interfac
 		if msg == "" {
 			msg = strings.TrimSpace(http.StatusText(rec.Code))
 		}
-		return &apiError{Status: rec.Code, Message: msg}
+		return &apiError{Status: rec.Code, Message: msg, Code: e.Code}
 	}
 	if out != nil && rec.Code != http.StatusNoContent && rec.Body.Len() > 0 {
 		if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {

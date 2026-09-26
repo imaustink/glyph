@@ -21,7 +21,11 @@ export type ProseMirrorJSON = { type: string; attrs?: Record<string, unknown>; c
 export interface Inspection {
 	/** The document as ProseMirror JSON. */
 	json: ProseMirrorJSON;
-	/** Size of `json` serialised, in bytes (UTF-16 length; close enough for a limit). */
+	/**
+	 * Size of `json` serialised, in UTF-8 bytes — what the API counts. The
+	 * UTF-16 length undercounts CJK and emoji text by up to 3×, which let a
+	 * document pass here only for the API to refuse it and quarantine the page.
+	 */
 	bytes: number;
 	/**
 	 * Why the document is unacceptable, or null. Fatal problems are things a
@@ -48,7 +52,7 @@ export function toJSON(doc: Y.Doc): ProseMirrorJSON {
 export function inspect(doc: Y.Doc, schema: Schema, maxBytes: number): Inspection {
 	const json = toJSON(doc);
 	const serialised = JSON.stringify(json);
-	const bytes = serialised.length;
+	const bytes = Buffer.byteLength(serialised, 'utf8');
 	if (bytes > maxBytes) {
 		return { json, bytes, fatal: `document is ${bytes} bytes, over the ${maxBytes} byte limit`, contentError: null };
 	}
@@ -187,12 +191,160 @@ export function normaliseForSeed(json: ProseMirrorJSON | null | undefined): Pros
 	return out;
 }
 
+// ─── Legacy content ───────────────────────────────────────────────────────────
+
+/** What a node's children must be, which decides what an unknown child becomes. */
+type ChildKind = 'block' | 'inline' | 'text' | 'list';
+
+function childKind(schema: Schema, parentType: string): ChildKind {
+	const type = schema.nodes[parentType];
+	if (!type) return 'block';
+	if (type.spec.code) return 'text';
+	if (type.isTextblock) return 'inline';
+	const listItem = schema.nodes.listItem;
+	if (listItem && type.contentMatch.matchType(listItem) && !type.contentMatch.matchType(schema.nodes.paragraph)) return 'list';
+	return 'block';
+}
+
 /**
- * The initial Yjs update for a page. Throws if the stored document can't be
- * represented in the schema — seeding it would otherwise drop content.
+ * Bring stored JSON into the editor schema before seeding, the way the API's
+ * NormalizeStoredContent does before serving it: marks the schema lacks are
+ * dropped (their text kept), an image becomes text linking to its source, and
+ * any other unknown node is replaced by its text and known children, shaped to
+ * fit where it stood. Content saved before the API's allowlist matched the
+ * schema can hold such nodes (DI-01); seeded as-is it throws, and the note
+ * could never be opened collaboratively. Mutates `node`.
+ */
+function downgradeToSchema(schema: Schema, node: ProseMirrorJSON) {
+	if (node.marks) {
+		node.marks = node.marks.filter((m) => schema.marks[m.type] !== undefined);
+		if (node.marks.length === 0) delete node.marks;
+	}
+	if (!node.content) return;
+	const kind = childKind(schema, node.type);
+	const out: ProseMirrorJSON[] = [];
+	for (const child of node.content) {
+		if (schema.nodes[child.type]) {
+			downgradeToSchema(schema, child);
+			out.push(child);
+		} else {
+			out.push(...downgradeNode(schema, child, kind));
+		}
+	}
+	node.content = out;
+}
+
+function downgradeNode(schema: Schema, node: ProseMirrorJSON, kind: ChildKind): ProseMirrorJSON[] {
+	switch (kind) {
+		case 'inline':
+			return inlineOf(schema, node);
+		case 'text':
+			return inlineOf(schema, node)
+				.filter((n) => n.type === 'text')
+				.map(({ marks: _marks, ...text }) => text);
+		case 'list': {
+			const blocks = blocksOf(schema, node);
+			if (blocks.length === 0) return [];
+			if (blocks[0].type !== 'paragraph') blocks.unshift({ type: 'paragraph' });
+			return [{ type: 'listItem', content: blocks }];
+		}
+		default:
+			return blocksOf(schema, node);
+	}
+}
+
+/** An image as a text node linking to its source (when safe), labelled with its alt text, title or URL. */
+function imageLinkText(node: ProseMirrorJSON): ProseMirrorJSON | null {
+	const src = typeof node.attrs?.src === 'string' ? node.attrs.src.trim() : '';
+	const safe = src !== '' && isSafeUrl(src);
+	const label =
+		[node.attrs?.alt, node.attrs?.title].find((s): s is string => typeof s === 'string' && s.trim() !== '') ??
+		(safe ? src : '');
+	if (label === '') return null;
+	return safe ? { type: 'text', text: label, marks: [{ type: 'link', attrs: { href: src } }] } : { type: 'text', text: label };
+}
+
+/** An unknown node flattened to inline nodes the schema has. */
+function inlineOf(schema: Schema, node: ProseMirrorJSON): ProseMirrorJSON[] {
+	if (node.type === 'image') {
+		const text = imageLinkText(node);
+		return text ? [text] : [];
+	}
+	if (node.text) {
+		const text: ProseMirrorJSON = { type: 'text', text: node.text, marks: node.marks };
+		downgradeToSchema(schema, text);
+		return [text];
+	}
+	const out: ProseMirrorJSON[] = [];
+	for (const child of node.content ?? []) {
+		if (child.type === 'text' || child.type === 'hardBreak') {
+			if (child.type === 'text' && !child.text) continue;
+			downgradeToSchema(schema, child);
+			out.push(child);
+		} else {
+			// Known blocks contribute their text; unknown nodes recurse.
+			out.push(...inlineOf(schema, child));
+		}
+	}
+	return out;
+}
+
+/**
+ * An unknown node as block nodes the schema has: known block children are
+ * kept, runs of inline content are wrapped in paragraphs, and stray list
+ * items are wrapped in a bullet list.
+ */
+function blocksOf(schema: Schema, node: ProseMirrorJSON): ProseMirrorJSON[] {
+	if (node.type === 'image') {
+		const text = imageLinkText(node);
+		return text ? [{ type: 'paragraph', content: [text] }] : [];
+	}
+	if (node.text) return [{ type: 'paragraph', content: inlineOf(schema, node) }];
+
+	const out: ProseMirrorJSON[] = [];
+	let inline: ProseMirrorJSON[] = [];
+	let items: ProseMirrorJSON[] = [];
+	const flushInline = () => {
+		if (inline.length > 0) out.push({ type: 'paragraph', content: inline });
+		inline = [];
+	};
+	const flushItems = () => {
+		if (items.length > 0) out.push({ type: 'bulletList', content: items });
+		items = [];
+	};
+	for (const child of node.content ?? []) {
+		if (child.type === 'text' || child.type === 'hardBreak') {
+			flushItems();
+			inline.push(...inlineOf(schema, { type: '', content: [child] }));
+		} else if (child.type === 'listItem') {
+			flushInline();
+			downgradeToSchema(schema, child);
+			items.push(child);
+		} else if (schema.nodes[child.type]) {
+			flushInline();
+			flushItems();
+			downgradeToSchema(schema, child);
+			out.push(child);
+		} else {
+			flushInline();
+			flushItems();
+			out.push(...blocksOf(schema, child));
+		}
+	}
+	flushInline();
+	flushItems();
+	return out;
+}
+
+/**
+ * The initial Yjs update for a page. Stored content is first brought into the
+ * editor schema (downgradeToSchema, mirroring the API); throws if it still
+ * can't be represented — seeding it would otherwise drop content.
  */
 export function seedUpdate(schema: Schema, json: ProseMirrorJSON | null | undefined): Uint8Array {
-	const doc = prosemirrorJSONToYDoc(schema, normaliseForSeed(json), COLLAB_FRAGMENT);
+	const normalised = normaliseForSeed(json);
+	downgradeToSchema(schema, normalised);
+	const doc = prosemirrorJSONToYDoc(schema, normalised, COLLAB_FRAGMENT);
 	addSharedTextNodes(doc.getXmlFragment(COLLAB_FRAGMENT), schema);
 	try {
 		return Y.encodeStateAsUpdate(doc);

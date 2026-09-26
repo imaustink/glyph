@@ -82,6 +82,11 @@ type PageStore interface {
 	// GetDescendantIDs returns the IDs of all descendant pages/folders rooted at
 	// folderID (inclusive). Used by folder board queries to scope tasks/lanes.
 	GetDescendantIDs(ctx context.Context, folderID uuid.UUID) ([]uuid.UUID, error)
+
+	// SetSubtreeOrg atomically moves pageID, its descendants and the tasks
+	// sourced from any of them into orgID (nil = personal). Access control
+	// is the caller's.
+	SetSubtreeOrg(ctx context.Context, pageID uuid.UUID, orgID *uuid.UUID) error
 }
 
 // TaskStore handles task persistence.
@@ -102,10 +107,19 @@ type TaskStore interface {
 	// t.SourceNodeID), or returns the task that bullet is already linked to,
 	// with created=false. A bullet has at most one task, so concurrent
 	// creations from several editors collapse into one. If the existing task
-	// was soft-deleted and belongs to t.UserID it is restored; if it belongs
-	// to someone else the result is ErrConflict.
+	// was soft-deleted because its bullet disappeared and belongs to t.UserID
+	// it is restored; if it belongs to someone else the result is
+	// ErrConflict. A task a user deleted is never restored: it is unlinked
+	// from the bullet and a new task is created (created=true).
 	CreateLinked(ctx context.Context, t *model.Task) (task *model.Task, created bool, err error)
 	Update(ctx context.Context, t *model.Task) (*model.Task, error)
+	// Patch loads the live task id owned by ownerID, lets fn modify it, and
+	// saves the result, holding the row lock throughout, so concurrent
+	// patches to different fields don't undo each other. fn may change any
+	// field Update writes and also UserID (re-owning the task); an error from
+	// fn aborts without writing. ErrNotFound if the task is gone or no
+	// longer owned by ownerID.
+	Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error) (*model.Task, error)
 	Upsert(ctx context.Context, t *model.Task) (*model.Task, error)
 	// Delete soft-deletes a task.
 	Delete(ctx context.Context, id, userID uuid.UUID) error
@@ -128,8 +142,14 @@ type LaneStore interface {
 	Create(ctx context.Context, l *model.Lane) (*model.Lane, error)
 	BatchCreate(ctx context.Context, lanes []*model.Lane) ([]*model.Lane, error)
 	Update(ctx context.Context, l *model.Lane) (*model.Lane, error)
+	// Patch applies fn to the user's lane and saves it under a row lock (see
+	// TaskStore.Patch).
+	Patch(ctx context.Context, id, userID uuid.UUID, fn func(*model.Lane) error) (*model.Lane, error)
 	// UpdateByIDAndFolder updates a folder-scoped lane regardless of who created it.
 	UpdateByIDAndFolder(ctx context.Context, l *model.Lane, folderID uuid.UUID) (*model.Lane, error)
+	// PatchByIDAndFolder is Patch for a folder-scoped lane, regardless of who
+	// created it.
+	PatchByIDAndFolder(ctx context.Context, id, folderID uuid.UUID, fn func(*model.Lane) error) (*model.Lane, error)
 	Upsert(ctx context.Context, l *model.Lane) (*model.Lane, error)
 	ReorderAll(ctx context.Context, userID uuid.UUID, items []LaneReorderItem) error
 	Delete(ctx context.Context, id, userID uuid.UUID) error
@@ -143,6 +163,9 @@ type TemplateStore interface {
 	GetByID(ctx context.Context, id, userID uuid.UUID) (*model.Template, error)
 	Create(ctx context.Context, t *model.Template) (*model.Template, error)
 	Update(ctx context.Context, t *model.Template) (*model.Template, error)
+	// Patch applies fn to the template owned by ownerID and saves it under a
+	// row lock (see TaskStore.Patch).
+	Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Template) error) (*model.Template, error)
 	Upsert(ctx context.Context, t *model.Template) (*model.Template, error)
 	Delete(ctx context.Context, id, userID uuid.UUID) error
 }
@@ -150,16 +173,26 @@ type TemplateStore interface {
 // OrgStore handles organization and membership persistence.
 type OrgStore interface {
 	Create(ctx context.Context, org *model.Organization) (*model.Organization, error)
+	// CreateWithOwner creates the org and makes org.CreatedBy its owner in
+	// one transaction, so a failure can't leave an org nobody belongs to.
+	CreateWithOwner(ctx context.Context, org *model.Organization) (*model.Organization, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*model.Organization, error)
 	// ListForUser returns all orgs the user belongs to, with their role.
 	ListForUser(ctx context.Context, userID uuid.UUID) ([]*model.OrgWithRole, error)
 	Update(ctx context.Context, org *model.Organization) (*model.Organization, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 
+	// AddMember adds a new member; ErrConflict if userID already belongs to
+	// the org (their role is left alone — use UpdateMemberRole).
 	AddMember(ctx context.Context, orgID, userID uuid.UUID, role model.OrgRole) (*model.OrgMember, error)
 	GetMember(ctx context.Context, orgID, userID uuid.UUID) (*model.OrgMember, error)
 	ListMembers(ctx context.Context, orgID uuid.UUID) ([]*model.OrgMember, error)
+	// UpdateMemberRole changes a member's role; ErrNotFound if not a member,
+	// ErrLastOwner if it would demote the org's only owner. The check and
+	// the write are serialized per org.
 	UpdateMemberRole(ctx context.Context, orgID, userID uuid.UUID, role model.OrgRole) (*model.OrgMember, error)
+	// RemoveMember removes a member; ErrLastOwner if they are the org's only
+	// owner. The check and the delete are serialized per org.
 	RemoveMember(ctx context.Context, orgID, userID uuid.UUID) error
 	// GetUserOrgIDs returns all org IDs the user belongs to (for access checks).
 	GetUserOrgIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)

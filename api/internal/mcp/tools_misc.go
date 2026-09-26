@@ -412,7 +412,7 @@ func createPageFromTemplate(cc *callContext, raw json.RawMessage) (interface{}, 
 	idx.byID[created.ID] = &created
 	out := map[string]interface{}{"page": cc.viewPage(&created, idx)}
 	if doc != nil {
-		pc, links, err := cc.saveWithTodoLinks(&created, doc, currentSchemaVersion, 0)
+		pc, links, err := cc.saveWithTodoLinks(&created, doc, currentSchemaVersion, 0, nil)
 		if err != nil {
 			out["warning"] = "page created, but writing the template content failed: " + err.Error()
 			return out, nil

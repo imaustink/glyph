@@ -163,8 +163,14 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 	}
 	// Remember the pre-update parent so we only re-validate on an actual move.
 	originalParentID := existing.ParentID
+	originalOrgID := existing.OrgID
 
 	req.ApplyTo(existing)
+
+	// {"orgId": null} moves the node to the personal workspace.
+	if raw, present := keys["orgId"]; present && isJSONNull(raw) {
+		existing.OrgID = nil
+	}
 
 	// ApplyTo cannot distinguish {"parentId": null} (move to the top level) from
 	// an omitted parentId (leave unchanged) — both decode to a nil pointer. When
@@ -197,6 +203,16 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 		}
 	}
 
+	// A node's workspace is its subtree's: moving a folder (or a page with
+	// sub-pages) to another org, or to Personal, takes its descendants and
+	// their notes' tasks along, atomically, before the node itself is saved.
+	if !sameOrg(originalOrgID, existing.OrgID) {
+		if err := h.Pages.SetSubtreeOrg(c.Request.Context(), id, existing.OrgID); err != nil {
+			internalError(c, err)
+			return
+		}
+	}
+
 	// Write only the fields the request sent, so a concurrent PATCH of other
 	// fields isn't undone by this one writing back its stale copy (DI-05).
 	fields := make([]string, 0, len(keys))
@@ -215,6 +231,13 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, page)
+}
+
+func sameOrg(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // DELETE /pages/:id
@@ -415,6 +438,7 @@ func (h *PageHandler) GetPageContent(c *gin.Context) {
 		notFoundOrError(c, err)
 		return
 	}
+	content.Content = NormalizeStoredContent(content.Content)
 	c.JSON(http.StatusOK, content)
 }
 

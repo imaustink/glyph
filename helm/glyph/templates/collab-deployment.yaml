@@ -30,8 +30,10 @@ spec:
         fsGroup: 1001
         seccompProfile:
           type: RuntimeDefault
-      # Documents are persisted (and snapshotted) on shutdown; give that time.
-      terminationGracePeriodSeconds: 30
+      # Documents are persisted (and snapshotted) on shutdown, including
+      # ones still retrying after a database outage; give that time. Must
+      # exceed preStopSleepSeconds plus the service's own drain limit.
+      terminationGracePeriodSeconds: {{ .Values.collab.terminationGracePeriodSeconds }}
       containers:
         - name: collab
           image: "{{ .Values.collab.image.repository }}:{{ .Values.collab.image.tag | default .Chart.AppVersion }}"
@@ -46,6 +48,14 @@ spec:
             - name: http
               containerPort: 1235
               protocol: TCP
+          {{- if .Values.collab.preStopSleepSeconds }}
+          # Keep serving while the endpoint removal propagates, so no new
+          # WebSocket lands on a pod that is about to shut down.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "{{ .Values.collab.preStopSleepSeconds }}"]
+          {{- end }}
           env:
             - name: PORT
               value: "1235"

@@ -87,6 +87,14 @@ func detachCollabLocked(ctx context.Context, tx pgx.Tx, pageID uuid.UUID) error 
 	return err
 }
 
+// ErrSnapshotBehind is the ErrStaleSnapshot case where the snapshot's epoch is
+// current but another snapshot for a later seq was already accepted — two
+// collab replicas snapshotting concurrently. Unlike a replaced epoch, the
+// sender's copy is still authoritative: it should catch up and retry, not
+// evict its editors (DI-11). It wraps ErrStaleSnapshot, so callers that only
+// check for staleness still refuse it.
+var ErrSnapshotBehind = fmt.Errorf("%w: behind a newer snapshot", ErrStaleSnapshot)
+
 // WriteCollabSnapshot persists the collab service's view of a shared document
 // to page_contents. It is refused (ErrStaleSnapshot) unless the page is still
 // attached in the same epoch and the snapshot does not go backwards, so a
@@ -131,10 +139,12 @@ func (s *pgPageStore) WriteCollabSnapshot(ctx context.Context, snap *model.Colla
 		return nil, fmt.Errorf("%w: page is detached", ErrStaleSnapshot)
 	case epoch != snap.Epoch:
 		return nil, fmt.Errorf("%w: epoch %d is not current (%d)", ErrStaleSnapshot, snap.Epoch, epoch)
-	case snap.UpToSeq < snapshotSeq:
-		return nil, fmt.Errorf("%w: seq %d is behind %d", ErrStaleSnapshot, snap.UpToSeq, snapshotSeq)
 	case quarantined:
 		return nil, fmt.Errorf("%w: page is quarantined", ErrStaleSnapshot)
+	// Last: "behind" must only be reported when nothing else is wrong, since
+	// the collab service keeps its copy for it.
+	case snap.UpToSeq < snapshotSeq:
+		return nil, fmt.Errorf("%w: seq %d is behind %d", ErrSnapshotBehind, snap.UpToSeq, snapshotSeq)
 	}
 
 	cur, err := currentContentLocked(ctx, tx, snap.PageID)

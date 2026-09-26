@@ -19,7 +19,15 @@
  *   eviction        when the API says the document was replaced, or a write
  *                   finds its epoch gone, every connection is closed with
  *                   Reset and the in-memory copy is discarded unsaved.
+ *
+ * Durability: Hocuspocus acks an update to its client as soon as it is applied
+ * in memory, before onStoreDocument has appended it to the log. Until then this
+ * process is the only copy the server side has — which is why unpersisted
+ * updates are never dropped while the process lives (retries, deferred unload,
+ * the shutdown drain), and why a crash in that window still loses them (see
+ * README, Known limitations).
  */
+import { randomUUID } from 'node:crypto';
 import * as Y from 'yjs';
 import type {
 	Extension,
@@ -47,7 +55,7 @@ import {
 	type CollabServerMessage
 } from '$lib/collab/protocol';
 import type { Api, CollabSession } from './api.js';
-import type { Persistence, StoredPageContent } from './persistence.js';
+import type { Lease, Persistence, StoredPageContent } from './persistence.js';
 import { NotFoundError } from './persistence.js';
 import { inspect, repair, seedUpdate, setListItemStatus, toJSON, type ProseMirrorJSON } from './documentRules.js';
 import type { TaskStatus } from '$lib/models/types';
@@ -115,6 +123,15 @@ export interface GlyphCollabOptions {
 	allowedOrigins: string[];
 	maxDocumentBytes: number;
 	compactEvery: number;
+	/** Unique per process: whose leases (see persistence.ts) are whose. Default: random. */
+	replicaId?: string;
+	/** How long a lease on a loaded document lasts unless renewed (ms, default 30 s). */
+	leaseTtlMs?: number;
+	/**
+	 * On shutdown, how long to keep retrying documents that still hold
+	 * unpersisted updates before giving up on them (ms, 0 = don't wait).
+	 */
+	shutdownDrainMs?: number;
 	log: Logger;
 }
 
@@ -122,8 +139,11 @@ export class GlyphCollab implements Extension {
 	extensionName = 'glyph-collab';
 	private readonly docs = new Map<string, DocState>();
 	private instance: Hocuspocus | null = null;
+	private readonly lease: Lease;
 
-	constructor(private readonly opts: GlyphCollabOptions) {}
+	constructor(private readonly opts: GlyphCollabOptions) {
+		this.lease = { holder: opts.replicaId ?? randomUUID(), ttlMs: opts.leaseTtlMs ?? 30000 };
+	}
 
 	// ─── Connection admission ────────────────────────────────────────────────
 
@@ -269,9 +289,19 @@ export class GlyphCollab implements Extension {
 		const pageId = pageIdFromDocumentName(documentName);
 		if (!pageId) throw new CollabError(CollabReason.Forbidden, 'unknown document');
 
+		// A parked copy of this document (see below) may still have its unload
+		// flush — or a retry — in flight. Wait for that work before loading: if
+		// it succeeds, the load below reads its batch from the log; if it fails,
+		// the batch is back in the parked copy's `pending` by the time we carry
+		// it over. Carrying `pending` while a batch is in flight would take an
+		// empty list, and the batch would later be returned to a copy that has
+		// been replaced and never retries (DI-12). `chain` never rejects.
+		const before = this.docs.get(documentName);
+		if (before) await before.chain;
+
 		let loaded;
 		try {
-			loaded = await this.opts.persistence.loadOrSeed(pageId, (stored) => this.seed(stored), this.opts.fingerprint);
+			loaded = await this.opts.persistence.loadOrSeed(pageId, (stored) => this.seed(stored), this.opts.fingerprint, this.lease);
 		} catch (err) {
 			if (err instanceof NotFoundError) throw new CollabError(CollabReason.Forbidden, 'page not found');
 			this.opts.log.error('failed to load document', { pageId, err });
@@ -290,8 +320,18 @@ export class GlyphCollab implements Extension {
 			const json = toJSON(replay);
 			replay.destroy();
 			const update = this.seed({ content: json, schemaVersion: CURRENT_SCHEMA_VERSION });
-			const next = await this.opts.persistence.reseed(pageId, epoch, update, this.opts.fingerprint);
+			const next = await this.opts.persistence.reseed(pageId, epoch, update, this.opts.fingerprint, this.lease);
 			if (next === null) throw new CollabError(CollabReason.Unavailable, 'document changed while upgrading');
+			if (next === 'held') {
+				// Another replica — one running the older build, during a rolling
+				// deploy — has this epoch loaded, and may hold edits it hasn't
+				// appended yet. A new epoch would make those appends fail and
+				// the edits vanish (DI-16). Turn this editor away for now; the
+				// client retries (Unavailable is transient) and gets through
+				// once the other replica unloads the note or its lease expires.
+				this.opts.log.info('deferring schema re-seed: another replica has the document open', { pageId, epoch });
+				throw new CollabError(CollabReason.Unavailable, 'document is open on another server; retry shortly');
+			}
 			this.opts.log.info('re-seeded document for a new schema', { pageId, from: epoch, to: next });
 			epoch = next;
 			updates = await this.opts.persistence.fetchSince(pageId, epoch, 0);
@@ -414,12 +454,109 @@ export class GlyphCollab implements Extension {
 				this.scheduleRetry(state);
 				return;
 			}
+			// The note was reopened while the flush ran: the new copy has
+			// replaced this one in `docs` (and onLoadDocument has already torn
+			// this one down). Deleting the entry now would delete the *new*
+			// session's state, and nothing it did would ever be persisted.
+			if (this.docs.get(documentName) !== state) return;
 		}
 
 		if (state.retryTimer) clearTimeout(state.retryTimer);
+		void this.teardown(state);
+	}
+
+	/**
+	 * Forget an unloaded copy for good, giving up its lease. Resolves once the
+	 * lease is released (never rejects); callers other than shutdown needn't
+	 * wait. If the note is reopened at once, the new copy's load re-takes the
+	 * lease — and renewLeases re-takes it should this delete land later.
+	 */
+	private teardown(state: DocState): Promise<void> {
 		state.unsubscribe();
 		state.shadow.destroy();
-		this.docs.delete(documentName);
+		this.docs.delete(state.name);
+		return this.opts.persistence
+			.releaseLease(state.pageId, this.lease.holder, state.epoch)
+			.catch((err) => this.opts.log.warn('failed to release lease', { pageId: state.pageId, err }));
+	}
+
+	/** Keep this replica's leases on its loaded documents alive (see persistence.ts). */
+	async renewLeases(): Promise<void> {
+		const held = [...this.docs.values()].filter((s) => !s.evicted).map((s) => ({ pageId: s.pageId, epoch: s.epoch }));
+		await this.opts.persistence.renewLeases(this.lease.holder, held, this.lease.ttlMs);
+	}
+
+	/** Renew leases this often: a third of their lifetime. */
+	get leaseRenewIntervalMs(): number {
+		return Math.max(1000, Math.floor(this.lease.ttlMs / 3));
+	}
+
+	/**
+	 * Shutdown. Hocuspocus calls this once every document has unloaded — but
+	 * a copy parked by afterUnloadDocument (its last client left while
+	 * persistence was failing) is not a Hocuspocus document, so it doesn't
+	 * hold shutdown up, and closing the pool after this would drop edits its
+	 * clients were told were saved. Keep retrying such copies, with backoff,
+	 * until they are all written or `shutdownDrainMs` runs out; then name
+	 * every document whose updates are being dropped, at error level. Runs
+	 * before server.ts's own onDestroy (extensions run in order), which is
+	 * what closes the pool.
+	 */
+	async onDestroy() {
+		await this.drain(this.opts.shutdownDrainMs ?? 0);
+	}
+
+	/** Persist every copy that still holds unpersisted updates, for up to `timeoutMs`. */
+	async drain(timeoutMs: number): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		let delay = 250;
+		// A scheduled retry means the last persist failed (possibly only its
+		// snapshot), so it counts as unsaved even with nothing in `pending`.
+		let left = [...this.docs.values()].filter((s) => !s.evicted && (s.pending.length > 0 || s.retryTimer !== null));
+		while (left.length > 0) {
+			this.opts.log.info('shutdown: persisting documents with unpersisted updates', { documents: left.length });
+			const failed: DocState[] = [];
+			await Promise.all(
+				left.map(async (state) => {
+					// Take over from the scheduled retry: the drain is the retry now.
+					if (state.retryTimer) clearTimeout(state.retryTimer);
+					state.retryTimer = null;
+					const run = state.chain.then(() => this.persistOnce(state));
+					state.chain = run.catch(() => {});
+					try {
+						await run;
+					} catch (err) {
+						this.opts.log.warn('shutdown: persist failed; retrying until the deadline', { pageId: state.pageId, err });
+						failed.push(state);
+						return;
+					}
+					// Written. A parked copy (no Hocuspocus document behind it any
+					// more) is torn down, as afterUnloadDocument would have done.
+					// Awaited: the pool closes right after the drain.
+					if (state.document.getConnectionsCount() === 0 && this.docs.get(state.name) === state) await this.teardown(state);
+				})
+			);
+			left = failed.filter((s) => !s.evicted && this.docs.get(s.name) === s);
+			if (left.length === 0) break;
+			if (Date.now() + delay > deadline) {
+				for (const state of left) {
+					this.opts.log.error('shutting down with unpersisted updates: they are lost', {
+						pageId: state.pageId,
+						epoch: state.epoch,
+						// 0 = everything is in the log, but page_contents lacks the latest snapshot.
+						unappendedUpdates: state.pending.length
+					});
+				}
+				break;
+			}
+			await new Promise((r) => setTimeout(r, delay));
+			delay = Math.min(delay * 2, 5000);
+		}
+		// Nothing may fire after the pool closes.
+		for (const state of this.docs.values()) {
+			if (state.retryTimer) clearTimeout(state.retryTimer);
+			state.retryTimer = null;
+		}
 	}
 
 	/** Run persistence for a document, serialised with any other run for it. */
@@ -444,7 +581,7 @@ export class GlyphCollab implements Extension {
 
 	private async persistOnce(state: DocState): Promise<void> {
 		if (state.evicted) return;
-		const { persistence, api, schema, maxDocumentBytes, compactEvery, log } = this.opts;
+		const { persistence, compactEvery, log } = this.opts;
 
 		// 1. Pull in anything another replica appended.
 		await this.catchUpOnce(state);
@@ -462,15 +599,24 @@ export class GlyphCollab implements Extension {
 			try {
 				seq = await persistence.append(state.pageId, state.epoch, Y.mergeUpdates(batch));
 			} catch (err) {
-				state.pending = batch.concat(state.pending);
+				this.returnBatch(state, batch);
 				throw err;
 			}
 			if (seq === null) {
 				this.evict(state, CollabReason.Reset, 'epoch replaced');
 				return;
 			}
-			state.lastSeq = Math.max(state.lastSeq, seq);
 			state.appendsSinceCompact++;
+			// Don't jump lastSeq to our own seq: another replica may have
+			// appended between step 1 and our append, and its row sits below
+			// ours. Every later catch-up (strictly seq > lastSeq) would skip it,
+			// and our snapshots would silently drop its edit (DI-11). Catch up
+			// instead: that reads the foreign row and our own (re-applying our
+			// own update is a no-op), and moves lastSeq past both. Seqs of a
+			// page become visible in seq order (see persistence.ts), so nothing
+			// below what we read here can still appear later.
+			await this.catchUpOnce(state);
+			if (state.evicted) return;
 		}
 
 		// 4. Keep the log short. Compaction merges the epoch's rows into one and
@@ -491,12 +637,31 @@ export class GlyphCollab implements Extension {
 			if (state.evicted) return;
 		}
 
-		// 5. Snapshot to page_contents through the API.
-		if (state.quarantined) return;
+		// 5. Snapshot to page_contents through the API. "Behind" means another
+		//    replica's snapshot for a later seq of this same epoch landed first
+		//    (two replicas snapshotting concurrently). Nothing is wrong with our
+		//    copy — everything we hold is in the log — so catch up past that
+		//    seq and try once more. If that is still behind (or there was
+		//    nothing to catch up), the newer snapshot already covers our
+		//    appends; the next store tries again. Never evict for it: eviction
+		//    Resets every editor and discards their unappended edits.
+		if ((await this.snapshot(state)) === 'behind' && !state.evicted) {
+			const seen = state.lastSeq;
+			await this.catchUpOnce(state);
+			if (state.evicted) return;
+			if (state.lastSeq > seen && (await this.snapshot(state)) === 'ok') return;
+			log.info('snapshot is behind another replica\'s; leaving it to the next store', { pageId: state.pageId, seq: state.lastSeq });
+		}
+	}
+
+	/** Step 5 of persistOnce: validate the document and write it to page_contents. */
+	private async snapshot(state: DocState): Promise<'ok' | 'behind' | 'done'> {
+		const { api, schema, maxDocumentBytes, log } = this.opts;
+		if (state.quarantined) return 'done';
 		const result = inspect(state.document, schema, maxDocumentBytes);
 		if (result.fatal) {
 			await this.quarantine(state, result.fatal);
-			return;
+			return 'done';
 		}
 		if (result.contentError) {
 			log.warn('document violates the content model (kept as is)', { pageId: state.pageId, error: result.contentError });
@@ -504,7 +669,7 @@ export class GlyphCollab implements Extension {
 		const serialised = JSON.stringify(result.json);
 		if (serialised === state.lastSnapshot) {
 			state.retryDelayMs = 1000;
-			return;
+			return 'ok';
 		}
 		const res = await api.snapshot(state.pageId, {
 			epoch: state.epoch,
@@ -516,17 +681,39 @@ export class GlyphCollab implements Extension {
 			case 'ok':
 				state.lastSnapshot = serialised;
 				state.retryDelayMs = 1000;
-				return;
+				if (res.disabled) this.windDown(state);
+				return 'ok';
+			case 'behind':
+				return 'behind';
 			case 'stale':
 				this.evict(state, CollabReason.Reset, 'snapshot rejected as stale');
-				return;
+				return 'done';
 			case 'disabled':
 				this.evict(state, CollabReason.Disabled, 'collaboration disabled');
-				return;
+				return 'done';
 			case 'invalid':
 				await this.quarantine(state, `API refused snapshot: ${res.message}`);
-				return;
+				return 'done';
 		}
+	}
+
+	/**
+	 * Put a batch whose append failed back where it will be retried. Normally
+	 * that is in front of this copy's `pending`. But if this copy was parked
+	 * and has since been replaced by a reload of the same epoch (it is evicted
+	 * and no longer registered), its retries will never run: hand the batch to
+	 * the live copy instead, which persists and broadcasts it like any edit.
+	 * A copy evicted for any other reason (a replaced epoch) drops it — those
+	 * updates belong to a document that no longer exists.
+	 */
+	private returnBatch(state: DocState, batch: Uint8Array[]) {
+		const live = this.docs.get(state.name);
+		if (state.evicted && live && live !== state && !live.evicted && live.epoch === state.epoch) {
+			for (const update of batch) Y.applyUpdate(live.document, update, REPAIR_ORIGIN);
+			this.opts.log.info('moved a failed batch into the reloaded document', { pageId: state.pageId, updates: batch.length });
+			return;
+		}
+		state.pending = batch.concat(state.pending);
 	}
 
 	/** Apply log entries written by other replicas since we last looked. */
@@ -573,6 +760,19 @@ export class GlyphCollab implements Extension {
 			connection.close({ code: 4409, reason });
 		}
 		void this.instance?.unloadDocument(state.document);
+	}
+
+	/**
+	 * The kill switch is off, but the document is still attached and its
+	 * snapshots are still accepted. Unlike evict(), keep the copy: close every
+	 * connection with Disabled (editors fall back to single-writer mode) and
+	 * let the unload flush append and snapshot whatever arrived meanwhile.
+	 */
+	private windDown(state: DocState) {
+		const connections = [...state.document.connections.keys()];
+		if (connections.length === 0) return;
+		this.opts.log.info('collaboration disabled: closing connections after the final snapshot', { pageId: state.pageId });
+		for (const connection of connections) connection.close({ code: 4403, reason: CollabReason.Disabled });
 	}
 
 	/** The API replaced a page's shared document (restore, or a write while disabled). */
