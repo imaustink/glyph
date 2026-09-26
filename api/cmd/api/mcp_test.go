@@ -41,6 +41,11 @@ const testPublicURL = "https://glyph.test"
 
 func newMCPEnv(t *testing.T) *mcpEnv {
 	t.Helper()
+	return newMCPEnvWith(t, collabConfig{})
+}
+
+func newMCPEnvWith(t *testing.T, collab collabConfig) *mcpEnv {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	handler.RegisterValidators()
 
@@ -76,7 +81,7 @@ func newMCPEnv(t *testing.T) *mcpEnv {
 	glyphoauth.RegisterOAuthRoutes(r, oauthCfg, nil)
 	apiGroup := r.Group("/api/v1", glyphoauth.DualAuthMiddleware(sessionMw, bearerMw), handler.CSRFMiddleware())
 	glyphoauth.RegisterConsentRoutes(apiGroup, oauthCfg)
-	registerRoutes(apiGroup, newHandlers(s, collabConfig{}))
+	registerRoutes(apiGroup, newHandlers(s, collab))
 	registerMCP(r, s, oauthCfg, bearerMw)
 
 	ctx := context.Background()
