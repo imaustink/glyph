@@ -7,7 +7,7 @@
  *
  * PasteIdentityExtension runs in every mode.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Editor } from '@tiptap/core';
 import { documentExtensions } from '$lib/editor/schema';
 import { NodeIdMapExtension } from '$lib/editor/plugins/NodeIdMapPlugin';
@@ -21,7 +21,12 @@ afterEach(() => {
 
 const PAGE_TASKS = new Set(['t-milk']);
 
-function makeEditor(items: { nodeId: string; taskId: string | null; text: string }[]) {
+type ForeignTaskPasted = (pasted: { nodeId: string; taskId: string }[]) => void;
+
+function makeEditor(
+	items: { nodeId: string; taskId: string | null; text: string }[],
+	onForeignTaskPasted?: ForeignTaskPasted
+) {
 	const mount = document.createElement('div');
 	document.body.appendChild(mount);
 	const editor = new Editor({
@@ -29,7 +34,7 @@ function makeEditor(items: { nodeId: string; taskId: string | null; text: string
 		extensions: [
 			...documentExtensions(),
 			NodeIdMapExtension,
-			PasteIdentityExtension.configure({ taskBelongsHere: (id) => PAGE_TASKS.has(id) })
+			PasteIdentityExtension.configure({ taskBelongsHere: (id) => PAGE_TASKS.has(id), onForeignTaskPasted })
 		],
 		content: {
 			type: 'doc',
@@ -118,5 +123,42 @@ describe('PasteIdentityExtension (DI-10)', () => {
 
 		const milk = items(editor).find((i) => i.text === 'Buy milk')!;
 		expect(milk).toMatchObject({ nodeId: 'n-milk', taskId: 't-milk' });
+	});
+
+	// Review follow-up: a bullet moved (cut → paste) from another note should
+	// take its task along. The editor can't tell a cut from a copy, so it
+	// reports the pasted bullet — under its fresh nodeId — for the server to
+	// decide (POST /tasks/:id/adopt).
+	it("reports a bullet pasted from another note, under its new nodeId, as a possible move of that note's task", () => {
+		const reported = vi.fn<ForeignTaskPasted>();
+		const editor = makeEditor([{ nodeId: 'n-a', taskId: 't-milk', text: 'a' }], reported);
+
+		pasteBullet(editor, 'n-elsewhere', 't-foreign', 'From another note');
+
+		const pasted = items(editor).find((i) => i.text === 'From another note')!;
+		expect(pasted.taskId).toBeNull();
+		expect(reported).toHaveBeenCalledTimes(1);
+		expect(reported).toHaveBeenCalledWith([{ nodeId: pasted.nodeId, taskId: 't-foreign' }]);
+	});
+
+	it('does not report a copy of a bullet on the same page, nor a second copy in one paste', () => {
+		const reported = vi.fn<ForeignTaskPasted>();
+		const editor = makeEditor([{ nodeId: 'n-milk', taskId: 't-milk', text: 'Buy milk' }], reported);
+
+		pasteBullet(editor, 'n-milk', 't-milk', 'Buy milk');
+		expect(reported).not.toHaveBeenCalled();
+
+		editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+		editor.view.pasteHTML(
+			'<ul><li data-node-id="x1" data-task-id="t-foreign"><p>one</p></li>' +
+				'<li data-node-id="x2" data-task-id="t-foreign"><p>two</p></li></ul>',
+			new Event('paste') as ClipboardEvent
+		);
+		expect(reported).toHaveBeenCalledTimes(1);
+		const [[pasted]] = reported.mock.calls;
+		expect(pasted).toHaveLength(1);
+		expect(pasted[0].taskId).toBe('t-foreign');
+		const one = items(editor).find((i) => i.text === 'one')!;
+		expect(pasted[0].nodeId).toBe(one.nodeId);
 	});
 });
