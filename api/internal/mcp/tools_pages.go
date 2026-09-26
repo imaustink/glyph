@@ -244,8 +244,11 @@ func (r *linkResult) addTo(out map[string]interface{}, cc *callContext) {
 // rollback so the new tasks don't outlive the bullets they were made for.
 //
 // Only bullets this write adds are linked: a bullet whose nodeId is in
-// existing (the nodeIds of the doc being replaced or appended to) was already
-// there, and the user may have left it unlinked on purpose. With existing
+// existing (pmmd.SettledListItemNodeIDs of the doc being replaced or appended
+// to) was already there, and the user may have left it unlinked on purpose;
+// that holds even when a replace edits its text. A bullet that was empty is
+// not in existing, so a TODO written over it (a replace reuses its nodeId) is
+// linked like any added bullet. With existing
 // non-nil, a bullet that has no nodeId yet was already there too (every
 // bullet this package parses gets one). A nil existing links every bullet,
 // for a brand-new page.
@@ -419,7 +422,7 @@ func pageTools() []*tool {
 		{
 			name:        "write_page_content",
 			title:       "Write page content",
-			description: `Change a note's content using Markdown. mode "append" (default) adds the Markdown to the end and leaves existing content untouched. mode "replace" rewrites the whole note and requires expected_revision from get_page — read the note first and keep the <!-- task:ID --> markers on bullets you keep. Blocks you leave unchanged keep formatting Markdown can't show (underline, link targets). A replace that would remove a bullet linked to a task is refused unless allow_task_removal is true, because removing the bullet deletes its task. New bullets under the TODO heading become linked tasks, as in the editor; existing unlinked bullets are left alone. Ticking a checkbox on an existing task doesn't change it; use update_task for status. If the note is open for live editing in Glyph, writes fail until it is closed; don't retry straight away.`,
+			description: `Change a note's content using Markdown. mode "append" (default) adds the Markdown to the end and leaves existing content untouched. mode "replace" rewrites the whole note and requires expected_revision from get_page — read the note first and keep the <!-- task:ID --> markers on bullets you keep. Blocks you leave unchanged keep formatting Markdown can't show (underline, link targets). A replace that would remove a bullet linked to a task is refused unless allow_task_removal is true, because removing the bullet deletes its task. New bullets under the TODO heading become linked tasks, as in the editor; existing unlinked bullets with text are left alone, even if you edit them (an empty bullet you fill in counts as new). Ticking a checkbox on an existing task doesn't change it; use update_task for status. If the note is open for live editing in Glyph, writes fail until it is closed; don't retry straight away.`,
 			input: object(map[string]schema{
 				"page_id":            str("The page id."),
 				"markdown":           str("Markdown to append, or the full new content for replace."),
@@ -755,7 +758,7 @@ func writePageContent(cc *callContext, raw json.RawMessage) (interface{}, error)
 		return nil, userError("the page has changed since you read it (now at revision " +
 			itoa(current.Revision) + "); call get_page again and retry")
 	}
-	existing, err := pmmd.ListItemNodeIDs(current.Content)
+	existing, err := pmmd.SettledListItemNodeIDs(current.Content)
 	if err != nil {
 		return nil, err
 	}

@@ -233,14 +233,8 @@ func collectUnlinked(list map[string]interface{}, out *[]TodoBullet) {
 			attrs["nodeId"] = nodeID
 		}
 		if taskID, _ := attrs["taskId"].(string); taskID == "" {
-			var text strings.Builder
-			for _, ch := range children(item) {
-				if ch["type"] == "paragraph" {
-					text.WriteString(nodeText(ch))
-				}
-			}
 			checked, _ := attrs["checked"].(bool)
-			if t := strings.TrimSpace(text.String()); t != "" {
+			if t := bulletText(item); t != "" {
 				*out = append(*out, TodoBullet{NodeID: nodeID, Text: t, Checked: checked})
 			}
 		}
@@ -250,4 +244,45 @@ func collectUnlinked(list map[string]interface{}, out *[]TodoBullet) {
 			}
 		}
 	}
+}
+
+// bulletText is a listItem's own text (its paragraphs, not nested lists),
+// trimmed; "" means the bullet is empty, and an empty bullet is not a task.
+func bulletText(item map[string]interface{}) string {
+	var text strings.Builder
+	for _, ch := range children(item) {
+		if ch["type"] == "paragraph" {
+			text.WriteString(nodeText(ch))
+		}
+	}
+	return strings.TrimSpace(text.String())
+}
+
+// SettledListItemNodeIDs returns the nodeIds of doc's listItems that are
+// linked to a task or have text: the bullets a later write should treat as
+// already there. An empty bullet (like the one the editor leaves at the end
+// of a TODO section) isn't included, so text a write puts into it counts as
+// added content, even when the write reuses the bullet's nodeId.
+func SettledListItemNodeIDs(doc json.RawMessage) (map[string]bool, error) {
+	root, err := decodeTodoDoc(doc)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	var walk func(n map[string]interface{})
+	walk = func(n map[string]interface{}) {
+		if n["type"] == "listItem" {
+			attrs, _ := n["attrs"].(map[string]interface{})
+			id, _ := attrs["nodeId"].(string)
+			taskID, _ := attrs["taskId"].(string)
+			if id != "" && (taskID != "" || bulletText(n) != "") {
+				out[id] = true
+			}
+		}
+		for _, ch := range children(n) {
+			walk(ch)
+		}
+	}
+	walk(root)
+	return out, nil
 }

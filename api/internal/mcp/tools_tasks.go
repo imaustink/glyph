@@ -401,7 +401,7 @@ func createTask(cc *callContext, raw json.RawMessage) (interface{}, error) {
 			// Only the new bullet is added; bullets already in the note are
 			// left as they are (it's linked already, so nothing else links).
 			var existing map[string]bool
-			if existing, err = pmmd.ListItemNodeIDs(content.Content); err == nil {
+			if existing, err = pmmd.SettledListItemNodeIDs(content.Content); err == nil {
 				_, links, err = cc.saveWithTodoLinks(page, next, content.SchemaVersion, content.Revision, existing)
 			}
 		}
