@@ -377,6 +377,8 @@ func TestTaskSourceIntegrity(t *testing.T) {
 			page := createPage(t, h, h.UserA.ID, "Plan")
 			task := createLinkedTask(t, h, h.UserA.ID, page.ID, "n1")
 			path := "/api/v1/tasks/" + task.ID.String()
+			// Drain what earlier subtests (run in map order) left behind.
+			h.Notifier.take()
 			h.Notifier.takeTitles()
 			_, renamed := h.TitleRenamedAt(t, task.ID)
 			assert.False(t, renamed, "a new task has not been renamed")
