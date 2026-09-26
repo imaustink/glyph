@@ -15,10 +15,15 @@ _deploy_repo() {
   cp "$REPO_ROOT/scripts/deploy.sh" "$REPO/scripts/deploy.sh"
   : >"$REPO/api/migrations/000001_init.up.sql"
   echo "name: glyph" >"$REPO/helm/glyph/Chart.yaml"
-  printf 'helm/glyph/migrations/\nvalues-production.yaml\n' >"$REPO/.gitignore"
-  echo "{}" >"$REPO/values-production.yaml"
+  # The repo's real ignore files, so the fixture can't hide what the real
+  # tree would show `git status`.
+  cp "$REPO_ROOT/.gitignore" "$REPO/.gitignore"
+  cp "$REPO_ROOT/.dockerignore" "$REPO/.dockerignore"
   "${g[@]}" -C "$REPO" add -A
   "${g[@]}" -C "$REPO" commit -q -m init
+  # The operator's production values: an untracked local file, created after
+  # the commit, where deploy.sh looks for it by default.
+  echo "{}" >"$REPO/values-production.yaml"
   "${g[@]}" -C "$REPO" remote add origin "$WORK/origin.git"
   "${g[@]}" -C "$REPO" push -q origin HEAD:main 2>/dev/null
   "${g[@]}" -C "$REPO" branch -q -u origin/main 2>/dev/null || true
@@ -64,6 +69,37 @@ test_deploy_refuses_dirty_tree() {
   _run_deploy
   assert_render_fails 'uncommitted'
   assert_not_contains "$CALLS" '^(docker (build|push)|helm)' "nothing built or deployed"
+}
+
+# Review (PR #46): the default --values file is a local, untracked
+# values-production.yaml in the repo root; it must not trip the dirty-tree
+# guard.
+test_deploy_default_values_file_does_not_trip_dirty_guard() {
+  _deploy_repo
+  _run_deploy
+  assert_ok
+  assert_not_contains "$OUT" 'uncommitted' "values-production.yaml is not a local change"
+  assert_contains "$CALLS" '^helm upgrade glyph helm/glyph -f values-production.yaml ' "deployed with the default values file"
+}
+
+# The guard stays strict for other untracked files: the frontend image is
+# built from `COPY . .` and collab from `COPY src/lib` / `COPY collab`, so an
+# untracked file can change an image whose tag (the tree hash) says it didn't.
+test_deploy_refuses_untracked_file() {
+  _deploy_repo
+  mkdir -p "$REPO/src/lib"
+  echo "export const x = 1" >"$REPO/src/lib/untracked.ts"
+  _run_deploy
+  assert_render_fails 'uncommitted'
+  assert_not_contains "$CALLS" '^(docker (build|push)|helm)' "nothing built or deployed"
+}
+
+# values-production.yaml holds production secrets; with `COPY . .` it would
+# otherwise be sent in the frontend build context and land in the builder
+# stage.
+test_dockerignore_excludes_values_production() {
+  local f; f="$(cat "$REPO_ROOT/.dockerignore")"
+  assert_contains "$f" '^/?values-production\.yaml$' ".dockerignore keeps the production values out of build contexts"
 }
 
 test_deploy_refuses_while_cd_is_running() {
