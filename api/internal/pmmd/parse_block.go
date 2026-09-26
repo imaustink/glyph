@@ -124,18 +124,97 @@ func parseBlocks(lines []string, depth int) []*node {
 			i++
 			continue
 		}
-		// Paragraph: consecutive lines until a blank line or another block.
+		if i+1 < len(lines) && strings.Contains(line, "|") && isTableDelimiter(lines[i+1]) {
+			n, next := parseTable(lines, i)
+			out = append(out, n)
+			i = next
+			continue
+		}
+		// Paragraph: consecutive lines until a blank line or another block,
+		// or a setext underline, which makes the lines a heading.
 		plines := []string{strings.TrimLeft(line, " \t")}
 		i++
-		for i < len(lines) && !isBlank(lines[i]) && !startsBlock(lines[i]) {
+		setext := 0
+		for i < len(lines) && !isBlank(lines[i]) {
+			if setext = setextLevel(lines[i]); setext > 0 {
+				i++
+				break
+			}
+			if startsBlock(lines[i]) {
+				break
+			}
 			plines = append(plines, strings.TrimLeft(lines[i], " \t"))
 			i++
+		}
+		if setext > 0 {
+			h := &node{Type: "heading", Attrs: map[string]any{"level": setext}}
+			h.Content = finishInline(parseInline(strings.TrimSpace(strings.Join(plines, "\n")), 0))
+			out = append(out, h)
+			continue
+		}
+		if len(plines) == 1 && strings.TrimSpace(plines[0]) == emptyParagraphMarker {
+			out = append(out, &node{Type: "paragraph"})
+			continue
 		}
 		if content := finishInline(parseInline(strings.Join(plines, "\n"), 0)); len(content) > 0 {
 			out = append(out, &node{Type: "paragraph", Content: content})
 		}
 	}
 	return out
+}
+
+// emptyParagraphMarker stands for an empty paragraph between other blocks —
+// blank lines alone can't express one, so spacing a user added would be lost
+// on a Markdown round trip.
+const emptyParagraphMarker = "&nbsp;"
+
+// setextLevel reports whether line is a setext heading underline: 1 for
+// "===", 2 for "---".
+func setextLevel(line string) int {
+	if indentWidth(line) > 3 {
+		return 0
+	}
+	t := strings.TrimSpace(line)
+	if t == "" || (t[0] != '=' && t[0] != '-') {
+		return 0
+	}
+	if strings.Count(t, t[:1]) != len(t) {
+		return 0
+	}
+	if t[0] == '=' {
+		return 1
+	}
+	return 2
+}
+
+// ---- tables ----
+
+var tableDelimiterRe = regexp.MustCompile(`^\s{0,3}\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$`)
+
+// isTableDelimiter reports whether line is a GFM table delimiter row
+// ("|---|:--:|"). A pipe is required so it can't be a setext underline.
+func isTableDelimiter(line string) bool {
+	return strings.Contains(line, "|") && tableDelimiterRe.MatchString(line)
+}
+
+// parseTable reads a GFM table starting at lines[i]. The editor schema has no
+// table node, so the table is kept as one paragraph with a line (hard break)
+// per row, pipes included — readable, and stable across round trips — rather
+// than letting its rows run together as a single garbled line.
+func parseTable(lines []string, i int) (*node, int) {
+	var rows []string
+	for i < len(lines) && !isBlank(lines[i]) && (len(rows) < 2 || !startsBlock(lines[i])) {
+		rows = append(rows, strings.TrimSpace(lines[i]))
+		i++
+	}
+	p := &node{Type: "paragraph"}
+	for k, row := range rows {
+		if k > 0 {
+			p.Content = append(p.Content, &node{Type: "hardBreak"})
+		}
+		p.Content = append(p.Content, finishInline(parseInline(row, 0))...)
+	}
+	return p, i
 }
 
 // startsBlock reports whether line begins a block that interrupts a
@@ -379,6 +458,9 @@ func parseList(lines []string, i, depth int) (*node, int) {
 	list := &node{Type: "bulletList"}
 	if first.ordered {
 		list.Type = "orderedList"
+		if first.num != 1 {
+			list.Attrs = map[string]any{"start": first.num}
+		}
 	}
 	for {
 		st, _ := parseItemStart(lines[i])

@@ -12,11 +12,24 @@ import (
 // renderBlocks renders a sequence of block nodes, separating them with blank
 // lines. In item mode (inside a listItem) a list directly following a
 // paragraph is attached without a blank line so the item stays tight.
+//
+// Empty paragraphs between other blocks (spacing the user added) render as
+// emptyParagraphMarker so they survive a round trip; leading and trailing
+// ones (e.g. the editor's trailing empty paragraph) are dropped.
 func renderBlocks(nodes []*node, inItem bool) []string {
+	lo, hi := -1, -1
+	for i, n := range nodes {
+		if n != nil && !isEmptyParagraph(n) {
+			if lo < 0 {
+				lo = i
+			}
+			hi = i
+		}
+	}
 	var out []string
 	prevType := ""
 	prevAlt := false
-	for _, n := range nodes {
+	for i, n := range nodes {
 		if n == nil {
 			continue
 		}
@@ -26,7 +39,14 @@ func renderBlocks(nodes []*node, inItem bool) []string {
 			// switching the marker character keeps them separate.
 			alt = !prevAlt
 		}
-		lines := renderBlock(n, alt)
+		var lines []string
+		if isEmptyParagraph(n) {
+			if i > lo && i < hi {
+				lines = []string{emptyParagraphMarker}
+			}
+		} else {
+			lines = renderBlock(n, alt)
+		}
 		if lines == nil {
 			continue
 		}
@@ -41,12 +61,19 @@ func renderBlocks(nodes []*node, inItem bool) []string {
 
 func isListType(t string) bool { return t == "bulletList" || t == "orderedList" }
 
+func isEmptyParagraph(n *node) bool {
+	return n.Type == "paragraph" && renderInline(n.Content, false) == ""
+}
+
 func renderBlock(n *node, alt bool) []string {
 	switch n.Type {
 	case "paragraph":
 		s := renderInline(n.Content, false)
 		if s == "" {
 			return nil
+		}
+		if s == emptyParagraphMarker {
+			s = `\` + s // literal text, not the empty-paragraph marker
 		}
 		return strings.Split(s, "\n")
 	case "heading":
