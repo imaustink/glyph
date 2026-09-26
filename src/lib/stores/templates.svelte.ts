@@ -116,14 +116,29 @@ export function createTemplatesStore(injectedRepo?: ITemplateRepository) {
     }
   }
 
+  /**
+   * Make `id` the only default template. Local storage does it in one batch
+   * write. The API has no batch endpoint, so there it is one write per
+   * changed template (the new default first); if any fails, the templates
+   * are reloaded so the store shows what was actually saved.
+   */
   async function setDefault(id: string): Promise<void> {
-    await Promise.all(
-      templates.map((t) =>
-        t.isDefault !== (t.id === id)
-          ? repo.update(t.id, { isDefault: t.id === id, updatedAt: now() })
-          : Promise.resolve(null)
-      )
-    );
+    const timestamp = now();
+    const changed = templates.filter((t) => t.isDefault !== (t.id === id));
+    if (changed.length === 0) return;
+    if (repo.updateMany) {
+      await repo.updateMany(new Map(changed.map((t) => [t.id, { isDefault: t.id === id, updatedAt: timestamp }])));
+    } else {
+      const ordered = [...changed].sort((a, b) => Number(b.id === id) - Number(a.id === id));
+      try {
+        for (const t of ordered) {
+          await repo.update(t.id, { isDefault: t.id === id, updatedAt: timestamp });
+        }
+      } catch (err) {
+        templates = await repo.getAll().catch(() => templates);
+        throw err;
+      }
+    }
     templates = templates.map((t) => ({ ...t, isDefault: t.id === id }));
   }
 
