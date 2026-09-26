@@ -45,13 +45,15 @@
     });
   });
 
-  // Sync external value changes (e.g. task switch or store refresh) into the
-  // editor without clobbering in-progress edits. Only replaces content when the
-  // incoming value differs from what the editor already holds, which prevents a
-  // feedback loop with the debounced save round-trip.
+  // Sync external value changes (e.g. store refresh) into the editor without
+  // clobbering in-progress edits. While the editor is focused the user's content
+  // is the source of truth: a debounced save's server response carries the
+  // markdown as of the save, which is stale once the user has kept typing (or
+  // may be normalized differently), and setContent would reset the cursor.
   $effect(() => {
     const incoming = value;
     if (!editor) return;
+    if (editor.isFocused) return;
     if (incoming === editor.getMarkdown()) return;
     editor.commands.setContent(incoming, { contentType: 'markdown', emitUpdate: false });
   });
