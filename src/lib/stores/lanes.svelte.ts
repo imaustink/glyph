@@ -3,6 +3,7 @@ import type { ILaneRepository } from '$lib/storage/interfaces';
 import type { Lane, FilterSet, SortConfig } from '$lib/models/types';
 import { now, makeTimestamps } from '$lib/utils/time';
 import { uuid } from '$lib/utils/uuid';
+import { createOptimisticWriter } from './optimisticWriter';
 
 const DEFAULT_LANES: Omit<Lane, 'id' | 'createdAt' | 'updatedAt'>[] = [
   {
@@ -86,23 +87,15 @@ export function createLanesStore(injectedRepo?: ILaneRepository) {
     return lane;
   }
 
-  async function updateLane(id: string, patch: Partial<Omit<Lane, 'id' | 'createdAt'>>): Promise<void> {
-    // Optimistic update: apply immediately, rollback on failure
-    const prev = _idIndex.get(id);
-    if (!prev) return;
-    const optimistic = { ...prev, ...patch, updatedAt: now() };
-    setLanes(lanes.map(l => l.id === id ? optimistic : l));
+  /** Serialized, sequenced optimistic writes per lane (see optimisticWriter). */
+  const _writer = createOptimisticWriter<Lane>({
+    get: (id) => _idIndex.get(id),
+    replace: (lane) => setLanes(lanes.map((l) => (l.id === lane.id ? lane : l)))
+  });
 
-    try {
-      const updated = await repo.update(id, { ...patch, updatedAt: now() });
-      if (updated) {
-        setLanes(lanes.map(l => l.id === id ? updated : l));
-      }
-    } catch (err) {
-      // Rollback on failure
-      setLanes(lanes.map(l => l.id === id ? prev : l));
-      throw err;
-    }
+  async function updateLane(id: string, patch: Partial<Omit<Lane, 'id' | 'createdAt'>>): Promise<void> {
+    const full = { ...patch, updatedAt: now() };
+    return _writer.update(id, full, () => repo.update(id, full), () => repo.getById(id));
   }
 
   async function deleteLane(id: string): Promise<void> {

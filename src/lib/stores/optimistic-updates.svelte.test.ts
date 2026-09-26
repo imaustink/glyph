@@ -173,11 +173,11 @@ describe('pagesStore.updateNode ordering [DI-05]', () => {
     const p1 = store.updateNode('p1', { title: 'Renamed' });
     const p2 = store.updateNode('p1', { tags: ['x'] });
 
-    // The newer write answers first, then the older one's stale row lands.
+    // The older write's row (without the tags) must not win, whichever
+    // order the two responses settle in.
     second.resolve(makeNode({ title: 'Renamed', tags: ['x'] }));
-    await p2;
     first.resolve(makeNode({ title: 'Renamed', tags: [] }));
-    await p1;
+    await Promise.all([p1, p2]);
 
     expect(store.getById('p1')).toMatchObject({ title: 'Renamed', tags: ['x'] });
   });
@@ -263,9 +263,8 @@ describe('lanesStore.updateLane ordering [DI-05]', () => {
     const p2 = store.updateLane('l1', { sortConfig: { mode: 'manual', taskOrder: ['a', 'b'] } });
 
     second.resolve(makeLane({ title: 'Renamed', sortConfig: { mode: 'manual', taskOrder: ['a', 'b'] } }));
-    await p2;
     first.resolve(makeLane({ title: 'Renamed' }));
-    await p1;
+    await Promise.all([p1, p2]);
 
     expect(store.lanes[0].sortConfig).toEqual({ mode: 'manual', taskOrder: ['a', 'b'] });
   });

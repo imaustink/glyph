@@ -4,6 +4,7 @@ import type { TreeNode, PageContent, TodoTriggerConfig, ProseMirrorJSONNode } fr
 import { now, makeTimestamps } from '$lib/utils/time';
 import { nextOrder, orderBetween, orderAfter } from '$lib/utils/order';
 import { uuid } from '$lib/utils/uuid';
+import { createOptimisticWriter } from './optimisticWriter';
 import { collabSupported, getCollabSession, removeListItemCollaboratively } from '$lib/collab/client';
 
 /** Recursively remove a listItem with the given nodeId from a ProseMirror JSON tree. */
@@ -116,23 +117,15 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
     return created;
   }
 
-  async function updateNode(id: string, patch: Partial<Omit<TreeNode, 'id' | 'createdAt'>>): Promise<void> {
-    // Optimistic update: apply immediately, rollback on failure
-    const prev = _idIndex.get(id);
-    if (!prev) return;
-    const optimistic = { ...prev, ...patch, updatedAt: now() };
-    setNodes(nodes.map(n => n.id === id ? optimistic : n));
+  /** Serialized, sequenced optimistic writes per node (see optimisticWriter). */
+  const _writer = createOptimisticWriter<TreeNode>({
+    get: (id) => _idIndex.get(id),
+    replace: (node) => setNodes(nodes.map((n) => (n.id === node.id ? node : n)))
+  });
 
-    try {
-      const updated = await repo.update(id, { ...patch, updatedAt: now() });
-      if (updated) {
-        setNodes(nodes.map(n => n.id === id ? updated : n));
-      }
-    } catch (err) {
-      // Rollback on failure
-      setNodes(nodes.map(n => n.id === id ? prev : n));
-      throw err;
-    }
+  async function updateNode(id: string, patch: Partial<Omit<TreeNode, 'id' | 'createdAt'>>): Promise<void> {
+    const full = { ...patch, updatedAt: now() };
+    return _writer.update(id, full, () => repo.update(id, full), () => repo.getById(id));
   }
 
   /**
