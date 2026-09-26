@@ -594,10 +594,12 @@ func (s *pageStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 			delete(s.r.shares, sid)
 		}
 	}
-	// The subtree's tasks are soft-deleted, as in Postgres.
+	// The subtree's tasks are soft-deleted, as in Postgres; another user's
+	// folder-board task is only unfiled (clearRefs below).
 	now := time.Now()
 	for tid, t := range s.r.tasks {
-		if (t.SourcePageID != nil && inSubtree[*t.SourcePageID]) || (t.FolderID != nil && inSubtree[*t.FolderID]) {
+		if (t.SourcePageID != nil && inSubtree[*t.SourcePageID]) ||
+			(t.FolderID != nil && inSubtree[*t.FolderID] && t.UserID == userID) {
 			t.UpdatedAt = now
 			s.r.deletedTasks[tid] = deletedTask{task: t, reason: deletedReasonSourceRemoved}
 			delete(s.r.tasks, tid)
