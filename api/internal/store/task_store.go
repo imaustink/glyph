@@ -263,6 +263,30 @@ func (s *pgTaskStore) CreateLinked(ctx context.Context, t *model.Task) (*model.T
 		return nil, false, fmt.Errorf("%w: task id already in use", ErrConflict)
 	}
 	if deleted {
+		var reason string
+		if err := tx.QueryRow(ctx, `SELECT deleted_reason FROM tasks WHERE id = $1`, existing.ID).Scan(&reason); err != nil {
+			return nil, false, fmt.Errorf("create linked task — deleted reason: %w", err)
+		}
+		if reason == "user" {
+			// Someone deleted this task on purpose: it is never brought back.
+			// Release the bullet from it and give the bullet a new task.
+			if _, err := tx.Exec(ctx, `UPDATE tasks SET source_node_id = NULL WHERE id = $1`, existing.ID); err != nil {
+				return nil, false, fmt.Errorf("create linked task — detach deleted: %w", err)
+			}
+			created, err := scanTask(tx.QueryRow(ctx, `INSERT INTO tasks (id, user_id, title, description, status, priority, tags, due_date, source_page_id, source_node_id, link, "order", org_id, is_private, folder_id)
+				  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+				  RETURNING `+taskColumns,
+				t.ID, t.UserID, t.Title, t.Description, t.Status, t.Priority,
+				t.Tags, t.DueDate, t.SourcePageID, t.SourceNodeID, linkJSON, t.Order, t.OrgID, t.IsPrivate, t.FolderID,
+			))
+			if err != nil {
+				return nil, false, mapUniqueViolation(err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return nil, false, fmt.Errorf("create linked task — commit: %w", err)
+			}
+			return created, true, nil
+		}
 		// Restoring someone else's deleted task would let any editor of the
 		// page resurrect (and so read) a task they were never shown.
 		if existing.UserID != t.UserID {

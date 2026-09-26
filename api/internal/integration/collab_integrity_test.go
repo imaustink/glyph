@@ -396,12 +396,16 @@ func TestTaskSourceIntegrity(t *testing.T) {
 		},
 
 		// Re-creating the task for a bullet whose task was soft-deleted
-		// restores the original rather than minting a second one.
+		// because the bullet disappeared restores the original rather than
+		// minting a second one. (A task the user deleted stays deleted: see
+		// TestLinkedTaskUserDeleteIsFinal.)
 		"RecreatingForASoftDeletedBulletRestoresTheOriginal": func(t *testing.T, h *Harness) {
 			h.ResetDB(t)
 			page := createPage(t, h, h.UserA.ID, "Plan")
 			task := createLinkedTask(t, h, h.UserA.ID, page.ID, "n1")
-			require.Equal(t, http.StatusNoContent, h.Do(t, "DELETE", "/api/v1/tasks/"+task.ID.String(), nil, h.UserA.ID).Code)
+			writeDoc(t, h, h.UserA.ID, page.ID, todoDoc(bullet{nodeID: "n1"}))
+			writeDoc(t, h, h.UserA.ID, page.ID, todoDoc())
+			require.False(t, taskVisible(t, h, h.UserA.ID, task.ID))
 
 			w := h.Do(t, "POST", "/api/v1/tasks", linkedTaskBody(page.ID, "n1", "again"), h.UserA.ID)
 			require.Equal(t, http.StatusOK, w.Code, w.Body.String())

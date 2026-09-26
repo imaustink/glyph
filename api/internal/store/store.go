@@ -101,8 +101,10 @@ type TaskStore interface {
 	// t.SourceNodeID), or returns the task that bullet is already linked to,
 	// with created=false. A bullet has at most one task, so concurrent
 	// creations from several editors collapse into one. If the existing task
-	// was soft-deleted and belongs to t.UserID it is restored; if it belongs
-	// to someone else the result is ErrConflict.
+	// was soft-deleted because its bullet disappeared and belongs to t.UserID
+	// it is restored; if it belongs to someone else the result is
+	// ErrConflict. A task a user deleted is never restored: it is unlinked
+	// from the bullet and a new task is created (created=true).
 	CreateLinked(ctx context.Context, t *model.Task) (task *model.Task, created bool, err error)
 	Update(ctx context.Context, t *model.Task) (*model.Task, error)
 	// Patch loads the live task id owned by ownerID, lets fn modify it, and

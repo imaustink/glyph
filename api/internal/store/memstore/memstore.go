@@ -856,7 +856,11 @@ func (s *taskStore) CreateLinked(_ context.Context, t *model.Task) (*model.Task,
 	if existing, ok := s.r.tasks[s.r.liveOrDeletedBySource(*t.SourcePageID, *t.SourceNodeID)]; ok {
 		return cloneTask(existing), false, nil
 	}
-	if d, ok := s.r.deletedTasks[s.r.liveOrDeletedBySource(*t.SourcePageID, *t.SourceNodeID)]; ok {
+	if d, ok := s.r.deletedTasks[s.r.liveOrDeletedBySource(*t.SourcePageID, *t.SourceNodeID)]; ok && d.reason == deletedReasonUser {
+		// Deleted on purpose: never restored. Release the bullet from it and
+		// fall through to create a new task.
+		d.task.SourceNodeID = nil
+	} else if ok {
 		if d.task.UserID != t.UserID {
 			return nil, false, fmt.Errorf("%w: bullet is linked to a deleted task owned by another user", store.ErrConflict)
 		}
