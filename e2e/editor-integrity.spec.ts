@@ -50,6 +50,62 @@ test.describe('Editor data integrity', () => {
 		await expect(page.locator('.lane').first().locator('.task-card:has-text("Buy milk")')).toHaveCount(1, { timeout: 15_000 });
 	});
 
+	test('pasting a copy of a linked bullet does not share its task (DI-10)', async ({ page }) => {
+		const taskId = await createLinkedBullet(page, 'Buy milk');
+		const original = page.locator(`main .tiptap-editor li[data-task-id="${taskId}"]`);
+		const nodeId = (await original.getAttribute('data-node-id'))!;
+
+		// Paste the bullet (as the editor copies it: with its ids) at the end
+		// of the note, below the list.
+		await page.locator('main .tiptap-editor').click();
+		await page.keyboard.press('Control+End');
+		await page.keyboard.press('Enter');
+		await page.keyboard.press('Enter');
+		await selectionSettled(page);
+		await page.locator('main .tiptap-editor').evaluate(
+			(el, { nodeId, taskId }) => {
+				const data = new DataTransfer();
+				data.setData(
+					'text/html',
+					`<ul><li data-node-id="${nodeId}" data-task-id="${taskId}" data-task-status="todo"><p>Buy milk</p></li></ul>`
+				);
+				el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+			},
+			{ nodeId, taskId }
+		);
+
+		const bullets = page.locator('main .tiptap-editor li:has-text("Buy milk")');
+		await expect(bullets).toHaveCount(2);
+		// Still exactly one bullet linked to the task, and one with its nodeId.
+		await expect(original).toHaveCount(1);
+		await expect(page.locator(`main .tiptap-editor li[data-node-id="${nodeId}"]`)).toHaveCount(1);
+	});
+
+	test('undoing a bullet deletion restores its task, even after a while (DI-10)', async ({ page }) => {
+		const taskId = await createLinkedBullet(page, 'Buy milk');
+		const bullet = page.locator(`main .tiptap-editor li[data-task-id="${taskId}"]`);
+
+		// Let the editor settle on the linked bullet (its 1 s removal check).
+		await page.waitForTimeout(1500);
+
+		// Remove the bullet: Backspace at its start turns it into a paragraph.
+		await bullet.locator('p').click();
+		await page.keyboard.press('Home');
+		await selectionSettled(page);
+		await page.keyboard.press('Backspace');
+		await expect(bullet).toHaveCount(0);
+		// Longer than the 1 s removal debounce.
+		await page.waitForTimeout(2500);
+
+		await page.keyboard.press('ControlOrMeta+z');
+		await expect(bullet).toHaveCount(1);
+		await expect(bullet).toContainText('Buy milk');
+		await page.waitForTimeout(1500);
+
+		await bullet.locator('.task-open-link').click();
+		await expect(page.locator('h1.task-title')).toHaveText('Buy milk', { timeout: 15_000 });
+	});
+
 	test('a task renamed on its page is not reverted by typing in its bullet (DI-29)', async ({ page }) => {
 		const taskId = await createLinkedBullet(page, 'Buy milk');
 		const bullet = page.locator(`main .tiptap-editor li[data-task-id="${taskId}"]`);
