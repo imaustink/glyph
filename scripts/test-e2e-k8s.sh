@@ -2,21 +2,30 @@
 # scripts/test-e2e-k8s.sh — Run Playwright E2E tests against a local Kubernetes
 # cluster instead of the Docker Compose stack in scripts/test-e2e.sh.
 #
-# The cluster is ferry (https://github.com/imaustink/ferry) — a macOS/Apple
-# silicon distribution that runs the control plane natively and each pod in its
-# own VM. Anything that speaks the Kubernetes API works, though: point
-# KUBECONFIG at another cluster and set FERRY=0 to skip the ferry-specific
-# bits (see "Using a different cluster" below).
+# The cluster is ferry (https://github.com/imaustink/ferry) v0.9 or newer — a
+# macOS/Apple silicon distribution that runs the control plane natively and
+# each pod in its own VM. Anything that speaks the Kubernetes API works,
+# though: point KUBECONFIG at another cluster and set FERRY=0 to skip the
+# ferry-specific bits (see "Using a different cluster" below).
 #
 # What it does:
-#   1. Builds glyph-api / glyph-frontend-api / glyph-frontend-local into the
-#      node's image store (`ferry image build`, a buildkit pod — no Docker).
-#   2. Installs the CloudNativePG operator, which helm/glyph's Cluster needs.
-#   3. Installs the chart with e2e/k8s/values.e2e.yaml plus the local-mode
-#      frontend from e2e/k8s/frontend-local.yaml.
-#   4. Forwards the three Services to loopback ports and runs Playwright
-#      against them. Playwright's `reuseExistingServer` sees the forwards
-#      already listening and starts nothing of its own.
+#   1. Starts a ferry cluster in its own profile (glyph-e2e), with its own
+#      state, ports and pod network, so it never touches the default cluster
+#      you might develop against. The first run writes the profile's config
+#      with `ferry init`: purpose ci, durability process-crash (it is
+#      recreated, not precious), machines off, defaultRuntime ferry-vm (every
+#      pod its own VM on the Mac — the chart names no RuntimeClass).
+#      The cluster is left running between runs; see "Stopping it" below.
+#   2. Builds glyph-api / glyph-frontend-api / glyph-frontend-local /
+#      glyph-collab into the node's image store (`ferry image build`, a
+#      buildkit pod — no Docker).
+#   3. Installs the CloudNativePG operator, which helm/glyph's Cluster needs.
+#   4. Installs the chart with e2e/k8s/values.e2e.yaml (collab on), plus the
+#      local-mode frontend from e2e/k8s/frontend-local.yaml and the
+#      same-origin edge proxy from e2e/k8s/edge.yaml.
+#   5. Forwards the Services to loopback ports and runs Playwright against
+#      them. Playwright's `reuseExistingServer` sees the forwards already
+#      listening and starts nothing of its own.
 #
 # Usage:
 #   ./scripts/test-e2e-k8s.sh            # both projects (local + api)
@@ -27,8 +36,13 @@
 #   SKIP_BUILD=1     reuse the :e2e images already in the node's image store
 #   KEEP=1           leave the namespace running after the tests (to debug)
 #   NAMESPACE=...    override the namespace (default: glyph-e2e)
+#   FERRY_PROFILE=.. the ferry profile to run in (default: glyph-e2e)
 #   FERRY=0          skip `ferry up` / `ferry image build`; bring your own
-#                    cluster and load the three :e2e images into it yourself
+#                    cluster and load the four :e2e images into it yourself
+#
+# Stopping it:
+#   FERRY_PROFILE=glyph-e2e ferry down           # stop; the next run resumes
+#   FERRY_PROFILE=glyph-e2e ferry down --purge   # and drop its data
 #
 # Using a different cluster (kind, k3d, Docker Desktop, a remote cluster):
 #   FERRY=0 KUBECONFIG=~/.kube/config ./scripts/test-e2e-k8s.sh
@@ -47,6 +61,8 @@ NAMESPACE="${NAMESPACE:-glyph-e2e}"
 RELEASE="glyph"
 CNPG_VERSION="1.30.0"
 FERRY="${FERRY:-1}"
+FERRY_MIN_VERSION="0.9.0"
+export FERRY_PROFILE="${FERRY_PROFILE:-glyph-e2e}"
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 # Everything the app needs runs in the cluster; the only thing needed locally is
@@ -62,18 +78,34 @@ FERRY="${FERRY:-1}"
 if [[ "$FERRY" == "1" ]]; then
   command -v ferry >/dev/null || {
     echo "ferry not found. Install it with:"
-    echo "  curl -sfL https://get.ferry.kurpuis.com | FERRY_VERSION=v0.5.0 sh -"
+    echo "  curl -sfL https://get.ferry.kurpuis.com | FERRY_VERSION=v${FERRY_MIN_VERSION} sh -"
     exit 1
   }
+  # 0.9 is the first with `ferry init`/`ferry config` and RuntimeClasses, and
+  # the first whose memory-backed emptyDir is a real tmpfs.
+  ferry_version="$(ferry version | awk 'NR==1 {sub(/^v/, "", $2); print $2}')"
+  if [[ "$(printf '%s\n%s\n' "$FERRY_MIN_VERSION" "$ferry_version" | sort -V | head -1)" != "$FERRY_MIN_VERSION" ]]; then
+    echo "ferry $ferry_version is too old; this needs v$FERRY_MIN_VERSION or newer. Upgrade with:"
+    echo "  curl -sfL https://get.ferry.kurpuis.com | FERRY_VERSION=v${FERRY_MIN_VERSION} sh -"
+    exit 1
+  fi
   command -v buildctl >/dev/null || {
     echo "buildctl not found (ferry runs the builder, the client comes from buildkit):"
     echo "  brew install buildkit"
     exit 1
   }
+  # The profile's config is written once and then left alone, so anything
+  # changed with `ferry config set` sticks across runs.
+  if [[ ! -f "$(ferry config path)" ]]; then
+    ferry init --purpose ci --machines false --default-runtime ferry-vm --yes
+  fi
+  export KUBECONFIG="$(ferry kubeconfig)"
   # `ferry up` exits 1 against an already-running cluster rather than no-opping,
-  # so only start one when `ferry status` says there isn't one.
-  ferry status >/dev/null 2>&1 || ferry up
-  export KUBECONFIG="${KUBECONFIG:-$HOME/.ferry-current/admin.conf}"
+  # and `ferry status` exits 0 whether or not one is running — so ask the API
+  # server itself.
+  if ! kubectl get --raw /readyz >/dev/null 2>&1; then
+    ferry up
+  fi
 fi
 
 kubectl cluster-info >/dev/null 2>&1 || {
@@ -92,6 +124,7 @@ if [[ "${SKIP_BUILD:-}" != "1" && "$FERRY" == "1" ]]; then
     --build-arg VITE_STORAGE_MODE=api --build-arg VITE_API_URL= .
   ferry image build -t glyph-frontend-local:e2e -f Dockerfile \
     --build-arg VITE_STORAGE_MODE=local .
+  ferry image build -t glyph-collab:e2e -f collab/Dockerfile .
   # The builder is a pod, and it reserves several GiB so buildkit can actually
   # use them. Left running it is enough on its own to put the node under
   # memory-pressure, which taints it NoSchedule and leaves the whole release
@@ -119,11 +152,12 @@ free_port() {
 export TEST_API_PORT="$(free_port)"
 export TEST_LOCAL_PORT="$(free_port)"
 export TEST_API_UI_PORT="$(free_port)"
+export TEST_COLLAB_PORT="$(free_port)"
 
 API_UI_ORIGIN="http://localhost:$TEST_API_UI_PORT"
 LOCAL_ORIGIN="http://localhost:$TEST_LOCAL_PORT"
 
-echo "▶ Ports: api=$TEST_API_PORT local-ui=$TEST_LOCAL_PORT api-ui=$TEST_API_UI_PORT"
+echo "▶ Ports: api=$TEST_API_PORT collab=$TEST_COLLAB_PORT local-ui=$TEST_LOCAL_PORT api-ui=$TEST_API_UI_PORT"
 
 # ── Deploy ────────────────────────────────────────────────────────────────────
 # The chart reads migrations from helm/glyph/migrations (gitignored); keep it in
@@ -139,7 +173,15 @@ helm upgrade --install "$RELEASE" helm/glyph \
   -f e2e/k8s/values.e2e.yaml \
   --set "frontend.origin=$API_UI_ORIGIN" \
   --set "api.frontendUrl=$API_UI_ORIGIN" \
+  --set "collab.allowedOrigins=$API_UI_ORIGIN" \
   --wait --timeout 10m
+
+echo "▶ Deploying edge proxy…"
+kubectl apply -n "$NAMESPACE" -f e2e/k8s/edge.yaml >/dev/null
+# nginx reads its config once, so a namespace kept from an earlier run
+# (KEEP=1) would go on serving the old one.
+kubectl -n "$NAMESPACE" rollout restart deploy/glyph-edge >/dev/null
+kubectl -n "$NAMESPACE" rollout status deploy/glyph-edge --timeout=5m
 
 echo "▶ Deploying local-mode frontend…"
 sed "s|__ORIGIN__|$LOCAL_ORIGIN|" e2e/k8s/frontend-local.yaml | kubectl apply -n "$NAMESPACE" -f - >/dev/null
@@ -206,8 +248,13 @@ forward glyph-api "$TEST_API_PORT" 8080
 wait_for_port "$TEST_API_PORT" "glyph-api"
 
 if [[ -z "$PROJECT" || "$PROJECT" == "api" ]]; then
-  forward glyph-frontend "$TEST_API_UI_PORT" 3000
-  wait_for_port "$TEST_API_UI_PORT" "glyph-frontend"
+  # The browser goes through the edge proxy, so /collab is same-origin. The
+  # collab Service is forwarded as well only so Playwright's collab webServer
+  # entry finds its health check answered and starts nothing.
+  forward glyph-edge "$TEST_API_UI_PORT" 8080
+  wait_for_port "$TEST_API_UI_PORT" "glyph-edge"
+  forward glyph-collab "$TEST_COLLAB_PORT" 1235
+  wait_for_port "$TEST_COLLAB_PORT" "glyph-collab"
 fi
 
 if [[ -z "$PROJECT" || "$PROJECT" == "local" ]]; then

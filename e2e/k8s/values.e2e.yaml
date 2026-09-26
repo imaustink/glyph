@@ -8,8 +8,9 @@
 #     /test/become, which e2e/fixtures.ts calls before every test.
 #   * Everything is scaled to one replica and sized for a laptop.
 #
-# frontend.origin and api.frontendUrl are overridden with --set by the script,
-# since the host port the suite runs on is allocated per invocation.
+# frontend.origin, api.frontendUrl and collab.allowedOrigins are overridden
+# with --set by the script, since the host port the suite runs on is allocated
+# per invocation.
 
 frontend:
   replicaCount: 1
@@ -85,17 +86,6 @@ cnpg:
   parameters:
     shared_buffers: "64MB"
     max_connections: "100"
-    # ferry backs `emptyDir: {medium: Memory}` — which is what CNPG mounts over
-    # /dev/shm — with an ext4 disk image rather than a tmpfs. Ordinary writes to
-    # it succeed, but shm_open(3) returns EROFS, and that is the exact call
-    # PostgreSQL's POSIX dynamic-shared-memory backend makes, so the primary
-    # never finishes bootstrapping:
-    #   FATAL: could not open shared memory segment "/PostgreSQL.NNNNNNNNNN":
-    #          Read-only file system
-    # SysV segments do not go through /dev/shm. initdb independently probes and
-    # picks sysv on this kernel, so this only overrides the posix default that
-    # CNPG writes into its own postgresql.conf afterwards.
-    dynamic_shared_memory_type: "sysv"
 
   resources:
     requests:
@@ -104,6 +94,42 @@ cnpg:
     limits:
       cpu: "1"
       memory: 1Gi
+
+# The api project runs with realtime collaboration on (playwright.config.ts),
+# so every editing spec goes through this service — as it does in the Compose
+# stack. The browser reaches it at same-origin /collab through the edge proxy
+# in e2e/k8s/edge.yaml.
+collab:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: glyph-collab
+    tag: e2e
+    pullPolicy: Never
+
+  # Matches docker-compose.test.yml; fixed and obviously fake.
+  serviceToken: "e2e-collab-service-token"
+
+  # Overridden by the script with the actual forwarded origin.
+  allowedOrigins: "http://localhost:5174"
+
+  # Tests reload quickly after typing; persist promptly (same as Compose).
+  extraEnv:
+    - name: COLLAB_STORE_DEBOUNCE_MS
+      value: "300"
+    - name: COLLAB_STORE_MAX_DEBOUNCE_MS
+      value: "1000"
+    - name: COLLAB_REAUTH_INTERVAL_MS
+      value: "5000"
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
 
 # Ingress stays off: the suite reaches the services over kubectl port-forward.
 ingress:

@@ -10,3 +10,9 @@ build
 .env.*
 !.env.example
 *.local
+# Local build and test output. src-tauri/target alone is gigabytes, and
+# `COPY . .` in the Dockerfile would otherwise carry it into every build.
+src-tauri/target
+coverage
+test-results
+playwright-report

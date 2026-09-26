@@ -187,28 +187,29 @@ This starts an ephemeral Postgres (port 5433) and Go API (port 8083) in their ow
 
 ### Playwright E2E — local Kubernetes cluster
 
-`make test-e2e-k8s` runs the same specs against `helm/glyph` on a real cluster, so the chart itself is under test alongside the app — the CNPG database, the migration Job, the SvelteKit proxy, and the images built from `Dockerfile` / `api/Dockerfile`.
+`make test-e2e-k8s` runs the same specs against `helm/glyph` on a real cluster, so the chart itself is under test alongside the app — the CNPG database, the migration Job, the collab service, the SvelteKit proxy, and the images built from `Dockerfile` / `api/Dockerfile` / `collab/Dockerfile`.
 
-The cluster is [ferry](https://github.com/imaustink/ferry), which runs the Kubernetes control plane natively on macOS and each pod in its own VM:
+The cluster is [ferry](https://github.com/imaustink/ferry) v0.9 or newer, which runs the Kubernetes control plane natively on macOS and each pod in its own VM:
 
 ```bash
-curl -sfL https://get.ferry.kurpuis.com | FERRY_VERSION=v0.5.0 sh -
+curl -sfL https://get.ferry.kurpuis.com | FERRY_VERSION=v0.9.0 sh -
 brew install buildkit    # `ferry image build` runs the builder; buildctl is the client
 make test-e2e-k8s
 ```
 
-The script builds three images straight into the node's image store (no registry, no Docker), installs the CloudNativePG operator the chart depends on, deploys into the `glyph-e2e` namespace, forwards the Services to loopback ports, and tears the namespace down afterwards.
+The script runs its own ferry cluster in a `glyph-e2e` profile — separate state, ports and pod network from any cluster you develop against. The first run writes that profile's config with `ferry init` (durability `process-crash`, machines off, every pod a `ferry-vm`) and starts it; later runs reuse it. It then builds four images straight into the node's image store (no registry, no Docker), installs the CloudNativePG operator the chart depends on, deploys into the `glyph-e2e` namespace, forwards the Services to loopback ports, and tears the namespace down afterwards. The cluster stays up between runs; stop it with `FERRY_PROFILE=glyph-e2e ferry down` (add `--purge` to drop its data).
 
 | Variable | Effect |
 |---|---|
 | `SKIP_BUILD=1` | Reuse the `:e2e` images already in the image store |
 | `KEEP=1` | Leave the namespace running after the tests |
 | `NAMESPACE=…` | Deploy somewhere other than `glyph-e2e` |
+| `FERRY_PROFILE=…` | Run in a ferry profile other than `glyph-e2e` |
 | `FERRY=0` | Skip the ferry-specific steps and use whatever `KUBECONFIG` points at |
 
-`FERRY=0` is the escape hatch for kind, k3d, Docker Desktop, or a remote cluster — build and load the three `:e2e` images however that cluster expects (e.g. `kind load docker-image`), and the rest of the script is plain Kubernetes.
+`FERRY=0` is the escape hatch for kind, k3d, Docker Desktop, or a remote cluster — build and load the four `:e2e` images however that cluster expects (e.g. `kind load docker-image`), and the rest of the script is plain Kubernetes.
 
-The deployment differs from production in three deliberate ways, all in `e2e/k8s/values.e2e.yaml`: `api.devAuth` is on (it's what exposes `/test/reset`, which the fixtures call before every test), the frontend proxies `/api` and `/test` in-process instead of through an Ingress, and everything runs a single replica. The `local` Playwright project needs a frontend built with `VITE_STORAGE_MODE=local`, which the chart has no concept of, so it gets its own Deployment in `e2e/k8s/frontend-local.yaml`.
+The deployment differs from production in a few deliberate ways, all in `e2e/k8s/values.e2e.yaml`: `api.devAuth` is on (it's what exposes `/test/reset`, which the fixtures call before every test), the frontend proxies `/api` and `/test` in-process instead of through an Ingress, and everything runs a single replica. Realtime collaboration is on, as in the Compose stack; the browser reaches the collab WebSocket at same-origin `/collab` through a small nginx in `e2e/k8s/edge.yaml` standing in for the Ingress, since the SvelteKit server cannot proxy a WebSocket upgrade. The `local` Playwright project needs a frontend built with `VITE_STORAGE_MODE=local`, which the chart has no concept of, so it gets its own Deployment in `e2e/k8s/frontend-local.yaml`.
 
 ## Project structure
 
