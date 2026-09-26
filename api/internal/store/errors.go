@@ -22,3 +22,7 @@ var ErrCollaborative = errors.New("page is being edited collaboratively")
 // ErrStaleSnapshot is returned when a collaborative snapshot was produced for
 // an epoch that is no longer current, or would move the snapshot backwards.
 var ErrStaleSnapshot = errors.New("stale collaborative snapshot")
+
+// ErrLastOwner is returned when a membership change would leave an
+// organization with no owner.
+var ErrLastOwner = errors.New("organization must keep at least one owner")

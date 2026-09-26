@@ -160,16 +160,26 @@ type TemplateStore interface {
 // OrgStore handles organization and membership persistence.
 type OrgStore interface {
 	Create(ctx context.Context, org *model.Organization) (*model.Organization, error)
+	// CreateWithOwner creates the org and makes org.CreatedBy its owner in
+	// one transaction, so a failure can't leave an org nobody belongs to.
+	CreateWithOwner(ctx context.Context, org *model.Organization) (*model.Organization, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*model.Organization, error)
 	// ListForUser returns all orgs the user belongs to, with their role.
 	ListForUser(ctx context.Context, userID uuid.UUID) ([]*model.OrgWithRole, error)
 	Update(ctx context.Context, org *model.Organization) (*model.Organization, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 
+	// AddMember adds a new member; ErrConflict if userID already belongs to
+	// the org (their role is left alone — use UpdateMemberRole).
 	AddMember(ctx context.Context, orgID, userID uuid.UUID, role model.OrgRole) (*model.OrgMember, error)
 	GetMember(ctx context.Context, orgID, userID uuid.UUID) (*model.OrgMember, error)
 	ListMembers(ctx context.Context, orgID uuid.UUID) ([]*model.OrgMember, error)
+	// UpdateMemberRole changes a member's role; ErrNotFound if not a member,
+	// ErrLastOwner if it would demote the org's only owner. The check and
+	// the write are serialized per org.
 	UpdateMemberRole(ctx context.Context, orgID, userID uuid.UUID, role model.OrgRole) (*model.OrgMember, error)
+	// RemoveMember removes a member; ErrLastOwner if they are the org's only
+	// owner. The check and the delete are serialized per org.
 	RemoveMember(ctx context.Context, orgID, userID uuid.UUID) error
 	// GetUserOrgIDs returns all org IDs the user belongs to (for access checks).
 	GetUserOrgIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)

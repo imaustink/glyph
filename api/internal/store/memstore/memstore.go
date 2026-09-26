@@ -1469,6 +1469,28 @@ func (s *orgStore) Create(_ context.Context, org *model.Organization) (*model.Or
 	return cloneOrg(stored), nil
 }
 
+func (s *orgStore) CreateWithOwner(_ context.Context, org *model.Organization) (*model.Organization, error) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	if org.ID == uuid.Nil {
+		org.ID = uuid.New()
+	}
+	now := time.Now()
+	org.CreatedAt = now
+	org.UpdatedAt = now
+	stored := cloneOrg(org)
+	s.r.orgs[stored.ID] = stored
+	m := &model.OrgMember{OrgID: stored.ID, UserID: stored.CreatedBy, Role: model.OrgRoleOwner, JoinedAt: now}
+	if u, ok := s.r.usersByID[stored.CreatedBy]; ok {
+		m.Email = u.Email
+		m.Name = u.Name
+	}
+	s.r.members[orgMemberKey{stored.ID, stored.CreatedBy}] = m
+	out := cloneOrg(stored)
+	out.MemberCount = 1
+	return out, nil
+}
+
 func (s *orgStore) GetByID(_ context.Context, id uuid.UUID) (*model.Organization, error) {
 	s.r.mu.RLock()
 	defer s.r.mu.RUnlock()
@@ -1537,6 +1559,9 @@ func (s *orgStore) AddMember(_ context.Context, orgID, userID uuid.UUID, role mo
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
 	k := orgMemberKey{orgID, userID}
+	if _, exists := s.r.members[k]; exists {
+		return nil, fmt.Errorf("%w: already a member", store.ErrConflict)
+	}
 	m := &model.OrgMember{OrgID: orgID, UserID: userID, Role: role, JoinedAt: time.Now()}
 	if u, ok := s.r.usersByID[userID]; ok {
 		m.Email = u.Email
@@ -1575,16 +1600,34 @@ func (s *orgStore) UpdateMemberRole(_ context.Context, orgID, userID uuid.UUID, 
 	k := orgMemberKey{orgID, userID}
 	m, ok := s.r.members[k]
 	if !ok {
-		return nil, fmt.Errorf("member not found")
+		return nil, fmt.Errorf("member: %w", store.ErrNotFound)
+	}
+	if m.Role == model.OrgRoleOwner && role != model.OrgRoleOwner && s.r.ownerCount(orgID) <= 1 {
+		return nil, store.ErrLastOwner
 	}
 	m.Role = role
 	return cloneMember(m), nil
 }
 
+// ownerCount must be called with the lock held.
+func (r *Registry) ownerCount(orgID uuid.UUID) int {
+	n := 0
+	for k, m := range r.members {
+		if k.orgID == orgID && m.Role == model.OrgRoleOwner {
+			n++
+		}
+	}
+	return n
+}
+
 func (s *orgStore) RemoveMember(_ context.Context, orgID, userID uuid.UUID) error {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
-	delete(s.r.members, orgMemberKey{orgID, userID})
+	k := orgMemberKey{orgID, userID}
+	if m, ok := s.r.members[k]; ok && m.Role == model.OrgRoleOwner && s.r.ownerCount(orgID) <= 1 {
+		return store.ErrLastOwner
+	}
+	delete(s.r.members, k)
 	return nil
 }
 

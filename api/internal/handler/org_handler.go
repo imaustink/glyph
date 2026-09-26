@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -49,13 +50,9 @@ func (h *OrgHandler) CreateOrg(c *gin.Context) {
 		return
 	}
 	org := &model.Organization{Name: body.Name, CreatedBy: user.ID}
-	created, err := h.Orgs.Create(c.Request.Context(), org)
+	// The creator becomes the owner in the same transaction.
+	created, err := h.Orgs.CreateWithOwner(c.Request.Context(), org)
 	if err != nil {
-		internalError(c, err)
-		return
-	}
-	// Auto-add creator as owner.
-	if _, err := h.Orgs.AddMember(c.Request.Context(), created.ID, user.ID, model.OrgRoleOwner); err != nil {
 		internalError(c, err)
 		return
 	}
@@ -206,6 +203,12 @@ func (h *OrgHandler) AddOrgMember(c *gin.Context) {
 	}
 	member, err := h.Orgs.AddMember(c.Request.Context(), orgID, memberID, body.Role)
 	if err != nil {
+		// An existing member keeps their role; changing it is
+		// PATCH /orgs/:orgId/members/:userId, which guards the last owner.
+		if errors.Is(err, store.ErrConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": "user is already a member", "code": "already_member"})
+			return
+		}
 		internalError(c, err)
 		return
 	}
@@ -239,27 +242,18 @@ func (h *OrgHandler) UpdateOrgMemberRole(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid role"})
 		return
 	}
-	// Prevent demoting the last owner.
-	if body.Role != model.OrgRoleOwner {
-		existing, err := h.Orgs.GetMember(c.Request.Context(), orgID, memberID)
-		if err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "member not found"})
-			return
-		}
-		if existing.Role == model.OrgRoleOwner {
-			owners, err := h.countOrgOwners(c, orgID)
-			if err != nil {
-				return
-			}
-			if owners <= 1 {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "cannot demote the last owner"})
-				return
-			}
-		}
-	}
+	// The store refuses to demote the last owner, checking and writing
+	// under one lock so two owners can't both step down at once.
 	member, err := h.Orgs.UpdateMemberRole(c.Request.Context(), orgID, memberID, body.Role)
 	if err != nil {
-		internalError(c, err)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "member not found"})
+		case errors.Is(err, store.ErrLastOwner):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot demote the last owner"})
+		default:
+			internalError(c, err)
+		}
 		return
 	}
 	c.JSON(http.StatusOK, member)
@@ -285,23 +279,16 @@ func (h *OrgHandler) RemoveOrgMember(c *gin.Context) {
 			return
 		}
 	}
-	// Prevent the last owner from leaving.
-	existing, err := h.Orgs.GetMember(c.Request.Context(), orgID, memberID)
-	if err != nil {
+	if _, err := h.Orgs.GetMember(c.Request.Context(), orgID, memberID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "member not found"})
 		return
 	}
-	if existing.Role == model.OrgRoleOwner {
-		owners, err := h.countOrgOwners(c, orgID)
-		if err != nil {
-			return
-		}
-		if owners <= 1 {
+	// The store refuses to remove the last owner (checked under a lock).
+	if err := h.Orgs.RemoveMember(c.Request.Context(), orgID, memberID); err != nil {
+		if errors.Is(err, store.ErrLastOwner) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot remove the last owner"})
 			return
 		}
-	}
-	if err := h.Orgs.RemoveMember(c.Request.Context(), orgID, memberID); err != nil {
 		internalError(c, err)
 		return
 	}
@@ -322,20 +309,4 @@ func (h *OrgHandler) orgOwnerGuard(c *gin.Context, orgID, userID uuid.UUID) bool
 		return false
 	}
 	return true
-}
-
-// countOrgOwners returns the number of members with OrgRoleOwner.
-func (h *OrgHandler) countOrgOwners(c *gin.Context, orgID uuid.UUID) (int, error) {
-	members, err := h.Orgs.ListMembers(c.Request.Context(), orgID)
-	if err != nil {
-		internalError(c, err)
-		return 0, err
-	}
-	count := 0
-	for _, m := range members {
-		if m.Role == model.OrgRoleOwner {
-			count++
-		}
-	}
-	return count, nil
 }

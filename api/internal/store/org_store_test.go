@@ -189,9 +189,12 @@ func TestOrgStore_ListMembers_RowsErr(t *testing.T) {
 // ─── UpdateMemberRole ────────────────────────────────────────────────────────
 
 func TestOrgStore_UpdateMemberRole_ScanError(t *testing.T) {
+	// The role change runs in a transaction that locks the org row first.
 	pool := &mockPool{
-		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-			return &mockRow{scanFn: func(dest ...any) error { return errors.New("scan error") }}
+		beginFn: func(ctx context.Context) (pgx.Tx, error) {
+			return &mockTx{queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+				return &mockRow{scanFn: func(dest ...any) error { return errors.New("scan error") }}
+			}}, nil
 		},
 	}
 	s := NewOrgStore(pool)
@@ -262,11 +265,15 @@ func TestOrgStore_Delete_ExecError(t *testing.T) {
 // ─── RemoveMember ─────────────────────────────────────────────────────────────
 
 func TestOrgStore_RemoveMember_ExecError(t *testing.T) {
-pool := &mockPool{
-execFn: func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-return pgconn.CommandTag{}, errors.New("exec error")
-},
-}
+	// The delete runs in a transaction after locking the org and reading the
+	// member's role.
+	pool := &mockPool{
+		beginFn: func(ctx context.Context) (pgx.Tx, error) {
+			return &mockTx{execFn: func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+				return pgconn.CommandTag{}, errors.New("exec error")
+			}}, nil
+		},
+	}
 s := NewOrgStore(pool)
 err := s.RemoveMember(context.Background(), uuid.New(), uuid.New())
 if err == nil {
@@ -327,21 +334,32 @@ func TestOrgStore_UpdateMemberRole_Success(t *testing.T) {
 orgID := uuid.New()
 userID := uuid.New()
 callCount := 0
-pool := &mockPool{
-queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
-callCount++
-if callCount == 1 {
-return &mockRow{scanFn: func(dest ...any) error {
-*dest[0].(*uuid.UUID) = orgID
-*dest[1].(*uuid.UUID) = userID
-*dest[2].(*model.OrgRole) = model.OrgRoleOwner
-*dest[3].(*time.Time) = time.Now()
-return nil
-}}
-}
-return &mockRow{scanFn: func(dest ...any) error { return errors.New("no user") }}
-},
-}
+	// Inside the transaction: lock org, read current role, update, hydrate.
+	pool := &mockPool{
+		beginFn: func(ctx context.Context) (pgx.Tx, error) {
+			return &mockTx{queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+				callCount++
+				switch callCount {
+				case 1:
+					return &mockRow{}
+				case 2:
+					return &mockRow{scanFn: func(dest ...any) error {
+						*dest[0].(*model.OrgRole) = model.OrgRoleOwner
+						return nil
+					}}
+				case 3:
+					return &mockRow{scanFn: func(dest ...any) error {
+						*dest[0].(*uuid.UUID) = orgID
+						*dest[1].(*uuid.UUID) = userID
+						*dest[2].(*model.OrgRole) = model.OrgRoleOwner
+						*dest[3].(*time.Time) = time.Now()
+						return nil
+					}}
+				}
+				return &mockRow{scanFn: func(dest ...any) error { return errors.New("no user") }}
+			}}, nil
+		},
+	}
 s := NewOrgStore(pool)
 m, err := s.UpdateMemberRole(context.Background(), orgID, userID, model.OrgRoleOwner)
 if err != nil || m == nil {
