@@ -50,6 +50,9 @@
   // is the source of truth: a debounced save's server response carries the
   // markdown as of the save, which is stale once the user has kept typing (or
   // may be normalized differently), and setContent would reset the cursor.
+  // The task-switch case is handled by the parent's {#key task.id} remount
+  // (routes/tasks/[taskId]/+page.svelte), which rebuilds the editor from `value`;
+  // without it, this focus guard would strand the previous task's description.
   $effect(() => {
     const incoming = value;
     if (!editor) return;
