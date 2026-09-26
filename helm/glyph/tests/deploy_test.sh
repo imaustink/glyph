@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # DI-18 — scripts/deploy.sh, the manual deploy path. It must never ship
 # anything but the tip of origin/main, must use the same tree-hash tags as CD
-# (not :latest under pullPolicy IfNotPresent), and must upgrade atomically.
+# (not :latest under pullPolicy IfNotPresent), and must wait for the rollout
+# without rolling back on its own.
 
 # _deploy_repo — a throwaway clone (with an origin) holding deploy.sh, plus
 # stub docker/helm/kubectl/gh that log their arguments to $WORK/calls.
@@ -73,7 +74,7 @@ test_deploy_refuses_while_cd_is_running() {
   assert_not_contains "$CALLS" '^helm' "nothing deployed"
 }
 
-test_deploy_uses_tree_hash_tags_and_atomic_upgrade() {
+test_deploy_uses_tree_hash_tags_and_waits() {
   _deploy_repo
   local tree; tree="$("${GITC[@]}" rev-parse 'HEAD^{tree}')"
   _run_deploy
@@ -81,7 +82,7 @@ test_deploy_uses_tree_hash_tags_and_atomic_upgrade() {
   assert_not_contains "$CALLS" ':latest' "never :latest"
   assert_contains "$CALLS" "docker push docker.io/blackmarket/glyph-api:$tree" "api pushed under the tree hash"
   assert_contains "$CALLS" "docker push docker.io/blackmarket/glyph-collab:$tree" "collab pushed under the tree hash"
-  assert_contains "$CALLS" "^helm upgrade glyph helm/glyph .*--atomic" "atomic upgrade"
+  assert_contains "$CALLS" "^helm upgrade glyph helm/glyph " "upgrades the release"
   assert_contains "$CALLS" "^helm upgrade .*--wait" "waits for the rollout"
   assert_contains "$CALLS" "^helm upgrade .*api.image.tag=$tree" "deploys the tree-hash tag"
   assert_not_contains "$CALLS" 'rollout restart' "no extra restart"
