@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMAGE_REPO="docker.io/blackmarket/glyph"
-FRONTEND_IMAGE="$IMAGE_REPO:frontend-latest"
-API_IMAGE="$IMAGE_REPO:api-latest"
+REGISTRY="docker.io/blackmarket"
+FRONTEND_IMAGE="$REGISTRY/glyph-frontend:latest"
+API_IMAGE="$REGISTRY/glyph-api:latest"
 NAMESPACE="glyph"
 
 # Parse flags

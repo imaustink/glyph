@@ -301,11 +301,23 @@ jobs:
     # ubuntu-latest (amd64) produces images that fail with "exec format error"
     # when the kubelet tries to run them.
     runs-on: arc-runner-set
-    # One public Docker Hub repo holds all three images, so the component is
-    # a tag prefix (frontend-<tree>, api-<tree>, collab-<tree>) rather than a
-    # separate repository. cd.yml derives the same tags — keep them in sync.
-    env:
-      IMAGE_REPO: docker.io/blackmarket/glyph
+    # One job per image so the three builds run in parallel on separate
+    # runners. Each image has its own public Docker Hub repo. cd.yml's
+    # build-missing job carries the same matrix — keep the two in sync.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: frontend
+            dockerfile: Dockerfile
+            context: .
+            build-args: --build-arg VITE_STORAGE_MODE=api --build-arg VITE_API_URL=
+          - image: api
+            dockerfile: api/Dockerfile
+            context: api/
+          - image: collab
+            dockerfile: collab/Dockerfile
+            context: .
     steps:
       - uses: actions/checkout@v4
 
@@ -323,28 +335,10 @@ jobs:
       # on both as long as the file contents are unchanged. That lets cd.yml
       # compute this exact tag after merging and deploy the image built here
       # without rebuilding it.
-      - name: Build & push frontend
+      - name: Build & push ${{ matrix.image }}
         run: |
-          tag=$(git rev-parse HEAD^{tree})
-          docker build \
-            --build-arg VITE_STORAGE_MODE=api \
-            --build-arg VITE_API_URL= \
-            -t "$IMAGE_REPO:frontend-$tag" \
-            -f Dockerfile .
-          docker push "$IMAGE_REPO:frontend-$tag"
-
-      - name: Build & push API
-        run: |
-          tag=$(git rev-parse HEAD^{tree})
-          docker build \
-            -t "$IMAGE_REPO:api-$tag" \
-            -f api/Dockerfile api/
-          docker push "$IMAGE_REPO:api-$tag"
-
-      - name: Build & push collab
-        run: |
-          tag=$(git rev-parse HEAD^{tree})
-          docker build \
-            -t "$IMAGE_REPO:collab-$tag" \
-            -f collab/Dockerfile .
-          docker push "$IMAGE_REPO:collab-$tag"
+          ref="docker.io/blackmarket/glyph-${{ matrix.image }}:$(git rev-parse HEAD^{tree})"
+          docker build ${{ matrix.build-args }} \
+            -t "$ref" \
+            -f ${{ matrix.dockerfile }} ${{ matrix.context }}
+          docker push "$ref"
