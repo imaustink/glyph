@@ -158,9 +158,6 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 		typeImmutable(c)
 		return
 	}
-	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
-		return
-	}
 	// Remember the pre-update parent so we only re-validate on an actual move.
 	originalParentID := existing.ParentID
 	originalOrgID := existing.OrgID
@@ -170,6 +167,12 @@ func (h *PageHandler) UpdatePage(c *gin.Context) {
 	// {"orgId": null} moves the node to the personal workspace.
 	if raw, present := keys["orgId"]; present && isJSONNull(raw) {
 		existing.OrgID = nil
+	}
+	// A workspace move takes the whole subtree along; its destination must
+	// be allowed (Personal: the owner only; within the token's grant).
+	if !sameOrg(originalOrgID, existing.OrgID) &&
+		!h.Perms.CanMoveToOrg(c, existing.OrgID, existing.UserID, user.ID, model.ShareResourcePage) {
+		return
 	}
 
 	// ApplyTo cannot distinguish {"parentId": null} (move to the top level) from
@@ -242,6 +245,19 @@ func subtreeHasOtherOwners(c *gin.Context, err error) {
 	c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "subtree_has_other_owners"})
 }
 
+// requestedOrg is the org a PATCH body asks for: sent reports whether it
+// has an orgId key at all, and a JSON null asks for Personal (nil).
+func requestedOrg(keys map[string]json.RawMessage, orgID *uuid.UUID) (dest *uuid.UUID, sent bool) {
+	raw, present := keys["orgId"]
+	if !present {
+		return nil, false
+	}
+	if isJSONNull(raw) {
+		return nil, true
+	}
+	return orgID, true
+}
+
 func sameOrg(a, b *uuid.UUID) bool {
 	if a == nil || b == nil {
 		return a == b
@@ -269,7 +285,21 @@ func (h *PageHandler) DeletePage(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only the owner can delete"})
 		return
 	}
-	if err := h.Pages.Delete(c.Request.Context(), id, user.ID); err != nil {
+	// The subtree's tasks are soft-deleted with it unless the caller opts to
+	// keep them (?keepTasks=true: "Keep Tasks" in the delete dialog), which
+	// detaches them into standalone tasks instead.
+	del := h.Pages.Delete
+	if keep := c.Query("keepTasks"); keep != "" {
+		k, err := strconv.ParseBool(keep)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "keepTasks must be true or false"})
+			return
+		}
+		if k {
+			del = h.Pages.DeleteKeepingTasks
+		}
+	}
+	if err := del(c.Request.Context(), id, user.ID); err != nil {
 		if errors.Is(err, store.ErrSubtreeNotOwned) {
 			// Deleting would cascade to pages other users created inside
 			// this folder. They must move or delete their pages first.
@@ -348,12 +378,26 @@ func (h *PageHandler) UpsertPage(c *gin.Context) {
 		typeImmutable(c)
 		return
 	}
-	page, err := h.Pages.Upsert(c.Request.Context(), &body)
+	// Changing an existing page's org is PATCH's workspace move: the
+	// subtree and its tasks go along, in the same transaction, and a
+	// subtree holding other users' pages is refused. Upsert would move this
+	// row alone. The destination was checked above (the requester is the
+	// owner; token scope and membership for body.OrgID).
+	var page *model.Page
+	if existing != nil && !sameOrg(existing.OrgID, body.OrgID) {
+		page, err = h.Pages.UpdateFieldsMovingOrg(c.Request.Context(), &body, store.PageUpdateFields)
+	} else {
+		page, err = h.Pages.Upsert(c.Request.Context(), &body)
+	}
 	if err != nil {
 		// PUT shares PATCH's cycle check; the store runs it in the writing
 		// transaction under the tree-move lock.
 		if errors.Is(err, store.ErrCycle) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot move a node into one of its own descendants"})
+			return
+		}
+		if errors.Is(err, store.ErrSubtreeNotOwned) {
+			subtreeHasOtherOwners(c, err)
 			return
 		}
 		notFoundOrError(c, err)

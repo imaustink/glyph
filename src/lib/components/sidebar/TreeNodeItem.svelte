@@ -116,7 +116,8 @@
         taskIds,
         deleteTasks: deleteAssociatedTasks,
         deleteNode: pagesStore.deleteNode,
-        deleteTask: tasksStore.deleteTask
+        deleteTask: tasksStore.deleteTask,
+        refreshTask: tasksStore.refreshTask
       });
       if (failedTaskIds.length > 0) {
         notificationsStore.error(

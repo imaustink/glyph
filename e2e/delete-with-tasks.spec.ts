@@ -65,4 +65,41 @@ test.describe('Delete with tasks (api)', () => {
 		const res = await api.get(`/api/v1/tasks/${task.id}`);
 		expect(res.status(), 'task survives the refused delete').toBe(200);
 	});
+
+	test('"Keep Tasks" keeps a deleted note\'s tasks as standalone tasks', async ({
+		page,
+		seedUsers,
+		baseURL
+	}) => {
+		if (!seedUsers || !baseURL) throw new Error('fixtures missing');
+		const api = page.request;
+		await api.post(`${baseURL}/test/become/${seedUsers.userA.id}`);
+
+		const note = await post<{ id: string }>(api, '/api/v1/pages', { title: 'Doomed Note', type: 'page' });
+		const task = await post<{ id: string }>(api, '/api/v1/tasks', {
+			title: 'Survivor',
+			sourcePageId: note.id,
+			status: 'in-progress'
+		});
+
+		await switchUser(page, baseURL, seedUsers.userA.id);
+		const noteRow = page.locator('.node-row', { has: page.locator('.node-label:has-text("Doomed Note")') });
+		await expect(noteRow).toBeVisible({ timeout: 15_000 });
+		await noteRow.hover();
+		await noteRow.locator('.icon-btn[title="More options"]').click();
+		await page.locator('.context-item:has-text("Delete")').click();
+		const dialog = page.locator('[role="alertdialog"]');
+		await expect(dialog).toBeVisible();
+		await dialog.locator('button:has-text("Keep Tasks")').click();
+		await expect(noteRow).toHaveCount(0);
+
+		// The note is gone; its task lives on, detached from it.
+		expect((await api.get(`/api/v1/pages/${note.id}`)).status()).toBe(404);
+		const res = await api.get(`/api/v1/tasks/${task.id}`);
+		expect(res.status(), 'the kept task must survive the delete').toBe(200);
+		const kept = (await res.json()) as { sourcePageId: string | null; status: string; title: string };
+		expect(kept.sourcePageId).toBeNull();
+		expect(kept.status).toBe('in-progress');
+		expect(kept.title).toBe('Survivor');
+	});
 });

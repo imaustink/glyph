@@ -563,6 +563,16 @@ func (s *pageStore) Update(_ context.Context, p *model.Page) (*model.Page, error
 // otherwise the whole subtree goes, as the parent_id cascade does — with each
 // page's content archived into the history, which outlives the page.
 func (s *pageStore) Delete(_ context.Context, id, userID uuid.UUID) error {
+	return s.deleteSubtree(id, userID, false)
+}
+
+// DeleteKeepingTasks mirrors the Postgres store: Delete, with the tasks it
+// would soft-delete detached (no source note, bullet or folder) instead.
+func (s *pageStore) DeleteKeepingTasks(_ context.Context, id, userID uuid.UUID) error {
+	return s.deleteSubtree(id, userID, true)
+}
+
+func (s *pageStore) deleteSubtree(id, userID uuid.UUID, keepTasks bool) error {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
 	p, ok := s.r.pages[id]
@@ -594,11 +604,20 @@ func (s *pageStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 			delete(s.r.shares, sid)
 		}
 	}
-	// The subtree's tasks are soft-deleted, as in Postgres.
+	// The subtree's tasks are soft-deleted, as in Postgres, or with
+	// keepTasks detached (clearRefs below, plus the bullet); another user's
+	// folder-board task is only unfiled.
 	now := time.Now()
 	for tid, t := range s.r.tasks {
-		if (t.SourcePageID != nil && inSubtree[*t.SourcePageID]) || (t.FolderID != nil && inSubtree[*t.FolderID]) {
+		if (t.SourcePageID != nil && inSubtree[*t.SourcePageID]) ||
+			(t.FolderID != nil && inSubtree[*t.FolderID] && t.UserID == userID) {
 			t.UpdatedAt = now
+			if keepTasks {
+				if t.SourcePageID != nil && inSubtree[*t.SourcePageID] {
+					t.SourceNodeID = nil
+				}
+				continue
+			}
 			s.r.deletedTasks[tid] = deletedTask{task: t, reason: deletedReasonSourceRemoved}
 			delete(s.r.tasks, tid)
 		}

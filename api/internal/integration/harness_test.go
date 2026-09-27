@@ -304,8 +304,31 @@ func (h *Harness) testAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 		c.Set(auth.ContextKey, user)
+		// A request may act as an OAuth bearer token with the given scope
+		// (see DoAsToken), as oauth.BearerTokenMiddleware would set it.
+		if raw := c.GetHeader(testTokenScopeHeader); raw != "" {
+			var scope model.TokenScope
+			if err := json.Unmarshal([]byte(raw), &scope); err != nil {
+				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid token scope"})
+				return
+			}
+			c.Set(model.TokenScopeContextKey, &scope)
+		}
 		c.Next()
 	}
+}
+
+// testTokenScopeHeader carries a JSON model.TokenScope: the request is
+// authorized as a bearer token with that scope acting as the header user.
+const testTokenScopeHeader = "X-Test-Token-Scope"
+
+// DoAsToken is Do as an OAuth bearer token with the given scope, acting as
+// userID.
+func (h *Harness) DoAsToken(t *testing.T, method, path string, body interface{}, userID uuid.UUID, scope model.TokenScope) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(scope)
+	require.NoError(t, err)
+	return h.DoWithHeaders(t, method, path, body, userID, map[string]string{testTokenScopeHeader: string(raw)})
 }
 
 // ResetDB delegates to the backend's Reset and refreshes the test users.

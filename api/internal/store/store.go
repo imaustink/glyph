@@ -52,7 +52,12 @@ type PageStore interface {
 	// names (including "type", which is immutable) are ignored.
 	UpdateFields(ctx context.Context, p *model.Page, fields []string) (*model.Page, error)
 	Upsert(ctx context.Context, p *model.Page) (*model.Page, error)
+	// Delete removes the page and its subtree, soft-deleting the subtree's
+	// tasks (another user's folder-board task is only unfiled).
 	Delete(ctx context.Context, id, userID uuid.UUID) error
+	// DeleteKeepingTasks is Delete with those tasks detached instead: no
+	// source note, bullet or folder, everything else intact.
+	DeleteKeepingTasks(ctx context.Context, id, userID uuid.UUID) error
 
 	GetContent(ctx context.Context, pageID, userID uuid.UUID) (*model.PageContent, error)
 	// UpsertContent writes a whole document. It requires pc.ExpectedRevision
