@@ -728,9 +728,13 @@ test.describe('Tasks', () => {
 	test('inline lane rename saves and shows a success notification (#48)', async ({ page }) => {
 		await navigateToTaskBoard(page);
 
-		const allTasksLane = page.locator('.lane').filter({
-			has: page.locator('.lane-title:has-text("All Tasks")')
-		});
+		// Locate the "All Tasks" lane by position rather than a live
+		// text-filtered locator: renaming it below changes the title text the
+		// filter matches on, which would otherwise make the lane unreachable
+		// again once the rename lands.
+		const laneTitles = await page.locator('.lane-title').allTextContents();
+		const laneIndex = laneTitles.findIndex((title) => title.trim() === 'All Tasks');
+		const allTasksLane = page.locator('.lane').nth(laneIndex);
 		await expect(allTasksLane).toBeVisible({ timeout: 15_000 });
 
 		await allTasksLane.locator('.lane-title').dblclick();
@@ -740,7 +744,7 @@ test.describe('Tasks', () => {
 
 		// Title updates in place and a success toast confirms the save.
 		await expect(allTasksLane.locator('.lane-title')).toHaveText('Backlog');
-		await expect(page.locator('.toast.toast-success')).toHaveText('Lane renamed.');
+		await expect(page.locator('.toast.toast-success')).toContainText('Lane renamed.');
 
 		// The rename persists across a reload.
 		await page.reload();

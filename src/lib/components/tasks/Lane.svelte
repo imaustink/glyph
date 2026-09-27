@@ -205,6 +205,13 @@
   }
 
   async function commitTitle() {
+    // Enter calls commitTitle() directly, which flips editingTitle to false
+    // synchronously and swaps the focused <input> for the title <button>.
+    // Removing a focused element fires a native blur, which re-invokes this
+    // handler a second time before the first onupdatelane() call resolves —
+    // guard on editingTitle (rather than comparing to lane.title, which
+    // hasn't updated yet) so the rename isn't submitted twice.
+    if (!editingTitle) return;
     editingTitle = false;
     const nextTitle = titleValue.trim();
     // Nothing to persist when the field was cleared or left unchanged.
