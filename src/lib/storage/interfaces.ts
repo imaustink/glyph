@@ -51,10 +51,18 @@ export interface IPageRepository extends IRepository<TreeNode> {
    * Delete a node and its descendants. `descendantIds` are the ones the
    * caller knows about; a local implementation may find more (e.g. created
    * by another tab). Returns every id it deleted when it knows them.
+   *
+   * `keepTasks`: the user chose to keep the subtree's tasks. The API deletes
+   * them with their notes unless asked to keep them (it then detaches them
+   * into standalone tasks); local storage never touches tasks here.
    */
-  deleteSubtree(id: string, descendantIds: string[]): Promise<void | string[]>;
+  deleteSubtree(id: string, descendantIds: string[], opts?: DeleteSubtreeOptions): Promise<void | string[]>;
   getTree(nodes: TreeNode[]): TreeNode[];
   getChildren(nodes: TreeNode[], parentId: string): TreeNode[];
+}
+
+export interface DeleteSubtreeOptions {
+  keepTasks?: boolean;
 }
 
 // ─── Task Repository Interface ────────────────────────────────────────────────

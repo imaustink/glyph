@@ -335,7 +335,16 @@ describe('pagesStore', () => {
 
       await store.deleteNode('parent');
 
-      expect(repo.deleteSubtree).toHaveBeenCalledWith('parent', ['child']);
+      expect(repo.deleteSubtree).toHaveBeenCalledWith('parent', ['child'], undefined);
+    });
+
+    it('passes keepTasks through to deleteSubtree', async () => {
+      vi.mocked(repo.getAll).mockResolvedValueOnce([makeNode({ id: 'note' })]);
+      await store.load();
+
+      await store.deleteNode('note', { keepTasks: true });
+
+      expect(repo.deleteSubtree).toHaveBeenCalledWith('note', [], { keepTasks: true });
     });
 
     it('deletes a leaf node correctly', async () => {
@@ -346,7 +355,7 @@ describe('pagesStore', () => {
       await store.deleteNode('leaf');
 
       expect(store.nodes).toHaveLength(0);
-      expect(repo.deleteSubtree).toHaveBeenCalledWith('leaf', []);
+      expect(repo.deleteSubtree).toHaveBeenCalledWith('leaf', [], undefined);
     });
   });
 

@@ -1,5 +1,5 @@
 import { repositories } from '$lib/storage/config';
-import type { IPageRepository, WriteOptions } from '$lib/storage/interfaces';
+import type { DeleteSubtreeOptions, IPageRepository, WriteOptions } from '$lib/storage/interfaces';
 import type { TreeNode, PageContent, TodoTriggerConfig, ProseMirrorJSONNode } from '$lib/models/types';
 import { now, makeTimestamps } from '$lib/utils/time';
 import { nextOrder, orderBetween, orderAfter } from '$lib/utils/order';
@@ -153,11 +153,12 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
    * - API: sends a single DELETE; Postgres ON DELETE CASCADE handles descendants
    *
    * Throws on failure so the caller can surface the error to the user.
-   * Returns the ids of every node that was deleted.
+   * Returns the ids of every node that was deleted. `opts.keepTasks`: see
+   * IPageRepository.deleteSubtree.
    */
-  async function deleteNode(id: string): Promise<string[]> {
+  async function deleteNode(id: string, opts?: DeleteSubtreeOptions): Promise<string[]> {
     const descendantIds = collectDescendantIds(id);
-    const reported = await repo.deleteSubtree(id, descendantIds);
+    const reported = await repo.deleteSubtree(id, descendantIds, opts);
 
     // Update local state regardless of storage mode.
     const deletedSet = new Set([...descendantIds, id, ...(reported ?? [])]);
