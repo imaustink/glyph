@@ -205,13 +205,22 @@
   }
 
   async function commitTitle() {
+    // Enter calls commitTitle() directly, which flips editingTitle to false
+    // synchronously and swaps the focused <input> for the title <button>.
+    // Removing a focused element fires a native blur, which re-invokes this
+    // handler a second time before the first onupdatelane() call resolves —
+    // guard on editingTitle (rather than comparing to lane.title, which
+    // hasn't updated yet) so the rename isn't submitted twice.
+    if (!editingTitle) return;
     editingTitle = false;
-    if (titleValue.trim()) {
-      try {
-        await onupdatelane(lane.id, { title: titleValue.trim() });
-      } catch {
-        notificationsStore.error('Failed to rename lane.');
-      }
+    const nextTitle = titleValue.trim();
+    // Nothing to persist when the field was cleared or left unchanged.
+    if (!nextTitle || nextTitle === lane.title) return;
+    try {
+      await onupdatelane(lane.id, { title: nextTitle });
+      notificationsStore.success('Lane renamed.');
+    } catch {
+      notificationsStore.error('Failed to rename lane.');
     }
   }
 
