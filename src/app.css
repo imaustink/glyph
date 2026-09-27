@@ -245,6 +245,28 @@ button {
 
 /* ─── Mobile responsive ──────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
+  /* Bump the type scale up a notch on phones. The desktop scale is tuned for
+     dense, pointer-driven layouts; at phone size those sizes read as a
+     shrunk-down desktop app. Every component sizes off these tokens, so
+     nudging them here scales the whole UI proportionally. */
+  :root {
+    --font-size-xs: 0.78rem;
+    --font-size-sm: 0.875rem;
+    --font-size-base: 1rem;
+    --font-size-md: 1.0625rem;
+    --font-size-lg: 1.2rem;
+    --font-size-xl: 1.4rem;
+
+    /* Wider slide-in sidebar so the tree and nav aren't cramped. */
+    --sidebar-width: min(84vw, 320px);
+  }
+
+  /* Long unbreakable strings (URLs, IDs, code without spaces) must wrap
+     instead of forcing a horizontal scroll that hides text off screen. */
+  body {
+    overflow-wrap: break-word;
+  }
+
   .modal-backdrop {
     align-items: flex-end;
     padding: 0;

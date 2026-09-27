@@ -27,6 +27,31 @@
   } = $props();
 
   let showTemplateSubmenu = $state(false);
+  let menuEl = $state<HTMLDivElement | null>(null);
+  // Null until measured; until then we render at the raw click position.
+  let adjustedPos = $state<{ x: number; y: number } | null>(null);
+  const displayPos = $derived(adjustedPos ?? pos);
+  // The template submenu normally opens to the right; flip it left when the
+  // menu sits close enough to the right edge that it would overflow.
+  let submenuFlip = $state(false);
+
+  // Keep the menu fully on screen: if the click was near the right/bottom edge
+  // the raw coordinates would push it partly (or wholly) out of view.
+  $effect(() => {
+    if (!menuEl) return;
+    const margin = 8;
+    const rect = menuEl.getBoundingClientRect();
+    let x = pos.x;
+    let y = pos.y;
+    if (x + rect.width > window.innerWidth - margin) {
+      x = Math.max(margin, window.innerWidth - rect.width - margin);
+    }
+    if (y + rect.height > window.innerHeight - margin) {
+      y = Math.max(margin, window.innerHeight - rect.height - margin);
+    }
+    adjustedPos = { x, y };
+    submenuFlip = x + rect.width + 140 > window.innerWidth - margin;
+  });
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
@@ -40,7 +65,8 @@
 
 <div
   class="context-menu"
-  style="top: {pos.y}px; left: {pos.x}px;"
+  bind:this={menuEl}
+  style="top: {displayPos.y}px; left: {displayPos.x}px;"
   onclick={(e) => e.stopPropagation()}
   onkeydown={handleKeydown}
   role="menu"
@@ -63,7 +89,7 @@
         </svg>
       </button>
       {#if showTemplateSubmenu}
-        <div class="template-submenu">
+        <div class="template-submenu" class:flip={submenuFlip}>
           {#each templatesStore.templates as template (template.id)}
             <button class="context-item" onclick={() => onnewfromtemplate(template)}>
               <span class="submenu-item-name">{template.name}</span>
@@ -142,6 +168,12 @@
     box-shadow: var(--shadow-md);
     min-width: 140px;
     padding: 4px;
+  }
+
+  /* Open to the left when the parent menu is near the right edge. */
+  .template-submenu.flip {
+    left: auto;
+    right: 100%;
   }
 
   .submenu-item-name {

@@ -33,7 +33,28 @@
   function updatePosition() {
     if (!triggerEl) return;
     const rect = triggerEl.getBoundingClientRect();
-    dropdownPos = { top: rect.bottom + 4, left: rect.left };
+    const margin = 8;
+    // The dropdown is a fixed 300px wide; clamp so it never spills past the
+    // right edge on narrow screens. Fall back to the measured width once the
+    // element is mounted.
+    const width = dropdownEl?.offsetWidth ?? 300;
+    const height = dropdownEl?.offsetHeight ?? 340;
+
+    let left = rect.left;
+    if (left + width > window.innerWidth - margin) {
+      left = window.innerWidth - width - margin;
+    }
+    left = Math.max(margin, left);
+
+    // Prefer opening below the trigger; flip above if it would run off the
+    // bottom and there's more room up top.
+    let top = rect.bottom + 4;
+    if (top + height > window.innerHeight - margin && rect.top > height) {
+      top = rect.top - height - 4;
+    }
+    top = Math.max(margin, top);
+
+    dropdownPos = { top, left };
   }
 
   function portal(node: HTMLElement) {
@@ -264,6 +285,7 @@
     box-shadow: var(--shadow-lg);
     padding: 12px;
     width: 300px;
+    max-width: calc(100vw - 16px);
     user-select: none;
   }
 
