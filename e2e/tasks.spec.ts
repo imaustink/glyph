@@ -725,6 +725,30 @@ test.describe('Tasks', () => {
 		}
 	});
 
+	test('inline lane rename saves and shows a success notification (#48)', async ({ page }) => {
+		await navigateToTaskBoard(page);
+
+		const allTasksLane = page.locator('.lane').filter({
+			has: page.locator('.lane-title:has-text("All Tasks")')
+		});
+		await expect(allTasksLane).toBeVisible({ timeout: 15_000 });
+
+		await allTasksLane.locator('.lane-title').dblclick();
+		const input = allTasksLane.locator('.lane-title-input');
+		await input.fill('Backlog');
+		await input.press('Enter');
+
+		// Title updates in place and a success toast confirms the save.
+		await expect(allTasksLane.locator('.lane-title')).toHaveText('Backlog');
+		await expect(page.locator('.toast.toast-success')).toHaveText('Lane renamed.');
+
+		// The rename persists across a reload.
+		await page.reload();
+		await expect(
+			page.locator('.lane-title', { hasText: 'Backlog' })
+		).toBeVisible({ timeout: 15_000 });
+	});
+
 	test('All Tasks lane shows all tasks via empty filter rules', async ({ page }) => {
 		// Create tasks with different statuses.
 		const editor = page.locator('main .tiptap-editor');

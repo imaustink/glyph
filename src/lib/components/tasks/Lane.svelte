@@ -206,12 +206,14 @@
 
   async function commitTitle() {
     editingTitle = false;
-    if (titleValue.trim()) {
-      try {
-        await onupdatelane(lane.id, { title: titleValue.trim() });
-      } catch {
-        notificationsStore.error('Failed to rename lane.');
-      }
+    const nextTitle = titleValue.trim();
+    // Nothing to persist when the field was cleared or left unchanged.
+    if (!nextTitle || nextTitle === lane.title) return;
+    try {
+      await onupdatelane(lane.id, { title: nextTitle });
+      notificationsStore.success('Lane renamed.');
+    } catch {
+      notificationsStore.error('Failed to rename lane.');
     }
   }
 

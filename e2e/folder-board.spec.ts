@@ -134,7 +134,9 @@ test.describe('Folder Board lane integrity [DI-25]', () => {
 		await input.fill('Renamed Lane');
 		await input.press('Enter');
 		await expect(lane.locator('.lane-title')).toHaveText('Renamed Lane');
-		await expect(page.locator('.toast')).toHaveCount(0);
+		// A successful rename surfaces a success toast so the save isn't silent.
+		await expect(page.locator('.toast.toast-success')).toHaveText('Lane renamed.');
+		await expect(page.locator('.toast.toast-error')).toHaveCount(0);
 
 		await page.reload();
 		await waitForBoardLoad(page);
