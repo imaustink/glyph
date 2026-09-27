@@ -397,14 +397,20 @@ func TestToMarkdown(t *testing.T) {
 			task(taskB, "done", true, p(txt("t2"))),
 			task(taskC, "in-progress", false, p(txt("t3"))),
 			task(taskA, "cancelled", true, p(txt("t4"))),
-			`{"type":"listItem","attrs":{"checked":true},"content":[`+p(txt("plain checked"))+`]}`,
-			`{"type":"listItem","attrs":{"checked":false,"taskId":null},"content":[`+p(txt("plain"))+`]}`,
+			// Non-task GFM checkboxes (from Markdown import): a bare `checked`
+			// attribute with no taskStatus. Both states keep their box (#58).
+			`{"type":"listItem","attrs":{"checked":true},"content":[`+p(txt("box checked"))+`]}`,
+			`{"type":"listItem","attrs":{"checked":false,"taskId":null},"content":[`+p(txt("box unchecked"))+`]}`,
+			// A plain bullet typed in the editor: checked:false alongside a
+			// taskStatus. It must stay a plain bullet, not gain a box.
+			`{"type":"listItem","attrs":{"checked":false,"taskStatus":"todo"},"content":[`+p(txt("plain"))+`]}`,
 		)),
 			"- [ ] t1 <!-- task:" + taskA + " -->\n" +
 				"- [x] t2 <!-- task:" + taskB + " -->\n" +
 				"- [ ] t3 <!-- task:" + taskC + " -->\n" +
 				"- [x] t4 <!-- task:" + taskA + " -->\n" +
-				"- [x] plain checked\n" +
+				"- [x] box checked\n" +
+				"- [ ] box unchecked\n" +
 				"- plain\n"},
 		{"empty task item", doc(ul(task(taskA, "todo", false, p()))), "- [ ] <!-- task:" + taskA + " -->\n"},
 		{"unknown nodes", doc(`{"type":"table","content":[{"type":"tableRow","content":[{"type":"tableCell","content":[`+p(txt("c1"))+`]},{"type":"tableCell","content":[`+p(txt("c2"))+`]}]}]}`,
@@ -442,6 +448,10 @@ func TestMarkdownRoundTripStable(t *testing.T) {
 		"- a\n  - b\n    - c\n      - d\n- e\n",
 		"1. one\n2. two\n   1. nested\n   2. nested\n3. three\n",
 		"- [ ] todo <!-- task:" + taskA + " -->\n- [x] done <!-- task:" + taskB + " -->\n  - child\n",
+		// GFM checkboxes that aren't task-linked must survive both states; an
+		// unchecked box used to flatten to a plain bullet (#58).
+		"- [x] done\n- [ ] not done\n",
+		"- [ ] a\n- [ ] b\n- [ ] c\n",
 		"> quote\n>\n> > nested\n>\n> - item\n",
 		"```markdown\n# heading\n- list\n**bold** <!-- task:" + taskA + " -->\n```\n",
 		"line one\\\nline two\n",
@@ -621,7 +631,9 @@ func TestTaskMarkerRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "## TODO\n\n- [ ] first <!-- task:" + taskA + " -->\n- [x] second <!-- task:" + taskB + " -->\n- bad id\n- [ ] no box <!-- task:" + taskC + " -->\n"
+	// "bad id" had a `[ ]` box and an unparseable task comment: the invalid
+	// task link is dropped but the checkbox itself survives the round trip (#58).
+	want := "## TODO\n\n- [ ] first <!-- task:" + taskA + " -->\n- [x] second <!-- task:" + taskB + " -->\n- [ ] bad id\n- [ ] no box <!-- task:" + taskC + " -->\n"
 	if out != want {
 		t.Fatalf("got %q\nwant %q", out, want)
 	}
