@@ -22,6 +22,8 @@
   import { hasPendingTaskTitleUpdates } from '$lib/editor/useTaskTitleDebounce';
   import { useBulletRemoval } from '$lib/editor/useBulletRemoval';
   import { applyStoredContent, checkStoredContent } from '$lib/editor/loadDocument';
+  import { selectionInListItem, indentListItem, outdentListItem } from '$lib/editor/listIndent';
+  import Icon from '$lib/components/shared/Icon.svelte';
   import { storageMode } from '$lib/storage/config';
   import { CollabSession } from '$lib/collab/CollabSession';
   import { collabSupported, collabWebSocketUrl, getCollabSession } from '$lib/collab/client';
@@ -61,6 +63,38 @@
   // Reactive state for template rendering
   let pending = $state<PendingTaskDetails | null>(null);
   let removedBulletTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // ─── Mobile list toolbar ──────────────────────────────────────────────────
+  // Touch keyboards (iOS/Android) have no Tab key, so on mobile there was no way
+  // to nest a list — the desktop Tab / Shift-Tab shortcuts are unreachable
+  // (issue #51). When the editor is focused with the cursor in a list item, we
+  // show a small indent/outdent bar pinned just above the on-screen keyboard.
+  let editorFocused = $state(false);
+  let selectionInList = $state(false);
+  // Height of the on-screen keyboard, from the visual viewport, so the bar
+  // rides above it instead of hiding behind it on iOS.
+  let keyboardInset = $state(0);
+  const showListToolbar = $derived(editorFocused && selectionInList);
+
+  function refreshListSelection(ed: Editor) {
+    selectionInList = selectionInListItem(ed.state);
+  }
+
+  function updateKeyboardInset() {
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    if (!vv) return;
+    // The gap between the layout viewport's bottom and the visible area's
+    // bottom is the space the keyboard (and any browser chrome) takes up.
+    keyboardInset = Math.max(0, window.innerHeight - (vv.height + vv.offsetTop));
+  }
+
+  function handleIndent() {
+    if (editor) indentListItem(editor);
+  }
+
+  function handleOutdent() {
+    if (editor) outdentListItem(editor);
+  }
 
   // ─── Composables ────────────────────────────────────────────────────────────
 
@@ -310,8 +344,17 @@
       // Collaborative: only created once the content is there, so it can
       // start in its final state.
       editable: s ? s.canEdit : false,
+      onFocus: ({ editor: ed }) => {
+        editorFocused = true;
+        refreshListSelection(ed);
+        updateKeyboardInset();
+      },
+      onBlur: () => {
+        editorFocused = false;
+      },
       onSelectionUpdate: ({ editor: ed }) => {
         dismissPendingIfCursorLeft(ed);
+        refreshListSelection(ed);
       },
       onUpdate: ({ editor: ed, transaction }) => handleUpdate(ed, transaction)
     });
@@ -572,6 +615,9 @@
     window.addEventListener('beforeunload', handleBeforeUnload);
     window.addEventListener('pagehide', handlePageHide);
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    // Keep the mobile list toolbar pinned above the on-screen keyboard.
+    window.visualViewport?.addEventListener('resize', updateKeyboardInset);
+    window.visualViewport?.addEventListener('scroll', updateKeyboardInset);
     await openPage(pageId);
   });
 
@@ -609,6 +655,8 @@
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('pagehide', handlePageHide);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.visualViewport?.removeEventListener('resize', updateKeyboardInset);
+      window.visualViewport?.removeEventListener('scroll', updateKeyboardInset);
     }
     contentSave.destroy();
     bulletRemoval.destroy();
@@ -621,6 +669,37 @@
     <div class="content-error" role="alert">{contentError}</div>
   {/if}
   <div bind:this={editorEl} class="editor-mount"></div>
+
+  {#if showListToolbar}
+    <!--
+      Mobile-only (see the media query below): indent / outdent controls for
+      lists, since touch keyboards have no Tab key (issue #51). onpointerdown is
+      prevented so tapping a button doesn't blur the editor before the command
+      runs. It stays pinned above the on-screen keyboard via keyboardInset.
+    -->
+    <div class="list-toolbar" style="bottom: {keyboardInset}px" role="toolbar" aria-label="List indentation">
+      <button
+        type="button"
+        class="list-toolbar-btn"
+        aria-label="Outdent list item"
+        title="Outdent"
+        onpointerdown={(e) => e.preventDefault()}
+        onclick={handleOutdent}
+      >
+        <Icon name="outdent" size={20} />
+      </button>
+      <button
+        type="button"
+        class="list-toolbar-btn"
+        aria-label="Indent list item"
+        title="Indent"
+        onpointerdown={(e) => e.preventDefault()}
+        onclick={handleIndent}
+      >
+        <Icon name="indent" size={20} />
+      </button>
+    </div>
+  {/if}
 </div>
 
 {#if pending}
@@ -642,6 +721,42 @@
   .editor-mount {
     flex: 1;
     overflow-y: auto;
+  }
+
+  /*
+   * Mobile list-indent toolbar. Hidden by default (desktop has Tab /
+   * Shift-Tab); revealed only on narrow, touch-first viewports below.
+   */
+  .list-toolbar {
+    display: none;
+    position: fixed;
+    left: 0;
+    right: 0;
+    z-index: 50;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .list-toolbar-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background-color var(--transition-fast), color var(--transition-fast);
+  }
+  .list-toolbar-btn:active {
+    background: var(--bg-hover);
+    color: var(--text-primary);
   }
 
   .content-error {
@@ -858,6 +973,15 @@
     :global(.tiptap-editor) {
       padding: 20px 16px;
       max-width: 100%;
+    }
+
+    /* Give the last lines room to clear the pinned toolbar. */
+    .editor-mount {
+      scroll-padding-bottom: 56px;
+    }
+
+    .list-toolbar {
+      display: flex;
     }
   }
 
