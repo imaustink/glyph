@@ -20,7 +20,7 @@ describe('deleteTreeNode', () => {
       deleteTreeNode({ nodeId: 'folder', taskIds: ['t1', 't2'], deleteTasks: true, deleteNode, deleteTask })
     ).rejects.toBe(refusal);
 
-    expect(deleteNode).toHaveBeenCalledWith('folder');
+    expect(deleteNode).toHaveBeenCalledWith('folder', { keepTasks: false });
     expect(deleteTask).not.toHaveBeenCalled();
   });
 
@@ -44,11 +44,46 @@ describe('deleteTreeNode', () => {
   it('keeps the tasks when the user chose to', async () => {
     const deleteNode = vi.fn().mockResolvedValue(['page']);
     const deleteTask = vi.fn();
+    const refreshTask = vi.fn().mockResolvedValue(true);
 
-    const result = await deleteTreeNode({ nodeId: 'page', taskIds: ['t1'], deleteTasks: false, deleteNode, deleteTask });
+    const result = await deleteTreeNode({
+      nodeId: 'page', taskIds: ['t1', 't2'], deleteTasks: false, deleteNode, deleteTask, refreshTask
+    });
 
+    // The API soft-deletes a deleted note's tasks unless told to keep them.
+    expect(deleteNode).toHaveBeenCalledWith('page', { keepTasks: true });
     expect(deleteTask).not.toHaveBeenCalled();
+    // The kept tasks are now standalone on the server: re-read them.
+    expect(refreshTask.mock.calls.map((c) => c[0]).sort()).toEqual(['t1', 't2']);
     expect(result).toEqual({ deletedIds: ['page'], failedTaskIds: [] });
+  });
+
+  it('refreshes no task when the kept-task delete is refused', async () => {
+    const deleteNode = vi.fn().mockRejectedValue(new Error('refused'));
+    const refreshTask = vi.fn();
+
+    await expect(
+      deleteTreeNode({ nodeId: 'page', taskIds: ['t1'], deleteTasks: false, deleteNode, deleteTask: vi.fn(), refreshTask })
+    ).rejects.toThrow('refused');
+    expect(refreshTask).not.toHaveBeenCalled();
+  });
+
+  it('does not survive a failed refresh of a kept task', async () => {
+    const deleteNode = vi.fn().mockResolvedValue(['page']);
+    const refreshTask = vi.fn().mockRejectedValue(new Error('offline'));
+
+    const result = await deleteTreeNode({
+      nodeId: 'page', taskIds: ['t1'], deleteTasks: false, deleteNode, deleteTask: vi.fn(), refreshTask
+    });
+    expect(result).toEqual({ deletedIds: ['page'], failedTaskIds: [] });
+  });
+
+  it('uses the default delete when there were no tasks to choose about', async () => {
+    const deleteNode = vi.fn().mockResolvedValue(['folder']);
+
+    await deleteTreeNode({ nodeId: 'folder', taskIds: [], deleteTasks: false, deleteNode, deleteTask: vi.fn() });
+
+    expect(deleteNode).toHaveBeenCalledWith('folder', { keepTasks: false });
   });
 
   it('reports the tasks it could not delete once the node is gone, without failing the delete', async () => {
