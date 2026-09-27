@@ -13,6 +13,7 @@
 #   ./scripts/test-e2e.sh            # all projects
 #   ./scripts/test-e2e.sh api        # api project only
 #   ./scripts/test-e2e.sh local      # local project only
+#   ./scripts/test-e2e.sh api e2e/editor-integrity.spec.ts   # extra args go to playwright
 
 set -euo pipefail
 
@@ -20,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/.."
 COMPOSE_FILE="$PROJECT_DIR/docker-compose.test.yml"
 PROJECT="${1:-}"
+shift || true
 
 # Always run from the project root so pnpm finds package.json
 cd "$PROJECT_DIR"
@@ -60,9 +62,9 @@ docker compose -f "$COMPOSE_FILE" up -d --build --wait
 # already running on $TEST_API_PORT and skip launching it locally.
 EXIT_CODE=0
 if [[ -n "$PROJECT" ]]; then
-  REUSE_API_SERVER=true PLAYWRIGHT_PROJECT="$PROJECT" pnpm exec playwright test --project="$PROJECT" || EXIT_CODE=$?
+  REUSE_API_SERVER=true PLAYWRIGHT_PROJECT="$PROJECT" pnpm exec playwright test --project="$PROJECT" "$@" || EXIT_CODE=$?
 else
-  REUSE_API_SERVER=true pnpm exec playwright test || EXIT_CODE=$?
+  REUSE_API_SERVER=true pnpm exec playwright test "$@" || EXIT_CODE=$?
 fi
 
 exit "$EXIT_CODE"

@@ -6,7 +6,12 @@
   import { tasksStore } from '$lib/stores/tasks.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
+  import { templatesStore } from '$lib/stores/templates.svelte';
+  import { storageMode } from '$lib/storage/config';
+  import { apiErrorMessage } from '$lib/storage/apiClient';
   import { evaluateTitleTemplate, evaluateContentTemplate } from '$lib/utils/titleTemplate';
+  import { orderAfter } from '$lib/utils/order';
+  import { deleteTreeNode } from '$lib/utils/deleteTreeNode';
   import ShareDialog from '$lib/components/shared/ShareDialog.svelte';
   import Modal from '$lib/components/shared/Modal.svelte';
   import VisibilityPicker from '$lib/components/shared/VisibilityPicker.svelte';
@@ -36,8 +41,8 @@
   async function handleFolderVisibilityChange(newOrgId: string | null, newIsPrivate: boolean) {
     try {
       await pagesStore.updateNode(node.id, { orgId: newOrgId, isPrivate: newIsPrivate });
-    } catch {
-      notificationsStore.error('Failed to update visibility.');
+    } catch (err) {
+      notificationsStore.error(apiErrorMessage(err, 'Failed to update visibility.'));
     }
   }
 
@@ -99,13 +104,35 @@
 
   async function confirmDelete(deleteAssociatedTasks: boolean) {
     showDeleteConfirm = false;
-
-    if (deleteAssociatedTasks) {
-      await Promise.all(pendingDeleteTasks.map(t => tasksStore.deleteTask(t.id)));
-    }
+    // Captured before the delete: afterwards the tasks can't be found by page.
+    const taskIds = pendingDeleteTasks.map((t) => t.id);
     pendingDeleteTasks = [];
 
-    await pagesStore.deleteNode(node.id);
+    try {
+      // The node goes first and the tasks only once it's gone, so a refused
+      // delete (e.g. 409 for a folder holding other users' pages) keeps them.
+      const { deletedIds, failedTaskIds } = await deleteTreeNode({
+        nodeId: node.id,
+        taskIds,
+        deleteTasks: deleteAssociatedTasks,
+        deleteNode: pagesStore.deleteNode,
+        deleteTask: tasksStore.deleteTask,
+        refreshTask: tasksStore.refreshTask
+      });
+      if (failedTaskIds.length > 0) {
+        notificationsStore.error(
+          `Deleted, but ${failedTaskIds.length} of its task${failedTaskIds.length === 1 ? '' : 's'} could not be deleted.`
+        );
+      }
+      // Templates that filed new pages into a deleted folder would otherwise
+      // create unreachable pages. The API clears the reference itself.
+      await templatesStore
+        .clearDefaultFolder(deletedIds, { persist: storageMode === 'local' })
+        .catch(() => notificationsStore.error('Failed to update templates that used the deleted folder.'));
+    } catch (err) {
+      notificationsStore.error(apiErrorMessage(err, `Failed to delete ${node.type === 'folder' ? 'folder' : 'page'}.`));
+      return;
+    }
 
     if (page.url.pathname === `/notes/${node.id}`) {
       const remaining = pagesStore.nodes.filter((n) => n.type === 'page' && n.id !== node.id);
@@ -181,30 +208,20 @@
     }
     if (node.type === 'folder' && isDescendant(draggedId, node.id)) return;
 
-    if (node.type === 'folder') {
-      // Drop into folder — place at end
-      const siblings = pagesStore.getChildren(node.id);
-      const maxOrder = siblings.reduce((m, n) => Math.max(m, n.order), -1);
-      await pagesStore.moveNode(draggedId, node.id, maxOrder + 1);
-      expanded = true;
-    } else {
-      // Drop on a page/item — reorder as sibling (place after this node)
-      const siblings = pagesStore.getChildren(node.parentId);
-      const targetIndex = siblings.findIndex(n => n.id === node.id);
-      // Reorder: shift everything after targetIndex up, insert dragged after target
-      const newOrder = node.order + 0.5; // fractional, will be normalized
-      await pagesStore.moveNode(draggedId, node.parentId, newOrder);
-      // Normalize order for all siblings
-      await normalizeOrder(node.parentId);
-    }
-  }
-
-  async function normalizeOrder(parentId: string | null) {
-    const siblings = pagesStore.getChildren(parentId);
-    for (let i = 0; i < siblings.length; i++) {
-      if (siblings[i].order !== i) {
-        await pagesStore.moveNode(siblings[i].id, parentId, i);
+    try {
+      if (node.type === 'folder') {
+        // Drop into folder — place at end
+        const siblings = pagesStore.getChildren(node.id);
+        const maxOrder = siblings.reduce((m, n) => Math.max(m, n.order), -1);
+        await pagesStore.moveNode(draggedId, node.id, orderAfter(maxOrder));
+        expanded = true;
+      } else {
+        // Drop on a page/item — reorder as sibling (place after this node).
+        // placeAfter only ever writes integer orders (the API's order is an int).
+        await pagesStore.placeAfter(draggedId, node.id);
       }
+    } catch {
+      notificationsStore.error('Failed to move page.');
     }
   }
 </script>

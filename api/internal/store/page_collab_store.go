@@ -33,6 +33,11 @@ type CollabNotifier interface {
 	// TaskStatusChanged: a note task's status changed (e.g. on the board), so
 	// its bullet's status indicator in any open copy of the note should too.
 	TaskStatusChanged(ctx context.Context, pageID uuid.UUID, nodeID string, status model.TaskStatus) error
+	// TaskTitleChanged: a note task was renamed outside the editor (the task
+	// page, MCP, an API client), so its bullet in any open copy of the note
+	// should show the new title (DI-29). Notes that aren't open pick it up
+	// from tasks.title_renamed_at when next loaded.
+	TaskTitleChanged(ctx context.Context, pageID uuid.UUID, nodeID, title string) error
 }
 
 type pgCollabNotifier struct{ pool DBPool }
@@ -47,6 +52,23 @@ func (n *pgCollabNotifier) TaskStatusChanged(ctx context.Context, pageID uuid.UU
 		NodeID string           `json:"nodeId"`
 		Status model.TaskStatus `json:"status"`
 	}{"task-status", pageID, nodeID, status})
+	if err != nil {
+		return err
+	}
+	_, err = n.pool.Exec(ctx, `SELECT pg_notify($1, $2)`, CollabNotifyChannel, string(payload))
+	return err
+}
+
+// TaskTitleChanged sends {"type":"task-title", pageId, nodeId, title}. Titles
+// are at most 500 characters (2000 bytes of UTF-8), well inside NOTIFY's
+// 8000-byte payload limit. Collab builds that predate it ignore the type.
+func (n *pgCollabNotifier) TaskTitleChanged(ctx context.Context, pageID uuid.UUID, nodeID, title string) error {
+	payload, err := json.Marshal(struct {
+		Type   string    `json:"type"`
+		PageID uuid.UUID `json:"pageId"`
+		NodeID string    `json:"nodeId"`
+		Title  string    `json:"title"`
+	}{"task-title", pageID, nodeID, title})
 	if err != nil {
 		return err
 	}
@@ -86,6 +108,14 @@ func detachCollabLocked(ctx context.Context, tx pgx.Tx, pageID uuid.UUID) error 
 	_, err = tx.Exec(ctx, `SELECT pg_notify($1, $2)`, CollabNotifyChannel, string(payload))
 	return err
 }
+
+// ErrSnapshotBehind is the ErrStaleSnapshot case where the snapshot's epoch is
+// current but another snapshot for a later seq was already accepted — two
+// collab replicas snapshotting concurrently. Unlike a replaced epoch, the
+// sender's copy is still authoritative: it should catch up and retry, not
+// evict its editors (DI-11). It wraps ErrStaleSnapshot, so callers that only
+// check for staleness still refuse it.
+var ErrSnapshotBehind = fmt.Errorf("%w: behind a newer snapshot", ErrStaleSnapshot)
 
 // WriteCollabSnapshot persists the collab service's view of a shared document
 // to page_contents. It is refused (ErrStaleSnapshot) unless the page is still
@@ -131,10 +161,12 @@ func (s *pgPageStore) WriteCollabSnapshot(ctx context.Context, snap *model.Colla
 		return nil, fmt.Errorf("%w: page is detached", ErrStaleSnapshot)
 	case epoch != snap.Epoch:
 		return nil, fmt.Errorf("%w: epoch %d is not current (%d)", ErrStaleSnapshot, snap.Epoch, epoch)
-	case snap.UpToSeq < snapshotSeq:
-		return nil, fmt.Errorf("%w: seq %d is behind %d", ErrStaleSnapshot, snap.UpToSeq, snapshotSeq)
 	case quarantined:
 		return nil, fmt.Errorf("%w: page is quarantined", ErrStaleSnapshot)
+	// Last: "behind" must only be reported when nothing else is wrong, since
+	// the collab service keeps its copy for it.
+	case snap.UpToSeq < snapshotSeq:
+		return nil, fmt.Errorf("%w: seq %d is behind %d", ErrSnapshotBehind, snap.UpToSeq, snapshotSeq)
 	}
 
 	cur, err := currentContentLocked(ctx, tx, snap.PageID)
@@ -213,7 +245,10 @@ func (s *pgPageStore) RestoreContentVersion(ctx context.Context, pageID uuid.UUI
 		schemaVersion int
 	)
 	if err := tx.QueryRow(ctx,
-		`SELECT content, schema_version FROM page_content_versions WHERE id = $1 AND page_id = $2`,
+		// History outlives a deleted page; a page re-created under the same
+		// id (PUT with a client-chosen id) must not reach the old one's.
+		`SELECT v.content, v.schema_version FROM page_content_versions v JOIN pages p ON p.id = v.page_id
+		 WHERE v.id = $1 AND v.page_id = $2 AND v.replaced_at >= p.created_at`,
 		versionID, pageID,
 	).Scan(&content, &schemaVersion); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

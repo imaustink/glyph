@@ -6,7 +6,10 @@ ALTER TABLE page_contents ALTER COLUMN content DROP DEFAULT;
 ALTER TABLE page_contents
   ALTER COLUMN content TYPE jsonb
   USING CASE
-    WHEN content = '' THEN NULL
+    -- '' was the old TEXT default. The column stays NOT NULL, so it must
+    -- become an empty document rather than NULL (NULL aborted this migration
+    -- on any database that still had such a row).
+    WHEN content = '' THEN '{"type":"doc","content":[]}'::jsonb
     ELSE content::jsonb
   END;
 

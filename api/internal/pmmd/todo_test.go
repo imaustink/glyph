@@ -2,6 +2,7 @@ package pmmd_test
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/glyph/api/internal/pmmd"
@@ -53,6 +54,77 @@ func TestFindUnlinkedTodoBullets(t *testing.T) {
 			for _, b := range got {
 				assert.NotEmpty(t, b.NodeID)
 			}
+		})
+	}
+}
+
+// todoFixture is testdata/todo_derivation.json, which the editor's test
+// (src/lib/editor/todoDerivation.test.ts) reads too: both sides must derive
+// the same tasks from the same content (DI-27).
+type todoFixture struct {
+	Detection []struct {
+		Name    string `json:"name"`
+		Trigger *struct {
+			Pattern    string   `json:"pattern"`
+			MatchMode  string   `json:"matchMode"`
+			BlockTypes []string `json:"blockTypes"`
+		} `json:"trigger"`
+		Doc  json.RawMessage `json:"doc"`
+		Want []string        `json:"want"`
+	} `json:"detection"`
+	Checked []struct {
+		Status  string `json:"status"`
+		Checked bool   `json:"checked"`
+	} `json:"checked"`
+}
+
+func loadTodoFixture(t *testing.T) todoFixture {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/todo_derivation.json")
+	require.NoError(t, err)
+	var f todoFixture
+	require.NoError(t, json.Unmarshal(raw, &f))
+	require.NotEmpty(t, f.Detection)
+	return f
+}
+
+func TestTodoDerivationSharedFixture(t *testing.T) {
+	f := loadTodoFixture(t)
+	for _, tc := range f.Detection {
+		t.Run(tc.Name, func(t *testing.T) {
+			trigger := pmmd.TodoTrigger{}
+			if tc.Trigger != nil {
+				trigger = pmmd.TodoTrigger{Pattern: tc.Trigger.Pattern, MatchMode: tc.Trigger.MatchMode, BlockTypes: tc.Trigger.BlockTypes}
+			}
+			_, got, err := pmmd.FindUnlinkedTodoBullets(tc.Doc, trigger)
+			require.NoError(t, err)
+			texts := bulletTexts(got)
+			if len(tc.Want) == 0 {
+				assert.Empty(t, texts)
+			} else {
+				assert.Equal(t, tc.Want, texts)
+			}
+		})
+	}
+}
+
+func TestTodoDerivationSharedFixture_Checked(t *testing.T) {
+	f := loadTodoFixture(t)
+	doc := json.RawMessage(`{"type":"doc","content":[{"type":"bulletList","content":[
+		{"type":"listItem","attrs":{"nodeId":"n"},"content":[{"type":"paragraph","content":[{"type":"text","text":"x"}]}]}]}]}`)
+	for _, tc := range f.Checked {
+		t.Run(tc.Status, func(t *testing.T) {
+			out, err := pmmd.LinkTodoBullets(doc, map[string]pmmd.TaskLink{"n": {TaskID: "t", Status: tc.Status}})
+			require.NoError(t, err)
+			var root struct {
+				Content []struct {
+					Content []struct {
+						Attrs map[string]interface{} `json:"attrs"`
+					} `json:"content"`
+				} `json:"content"`
+			}
+			require.NoError(t, json.Unmarshal(out, &root))
+			assert.Equal(t, tc.Checked, root.Content[0].Content[0].Attrs["checked"])
 		})
 	}
 }

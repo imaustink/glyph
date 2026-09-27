@@ -35,6 +35,20 @@ export function apiErrorCode(err: unknown): string | undefined {
 	return body && typeof body.code === 'string' ? body.code : undefined;
 }
 
+/**
+ * A message to show the user for a failed write: the API's own `error` text
+ * for a 4xx refusal (e.g. a 409 explaining why a delete isn't allowed), a
+ * local-storage corruption message, or `fallback`.
+ */
+export function apiErrorMessage(err: unknown, fallback: string): string {
+	if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+		const body = err.body as { error?: unknown } | null;
+		if (body && typeof body.error === 'string' && body.error.trim()) return body.error;
+	}
+	if (err instanceof Error && err.name === 'CorruptStorageError') return err.message;
+	return fallback;
+}
+
 export class UnauthorizedError extends ApiError {
 	constructor(method: string, path: string) {
 		super(401, method, path, null);
@@ -82,22 +96,41 @@ export class TimeoutError extends Error {
 	}
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+/** Per-request options. */
+export interface RequestOptions {
+	/**
+	 * Send with `keepalive` so the request survives the page unloading (used
+	 * to flush pending edits on pagehide/beforeunload). Browsers cap keepalive
+	 * bodies at 64 KiB, so larger bodies are sent normally.
+	 */
+	keepalive?: boolean;
+	/** Sent as X-Glyph-Change-Source (see WriteOptions.source). */
+	source?: 'bullet';
+}
+
+const KEEPALIVE_MAX_BODY = 60_000;
+
+async function request<T>(method: string, path: string, body?: unknown, opts?: RequestOptions): Promise<T> {
 	const url = `${API_BASE}${path}`;
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
+	const headers: Record<string, string> = {
+		'Content-Type': 'application/json',
+		'X-Requested-With': 'XMLHttpRequest'
+	};
+	if (opts?.source) headers['X-Glyph-Change-Source'] = opts.source;
 	const init: RequestInit = {
 		method,
 		credentials: 'include',
 		signal: controller.signal,
-		headers: {
-			'Content-Type': 'application/json',
-			'X-Requested-With': 'XMLHttpRequest'
-		}
+		headers
 	};
 	if (body !== undefined) {
 		init.body = JSON.stringify(body);
+	}
+	if (opts?.keepalive && (typeof init.body !== 'string' || init.body.length <= KEEPALIVE_MAX_BODY)) {
+		init.keepalive = true;
 	}
 
 	let res: Response;
@@ -132,8 +165,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const api = {
 	get: <T>(path: string) => request<T>('GET', path),
 	post: <T>(path: string, body: unknown) => request<T>('POST', path, body),
-	patch: <T>(path: string, body: unknown) => request<T>('PATCH', path, body),
-	put: <T>(path: string, body: unknown) => request<T>('PUT', path, body),
+	patch: <T>(path: string, body: unknown, opts?: RequestOptions) => request<T>('PATCH', path, body, opts),
+	put: <T>(path: string, body: unknown, opts?: RequestOptions) => request<T>('PUT', path, body, opts),
 	del: (path: string) => request<void>('DELETE', path),
 	getOrNull: <T>(path: string): Promise<T | null> =>
 		request<T>('GET', path).catch((err) => {

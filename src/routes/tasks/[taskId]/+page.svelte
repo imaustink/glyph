@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { tasksStore } from '$lib/stores/tasks.svelte';
   import { pagesStore } from '$lib/stores/pages.svelte';
@@ -12,6 +12,7 @@
   import MarkdownEditor from '$lib/components/shared/MarkdownEditor.svelte';
   import { authStore } from '$lib/stores/auth.svelte';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
+  import { uiStore } from '$lib/stores/ui.svelte';
   import { storageMode } from '$lib/storage/config';
   import { api } from '$lib/storage/apiClient';
   import type { Priority, TaskStatus, LinkMeta } from '$lib/models/types';
@@ -21,6 +22,22 @@
 
   const taskId = $derived(page.params.taskId!);
   const task = $derived(tasksStore.getById(taskId));
+
+  // The store can lack a task storage still has: one restored after its
+  // bullet came back (the editor's own refresh is cancelled when opening the
+  // task navigates away), or one reached by URL before the store saw it.
+  // Look it up once before saying it doesn't exist.
+  let lookedUp = $state<string | null>(null);
+  $effect(() => {
+    const id = taskId;
+    if (task || lookedUp === id) return;
+    tasksStore
+      .refreshTask(id)
+      .catch((err) => console.warn('[TaskPage] Failed to look up task:', { id }, err))
+      .finally(() => {
+        if (taskId === id) lookedUp = id;
+      });
+  });
   const sourcePage = $derived(task?.sourcePageId ? pagesStore.getById(task.sourcePageId) : undefined);
   const hasLinkedNote = $derived(!!task?.sourcePageId && !!task?.sourceNodeId);
   const isOrphaned = $derived(hasLinkedNote && !sourcePage);
@@ -44,8 +61,16 @@
   let titleEdit = $state('');
   let editingTitle = $state(false);
 
+  // Sync the title input from the store only when the task changes or the
+  // title isn't being edited: this effect re-runs on any change to the task
+  // (e.g. the description save landing), which would otherwise reset a
+  // rename in progress.
+  let titleSyncedFor: string | null = null;
   $effect(() => {
-    if (task) titleEdit = task.title;
+    if (!task) return;
+    const taskChanged = task.id !== titleSyncedFor;
+    titleSyncedFor = task.id;
+    if (taskChanged || !editingTitle) titleEdit = task.title;
   });
 
   async function updateField<K extends keyof import('$lib/models/types').Task>(
@@ -76,8 +101,17 @@
   // ── Tags ─────────────────────────────────────────────────────────────────
   // localTags mirrors task.tags locally. Saved immediately via onchange callback
   // from TagInput, which fires only on user-driven mutations (not on prop sync).
+  // Re-synced only when the task or its stored tags change, not on every
+  // change to the task record.
   let localTags = $state<string[]>([]);
-  $effect(() => { if (task) localTags = [...task.tags]; });
+  let tagsSyncedFrom = '';
+  $effect(() => {
+    if (!task) return;
+    const source = `${task.id}\u0000${JSON.stringify(task.tags)}`;
+    if (source === tagsSyncedFrom) return;
+    tagsSyncedFrom = source;
+    localTags = [...task.tags];
+  });
   async function saveTags() {
     if (!task) return;
     await updateField('tags', localTags);
@@ -94,39 +128,68 @@
   let _pendingDesc = '';
   let _pendingDescTaskId: string | null = null;
   let _descTimer: ReturnType<typeof setTimeout> | null = null;
+  /** uiStore key while the debounce is armed, so navigation waits for it. */
+  const DESC_DEBOUNCE_KEY = 'task-description';
+
   function handleDescChange(markdown: string) {
     if (!task) return;
     _pendingDesc = markdown;
     _pendingDescTaskId = task.id;
     if (_descTimer) clearTimeout(_descTimer);
+    uiStore.setPendingDebounce(DESC_DEBOUNCE_KEY, true);
     _descTimer = setTimeout(() => {
-      _descTimer = null;
-      const targetTaskId = _pendingDescTaskId;
-      const markdownToSave = _pendingDesc;
-      _pendingDescTaskId = null;
-      if (!targetTaskId) return;
-      tasksStore
-        .updateTask(targetTaskId, { description: markdownToSave })
-        .catch((err) => {
-          notificationsStore.error('Failed to save changes. Please try again.');
-          console.error('description save failed:', err);
-        });
+      flushDescription().catch((err) => {
+        notificationsStore.error('Failed to save changes. Please try again.');
+        console.error('description save failed:', err);
+      });
     }, 600);
   }
+
+  /**
+   * Send the pending description now, against the task it was typed for.
+   * `keepalive` lets the request outlive the page (unload flush).
+   */
+  function flushDescription(opts?: { keepalive?: boolean }): Promise<void> {
+    if (_descTimer) { clearTimeout(_descTimer); _descTimer = null; }
+    uiStore.setPendingDebounce(DESC_DEBOUNCE_KEY, false);
+    const targetTaskId = _pendingDescTaskId;
+    const markdownToSave = _pendingDesc;
+    _pendingDescTaskId = null;
+    if (!targetTaskId) return Promise.resolve();
+    return tasksStore.updateTask(targetTaskId, { description: markdownToSave }, opts);
+  }
+
+  // Closing or reloading the tab inside the debounce window used to drop the
+  // edit. Flush on the first unload signal; beforeunload and pagehide both
+  // fire on a reload, visibilitychange covers mobile tab switches and closes.
+  function flushOnUnload() {
+    if (!_pendingDescTaskId) return;
+    flushDescription({ keepalive: true }).catch((err) => console.error('description unload flush failed:', err));
+  }
+  function flushWhenHidden() {
+    if (document.visibilityState === 'hidden') flushOnUnload();
+  }
+
+  onMount(() => {
+    window.addEventListener('beforeunload', flushOnUnload);
+    window.addEventListener('pagehide', flushOnUnload);
+    document.addEventListener('visibilitychange', flushWhenHidden);
+  });
 
   // Flush any pending description edit immediately on unmount so it lands
   // against its captured task rather than waiting out the debounce window.
   onDestroy(() => {
-    if (!_descTimer) return;
-    clearTimeout(_descTimer);
-    _descTimer = null;
-    const targetTaskId = _pendingDescTaskId;
-    const markdownToSave = _pendingDesc;
-    _pendingDescTaskId = null;
-    if (!targetTaskId) return;
-    tasksStore
-      .updateTask(targetTaskId, { description: markdownToSave })
-      .catch((err) => console.error('description flush failed:', err));
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('beforeunload', flushOnUnload);
+      window.removeEventListener('pagehide', flushOnUnload);
+      document.removeEventListener('visibilitychange', flushWhenHidden);
+    }
+    if (!_pendingDescTaskId) {
+      uiStore.setPendingDebounce(DESC_DEBOUNCE_KEY, false);
+      return;
+    }
+    const flush = flushDescription().catch((err) => console.error('description flush failed:', err));
+    uiStore.registerPendingFlush(flush);
   });
 
   // ── Link / URL unfurl ────────────────────────────────────────────────────
@@ -257,7 +320,9 @@
   </div>
 
   {#if !task}
-    <div class="not-found">Task not found.</div>
+    {#if lookedUp === taskId}
+      <div class="not-found">Task not found.</div>
+    {/if}
   {:else}
     <div class="detail-content">
       <!-- Title -->

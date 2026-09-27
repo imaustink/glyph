@@ -27,6 +27,12 @@ export function createUiStore() {
   /** Pending flush promises registered by destroyed components. */
   let _pendingFlushes = $state<Promise<void>[]>([]);
 
+  /**
+   * Keys of debounced writes that are armed but not sent yet (e.g. the task
+   * description's 600 ms debounce). They count as pending writes.
+   */
+  let _pendingDebounces = $state<string[]>([]);
+
   function setCurrentPage(id: string | null) {
     currentPageId = id;
   }
@@ -66,6 +72,12 @@ export function createUiStore() {
   /** Resolvers waiting for all saves to complete. */
   let _saveCompleteResolvers: (() => void)[] = [];
 
+  function notifySaveComplete() {
+    const resolvers = _saveCompleteResolvers;
+    _saveCompleteResolvers = [];
+    resolvers.forEach(r => r());
+  }
+
   /** Call before starting an async save. */
   function markSaving() {
     if (_savedTimer) { clearTimeout(_savedTimer); _savedTimer = null; }
@@ -90,10 +102,9 @@ export function createUiStore() {
       saveState = 'saved';
       if (_savedTimer) clearTimeout(_savedTimer);
       _savedTimer = setTimeout(() => { saveState = 'idle'; }, 2000);
-      // Notify all waiters that saves have completed
-      const resolvers = _saveCompleteResolvers;
-      _saveCompleteResolvers = [];
-      resolvers.forEach(r => r());
+      // Notify all waiters that saves have completed (debounced writes
+      // still waiting on their timers count as not complete).
+      if (_pendingDebounces.length === 0) notifySaveComplete();
     }
   }
 
@@ -102,7 +113,7 @@ export function createUiStore() {
    * or rejects after timeoutMs to prevent infinite waiting.
    */
   function waitForSaveComplete(timeoutMs = 5000): Promise<void> {
-    if (_inflightCount === 0 && _pendingFlushes.length === 0) return Promise.resolve();
+    if (_inflightCount === 0 && _pendingFlushes.length === 0 && _pendingDebounces.length === 0) return Promise.resolve();
 
     return new Promise<void>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
@@ -121,7 +132,7 @@ export function createUiStore() {
         });
       }
 
-      if (_inflightCount === 0) {
+      if (_inflightCount === 0 && _pendingDebounces.length === 0) {
         onSavesDone();
       } else {
         _saveCompleteResolvers.push(onSavesDone);
@@ -138,6 +149,15 @@ export function createUiStore() {
     p.finally(() => {
       _pendingFlushes = _pendingFlushes.filter(f => f !== p);
     });
+  }
+
+  /** Mark a debounced write as armed (`true`) or sent/cancelled (`false`). */
+  function setPendingDebounce(key: string, pending: boolean) {
+    const has = _pendingDebounces.includes(key);
+    if (pending && !has) _pendingDebounces = [..._pendingDebounces, key];
+    else if (!pending && has) _pendingDebounces = _pendingDebounces.filter((k) => k !== key);
+    // waitForSaveComplete also waits for armed debounces to be sent.
+    if (!pending && _pendingDebounces.length === 0 && _inflightCount === 0) notifySaveComplete();
   }
 
   /**
@@ -163,7 +183,7 @@ export function createUiStore() {
     get saveState() { return saveState; },
     get isSaving() { return saveState === 'saving'; },
     /** True when there are actual in-flight writes or pending flushes, regardless of display state. */
-    get hasPendingWrites() { return _inflightCount > 0 || _pendingFlushes.length > 0; },
+    get hasPendingWrites() { return _inflightCount > 0 || _pendingFlushes.length > 0 || _pendingDebounces.length > 0; },
     setCurrentPage,
     toggleSidebar,
     closeSidebar,
@@ -176,7 +196,8 @@ export function createUiStore() {
     markSaving,
     markSaved,
     waitForSaveComplete,
-    registerPendingFlush
+    registerPendingFlush,
+    setPendingDebounce
   };
 }
 

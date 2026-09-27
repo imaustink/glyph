@@ -178,11 +178,43 @@ func (cc *callContext) putContent(id uuid.UUID, doc json.RawMessage, schemaVersi
 	if err := cc.api.put("/pages/"+id.String()+"/content", body, &out); err != nil {
 		var ae *apiError
 		if errors.As(err, &ae) && ae.Status == http.StatusConflict {
-			return nil, userError("the page was edited by someone else since it was read; call get_page again and retry")
+			if ae.Code == "collaborative" {
+				return nil, errNoteOpen
+			}
+			return nil, errPageChanged
 		}
 		return nil, err
 	}
 	return &out, nil
+}
+
+// The two ways a content write can conflict. They need different handling:
+// a changed page can be re-read and written again; a note open for live
+// editing refuses every whole-document write until it's closed, so retrying
+// straight away can only fail again.
+const (
+	errPageChanged = userError("the page was edited by someone else since it was read; call get_page again and retry")
+	errNoteOpen    = userError("the note is open for live editing in Glyph, and its content can't be written through MCP while it is. Don't try again straight away: ask the user to close the note, or come back to it later")
+)
+
+// pageTasks returns the page's live linked tasks, or ok = false when this
+// connection can't read tasks.
+func (cc *callContext) pageTasks(pageID uuid.UUID) (tasks []*model.Task, ok bool, err error) {
+	if !hasScope(cc.scope, model.ScopeTaskRead) {
+		return nil, false, nil
+	}
+	if err := cc.api.get("/tasks", url.Values{"sourcePageId": {pageID.String()}}, &tasks); err != nil {
+		return nil, false, err
+	}
+	return tasks, true, nil
+}
+
+func taskStatuses(tasks []*model.Task) map[string]string {
+	out := make(map[string]string, len(tasks))
+	for _, t := range tasks {
+		out[t.ID.String()] = string(t.Status)
+	}
+	return out
 }
 
 // linkResult reports what linkTodoBullets did, for the tool's output.
@@ -210,11 +242,34 @@ func (r *linkResult) addTo(out map[string]interface{}, cc *callContext) {
 // this, bullets an agent writes would never become tasks. Call it on the doc
 // about to be saved, then save it; if the save fails, pass the result to
 // rollback so the new tasks don't outlive the bullets they were made for.
-func (cc *callContext) linkTodoBullets(page *model.Page, doc json.RawMessage) (json.RawMessage, *linkResult, error) {
+//
+// Only bullets this write adds are linked: a bullet whose nodeId is in
+// existing (pmmd.SettledListItemNodeIDs of the doc being replaced or appended
+// to) was already there, and the user may have left it unlinked on purpose;
+// that holds even when a replace edits its text. A bullet that was empty is
+// not in existing, so a TODO written over it (a replace reuses its nodeId) is
+// linked like any added bullet. With existing
+// non-nil, a bullet that has no nodeId yet was already there too (every
+// bullet this package parses gets one). A nil existing links every bullet,
+// for a brand-new page.
+func (cc *callContext) linkTodoBullets(page *model.Page, doc json.RawMessage, existing map[string]bool) (json.RawMessage, *linkResult, error) {
 	res := &linkResult{}
 	trigger := pmmd.TodoTrigger{}
 	if tr := page.TodoTrigger; tr != nil {
 		trigger = pmmd.TodoTrigger{Pattern: tr.Pattern, MatchMode: string(tr.MatchMode), BlockTypes: tr.BlockTypes}
+	}
+	var added map[string]bool
+	if existing != nil {
+		ids, err := pmmd.ListItemNodeIDs(doc)
+		if err != nil {
+			return nil, nil, err
+		}
+		added = map[string]bool{}
+		for id := range ids {
+			if !existing[id] {
+				added[id] = true
+			}
+		}
 	}
 	doc, bullets, err := pmmd.FindUnlinkedTodoBullets(doc, trigger)
 	if err != nil {
@@ -222,7 +277,7 @@ func (cc *callContext) linkTodoBullets(page *model.Page, doc json.RawMessage) (j
 	}
 	var todo []pmmd.TodoBullet
 	for _, b := range bullets {
-		if b.Text != "" {
+		if b.Text != "" && (added == nil || added[b.NodeID]) {
 			todo = append(todo, b)
 		}
 	}
@@ -276,10 +331,10 @@ func (cc *callContext) rollback(res *linkResult) {
 	res.created = nil
 }
 
-// saveWithTodoLinks links TODO bullets in doc and writes it, rolling the new
-// tasks back if the write fails.
-func (cc *callContext) saveWithTodoLinks(page *model.Page, doc json.RawMessage, schemaVersion, expectedRevision int) (*model.PageContent, *linkResult, error) {
-	linked, res, err := cc.linkTodoBullets(page, doc)
+// saveWithTodoLinks links the TODO bullets doc adds (see linkTodoBullets for
+// existing) and writes it, rolling the new tasks back if the write fails.
+func (cc *callContext) saveWithTodoLinks(page *model.Page, doc json.RawMessage, schemaVersion, expectedRevision int, existing map[string]bool) (*model.PageContent, *linkResult, error) {
+	linked, res, err := cc.linkTodoBullets(page, doc, existing)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -367,12 +422,13 @@ func pageTools() []*tool {
 		{
 			name:        "write_page_content",
 			title:       "Write page content",
-			description: `Change a note's content using Markdown. mode "append" (default) adds the Markdown to the end and leaves existing content untouched. mode "replace" rewrites the whole note — read it with get_page first and keep the <!-- task:ID --> markers on bullets you keep; removing a linked bullet leaves its task on the board without a note. New bullets under the TODO heading become linked tasks, as in the editor. Ticking a checkbox on an existing task doesn't change it; use update_task for status. Pass expected_revision from get_page to fail instead of overwriting edits made since.`,
+			description: `Change a note's content using Markdown. mode "append" (default) adds the Markdown to the end and leaves existing content untouched. mode "replace" rewrites the whole note and requires expected_revision from get_page — read the note first and keep the <!-- task:ID --> markers on bullets you keep. Blocks you leave unchanged keep formatting Markdown can't show (underline, link targets). A replace that would remove a bullet linked to a task is refused unless allow_task_removal is true, because removing the bullet deletes its task. New bullets under the TODO heading become linked tasks, as in the editor; existing unlinked bullets with text are left alone, even if you edit them (an empty bullet you fill in counts as new). Ticking a checkbox on an existing task doesn't change it; use update_task for status. If the note is open for live editing in Glyph, writes fail until it is closed; don't retry straight away.`,
 			input: object(map[string]schema{
-				"page_id":           str("The page id."),
-				"markdown":          str("Markdown to append, or the full new content for replace."),
-				"mode":              enum(`"append" (default) or "replace".`, "append", "replace"),
-				"expected_revision": integer("Revision from get_page; the write fails if the page changed since.", 0, 1<<31-1),
+				"page_id":            str("The page id."),
+				"markdown":           str("Markdown to append, or the full new content for replace."),
+				"mode":               enum(`"append" (default) or "replace".`, "append", "replace"),
+				"expected_revision":  integer("Revision from get_page; the write fails if the page changed since. Required for replace.", 0, 1<<31-1),
+				"allow_task_removal": boolean("Replace only: allow removing bullets linked to tasks, which deletes those tasks. Default false."),
 			}, "page_id", "markdown"),
 			scopes: []model.OAuthScope{model.ScopePageWrite},
 			run:    writePageContent,
@@ -474,7 +530,19 @@ func getPageTool(cc *callContext, raw json.RawMessage) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	md, err := pmmd.ToMarkdown(pc.Content)
+	tasks, haveTasks, err := cc.pageTasks(id)
+	if err != nil {
+		return nil, err
+	}
+	doc := pc.Content
+	if haveTasks {
+		// Checkboxes show the task rows' status: the attribute stored on the
+		// bullet goes stale when a task changes outside the editor.
+		if doc, err = pmmd.ApplyTaskStatuses(doc, taskStatuses(tasks)); err != nil {
+			return nil, err
+		}
+	}
+	md, err := pmmd.ToMarkdown(doc)
 	if err != nil {
 		return nil, err
 	}
@@ -483,11 +551,7 @@ func getPageTool(cc *callContext, raw json.RawMessage) (interface{}, error) {
 	if p.TodoTrigger != nil {
 		out["todoTrigger"] = p.TodoTrigger
 	}
-	if hasScope(cc.scope, model.ScopeTaskRead) {
-		var tasks []*model.Task
-		if err := cc.api.get("/tasks", url.Values{"sourcePageId": {id.String()}}, &tasks); err != nil {
-			return nil, err
-		}
+	if haveTasks {
 		autoSortTasks(tasks)
 		views := make([]taskView, 0, len(tasks))
 		for _, t := range tasks {
@@ -573,7 +637,7 @@ func createPage(cc *callContext, raw json.RawMessage) (interface{}, error) {
 	idx.byID[created.ID] = &created
 	out := map[string]interface{}{"page": cc.viewPage(&created, idx)}
 	if doc != nil {
-		pc, links, err := cc.saveWithTodoLinks(&created, doc, currentSchemaVersion, 0)
+		pc, links, err := cc.saveWithTodoLinks(&created, doc, currentSchemaVersion, 0, nil)
 		if err != nil {
 			out["warning"] = "page created, but writing its content failed: " + err.Error()
 			return out, nil
@@ -660,6 +724,7 @@ func writePageContent(cc *callContext, raw json.RawMessage) (interface{}, error)
 		Markdown         string `json:"markdown"`
 		Mode             string `json:"mode"`
 		ExpectedRevision *int   `json:"expected_revision"`
+		AllowTaskRemoval bool   `json:"allow_task_removal"`
 	}
 	if err := decodeArgs(raw, &args); err != nil {
 		return nil, err
@@ -678,6 +743,12 @@ func writePageContent(cc *callContext, raw json.RawMessage) (interface{}, error)
 	if mode == "append" && strings.TrimSpace(args.Markdown) == "" {
 		return nil, userError("markdown is required")
 	}
+	// Replace rewrites the whole note, so it must be based on what the agent
+	// read: without a revision, edits a user made since would be overwritten
+	// and the tasks of bullets they added deleted.
+	if mode == "replace" && args.ExpectedRevision == nil {
+		return nil, userError(`mode "replace" requires expected_revision: pass the revision get_page returned, so edits made since you read the page aren't overwritten`)
+	}
 
 	current, err := cc.getContent(id)
 	if err != nil {
@@ -687,35 +758,122 @@ func writePageContent(cc *callContext, raw json.RawMessage) (interface{}, error)
 		return nil, userError("the page has changed since you read it (now at revision " +
 			itoa(current.Revision) + "); call get_page again and retry")
 	}
+	existing, err := pmmd.SettledListItemNodeIDs(current.Content)
+	if err != nil {
+		return nil, err
+	}
 
+	out := map[string]interface{}{"page_id": id, "mode": mode}
 	var next json.RawMessage
 	if mode == "append" {
 		next, err = pmmd.AppendMarkdown(current.Content, args.Markdown)
-	} else {
-		next, err = pmmd.FromMarkdown(args.Markdown)
-		if err == nil {
-			next, err = pmmd.PreserveTaskLinks(current.Content, next)
+		if err != nil {
+			return nil, userError("could not parse markdown: " + err.Error())
 		}
-	}
-	if err != nil {
-		return nil, userError("could not parse markdown: " + err.Error())
+	} else {
+		if next, err = cc.replaceDoc(id, current.Content, args.Markdown, args.AllowTaskRemoval, out); err != nil {
+			return nil, err
+		}
 	}
 	page, err := cc.getPage(id)
 	if err != nil {
 		return nil, err
 	}
-	written, links, err := cc.saveWithTodoLinks(page, next, current.SchemaVersion, current.Revision)
+	written, links, err := cc.saveWithTodoLinks(page, next, current.SchemaVersion, current.Revision, existing)
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]interface{}{
-		"page_id":  id,
-		"mode":     mode,
-		"revision": written.Revision,
-		"url":      cc.srv.appURL("/notes/" + id.String()),
-	}
+	out["revision"] = written.Revision
+	out["url"] = cc.srv.appURL("/notes/" + id.String())
 	links.addTo(out, cc)
 	return out, nil
+}
+
+// replaceDoc builds the doc a replace writes: the Markdown merged against the
+// current doc (so unchanged blocks keep their nodeIds, marks and attributes),
+// with duplicate or foreign task links dropped and linked bullets showing
+// their task's status. It refuses to remove a bullet that is linked to a live
+// task unless allowRemoval: that deletes the task, and an agent that merely
+// dropped a <!-- task:ID --> marker would otherwise also get a duplicate task
+// for the same bullet.
+func (cc *callContext) replaceDoc(id uuid.UUID, prev json.RawMessage, markdown string, allowRemoval bool, out map[string]interface{}) (json.RawMessage, error) {
+	next, err := pmmd.FromMarkdown(markdown)
+	if err == nil {
+		next, err = pmmd.MergeReplace(prev, next)
+	}
+	if err != nil {
+		return nil, userError("could not parse markdown: " + err.Error())
+	}
+
+	prevIDs, err := pmmd.TaskIDs(prev)
+	if err != nil {
+		return nil, err
+	}
+	tasks, haveTasks, err := cc.pageTasks(id)
+	if err != nil {
+		return nil, err
+	}
+	// Tasks a bullet here may link to: the page's live tasks when this
+	// connection can read them, else the links the note already has.
+	allowed := map[string]*model.Task{}
+	if haveTasks {
+		for _, t := range tasks {
+			allowed[t.ID.String()] = t
+		}
+	} else {
+		for _, tid := range prevIDs {
+			allowed[tid] = nil
+		}
+	}
+	next, dropped, err := pmmd.SanitizeTaskLinks(next, func(tid string) bool {
+		_, ok := allowed[tid]
+		return ok
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(dropped) > 0 {
+		out["task_links_dropped"] = dropped
+	}
+
+	nextIDs, err := pmmd.TaskIDs(next)
+	if err != nil {
+		return nil, err
+	}
+	kept := map[string]bool{}
+	for _, tid := range nextIDs {
+		kept[tid] = true
+	}
+	var removed []string
+	for _, tid := range prevIDs {
+		if _, live := allowed[tid]; live && !kept[tid] {
+			removed = append(removed, tid)
+		}
+	}
+	if len(removed) > 0 {
+		if !allowRemoval {
+			desc := make([]string, len(removed))
+			for i, tid := range removed {
+				desc[i] = tid
+				if t := allowed[tid]; t != nil {
+					desc[i] = fmt.Sprintf("%s (%q)", tid, t.Title)
+				}
+			}
+			return nil, userError(fmt.Sprintf(
+				"this replace would remove the bullets of %d linked task(s), which deletes the tasks: %s. "+
+					"Keep each bullet you mean to keep with its <!-- task:ID --> marker, "+
+					"or pass allow_task_removal: true to delete those tasks.",
+				len(removed), strings.Join(desc, ", ")))
+		}
+		out["tasks_removed"] = removed
+	}
+
+	if haveTasks {
+		if next, err = pmmd.ApplyTaskStatuses(next, taskStatuses(tasks)); err != nil {
+			return nil, err
+		}
+	}
+	return next, nil
 }
 
 func itoa(n int) string {

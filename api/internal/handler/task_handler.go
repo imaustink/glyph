@@ -42,6 +42,28 @@ func (h *TaskHandler) notifyStatusChange(c *gin.Context, before model.TaskStatus
 	}
 }
 
+// ChangeSourceHeader marks where a request's change comes from. The editor
+// sends "bullet" (ChangeSourceBullet) with the titles it derives from a
+// bullet's text: those are not renames, and must not be echoed back into the
+// note, where the bullet may already hold newer text. A title change without
+// it — the task page, MCP update_task, any other client — is a rename from
+// outside the note (DI-29).
+const (
+	ChangeSourceHeader = "X-Glyph-Change-Source"
+	ChangeSourceBullet = "bullet"
+)
+
+// notifyTitleChange tells open copies of the note about a task renamed from
+// outside it, if the title changed and the task comes from a bullet.
+func (h *TaskHandler) notifyTitleChange(c *gin.Context, external bool, before string, task *model.Task) {
+	if h.Collab == nil || !external || task == nil || task.Title == before || task.SourcePageID == nil || task.SourceNodeID == nil {
+		return
+	}
+	if err := h.Collab.TaskTitleChanged(c.Request.Context(), *task.SourcePageID, *task.SourceNodeID, task.Title); err != nil {
+		slog.Warn("could not notify collab service of task title", "task_id", task.ID, "err", err)
+	}
+}
+
 // resolveSourcePage loads the page a task is (to be) created from and checks
 // that userID may edit it. On failure it writes the response and returns ok
 // = false.
@@ -63,6 +85,20 @@ func (h *TaskHandler) resolveSourcePage(c *gin.Context, pageID uuid.UUID, userID
 		return nil, false
 	}
 	return page, true
+}
+
+// adoptSourcePage makes task belong to its note: the note's owner owns it
+// and it lives in the note's org with the note's privacy, whatever the
+// client sent. A task in a different org from its note would be listed on
+// that org's boards while the note itself stays out of reach, and moving
+// the note between workspaces would leave its tasks behind. Also checks a
+// bearer token may write tasks in that org; on failure it writes the
+// response and returns false.
+func adoptSourcePage(c *gin.Context, task *model.Task, page *model.Page) bool {
+	task.UserID = page.UserID
+	task.OrgID = page.OrgID
+	task.IsPrivate = page.IsPrivate
+	return checkTokenScope(c, task.OrgID, model.ShareResourceTask, true)
 }
 
 // canWriteViaSourcePage reports whether userID may edit a task because they
@@ -188,6 +224,9 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 	if !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
 		return
 	}
+	if !h.Perms.CanUseFolder(c, h.Pages, body.FolderID, user.ID) {
+		return
+	}
 	body.UserID = user.ID
 	if body.SourcePageID != nil {
 		// A note's tasks belong to the note's owner, whoever typed the bullet —
@@ -196,7 +235,9 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 		if !ok {
 			return
 		}
-		body.UserID = page.UserID
+		if !adoptSourcePage(c, &body, page) {
+			return
+		}
 	}
 	if body.Tags == nil {
 		body.Tags = []string{}
@@ -294,22 +335,67 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	if !ok {
 		return
 	}
-	statusBefore := existing.Status
-	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
-		return
+	// Re-pointing a task at a bullet is creating a task on that note: the
+	// caller must be able to edit the note, and the task moves to the note's
+	// owner and org. Changing only the bullet keeps the note, which must
+	// still be editable.
+	var sourcePage *model.Page
+	if req.SourcePageID != nil {
+		page, ok := h.resolveSourcePage(c, *req.SourcePageID, user.ID)
+		if !ok {
+			return
+		}
+		sourcePage = page
+	} else if req.SourceNodeID != nil && existing.SourcePageID != nil {
+		if _, ok := h.resolveSourcePage(c, *existing.SourcePageID, user.ID); !ok {
+			return
+		}
 	}
-	req.ApplyTo(existing)
-	// ApplyTo can't tell an explicit null from an omitted field; honor
-	// {"dueDate": null} / {"link": null} as "clear it", which is how the web
-	// app removes a due date.
-	if raw, present := keys["dueDate"]; present && isJSONNull(raw) {
-		existing.DueDate = nil
+	// A task re-pointed at a bullet takes the note's org (checked above);
+	// otherwise an org change must be to a destination the requester may
+	// move it to (Personal: the owner only; within the token's grant).
+	if sourcePage == nil {
+		if dest, sent := requestedOrg(keys, req.OrgID); sent && !sameOrg(existing.OrgID, dest) &&
+			!h.Perms.CanMoveToOrg(c, dest, existing.UserID, user.ID, model.ShareResourceTask) {
+			return
+		}
 	}
-	if raw, present := keys["link"]; present && isJSONNull(raw) {
-		existing.Link = nil
-	}
-	task, err := h.Tasks.Update(c.Request.Context(), existing)
+	// Merge the patch into the row as it is under the lock, not into the copy
+	// read above: a concurrent PATCH to another field must not be undone.
+	var (
+		statusBefore model.TaskStatus
+		titleBefore  string
+	)
+	externalTitle := c.GetHeader(ChangeSourceHeader) != ChangeSourceBullet
+	task, err := h.Tasks.Patch(c.Request.Context(), id, existing.UserID, func(t *model.Task) error {
+		statusBefore = t.Status
+		titleBefore = t.Title
+		req.ApplyTo(t)
+		// {"orgId": null} moves the task to the personal workspace.
+		if raw, present := keys["orgId"]; present && isJSONNull(raw) {
+			t.OrgID = nil
+		}
+		if sourcePage != nil {
+			t.UserID = sourcePage.UserID
+			t.OrgID = sourcePage.OrgID
+			t.IsPrivate = sourcePage.IsPrivate
+		}
+		// ApplyTo can't tell an explicit null from an omitted field; honor
+		// {"dueDate": null} / {"link": null} as "clear it", which is how the
+		// web app removes a due date.
+		if raw, present := keys["dueDate"]; present && isJSONNull(raw) {
+			t.DueDate = nil
+		}
+		if raw, present := keys["link"]; present && isJSONNull(raw) {
+			t.Link = nil
+		}
+		return nil
+	}, store.TaskPatchOptions{ExternalTitle: externalTitle})
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			notFoundOrError(c, err)
+			return
+		}
 		if errors.Is(err, store.ErrConflict) {
 			c.JSON(http.StatusConflict, gin.H{"error": "that bullet is already linked to another task", "code": "source_taken"})
 			return
@@ -318,7 +404,104 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 		return
 	}
 	h.notifyStatusChange(c, statusBefore, task)
+	h.notifyTitleChange(c, externalTitle, titleBefore, task)
 	c.JSON(http.StatusOK, task)
+}
+
+// AdoptTaskRequest is the body of POST /tasks/:id/adopt: the bullet the task
+// moves to.
+type AdoptTaskRequest struct {
+	SourcePageID uuid.UUID `json:"sourcePageId" binding:"required"`
+	SourceNodeID string    `json:"sourceNodeId" binding:"required,max=255"`
+}
+
+// POST /tasks/:id/adopt
+//
+// Moves a task onto a bullet pasted into another note, keeping the task (its
+// id, status, due date, description…) instead of the pasted bullet getting a
+// new one. The editor can't tell a cut from a copy, so the server decides,
+// atomically: only a task soft-deleted because its bullet left its note is
+// moved. A live task — a copy, or a cut whose save hasn't landed yet — is
+// 409 "source_live" and may be retried; a task the user deleted is 409
+// "not_movable"; a bullet that already has a task is 409 "source_taken".
+//
+// The caller must be able to edit the destination note (the task then
+// belongs to that note: its owner, org and privacy) and must own the task or
+// be able to edit the note it came from — a pasted or guessed task id must
+// not let anyone take someone else's task.
+func (h *TaskHandler) AdoptTask(c *gin.Context) {
+	user := auth.CurrentUser(c)
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req AdoptTaskRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	dest, ok := h.resolveSourcePage(c, req.SourcePageID, user.ID)
+	if !ok {
+		return
+	}
+	var owner model.Task
+	if !adoptSourcePage(c, &owner, dest) {
+		return
+	}
+	task, err := h.Tasks.GetForMove(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+			return
+		}
+		internalError(c, err)
+		return
+	}
+	if !h.authorizeTaskTake(c, task, user.ID) {
+		return
+	}
+	moved, err := h.Tasks.MoveToBullet(c.Request.Context(), id,
+		store.TaskMoveFrom{OwnerID: task.UserID, SourcePageID: task.SourcePageID},
+		store.TaskMove{PageID: dest.ID, NodeID: req.SourceNodeID, OwnerID: owner.UserID, OrgID: owner.OrgID, IsPrivate: owner.IsPrivate},
+	)
+	switch {
+	case err == nil:
+		c.JSON(http.StatusOK, moved)
+	case errors.Is(err, store.ErrNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+	case errors.Is(err, store.ErrTaskLive):
+		c.JSON(http.StatusConflict, gin.H{"error": "the task's bullet is still on its note", "code": "source_live"})
+	case errors.Is(err, store.ErrTaskNotMovable):
+		c.JSON(http.StatusConflict, gin.H{"error": "this task can't be moved", "code": "not_movable"})
+	case errors.Is(err, store.ErrConflict):
+		c.JSON(http.StatusConflict, gin.H{"error": "that bullet is already linked to another task", "code": "source_taken"})
+	default:
+		internalError(c, err)
+	}
+}
+
+// authorizeTaskTake checks that userID may take task (live or soft-deleted)
+// away from where it is: they own it, or may edit the note it comes from.
+// Someone who can't see the task gets 404, as if it didn't exist; on failure
+// it writes the response and returns false.
+func (h *TaskHandler) authorizeTaskTake(c *gin.Context, task *model.Task, userID uuid.UUID) bool {
+	if !checkTokenScope(c, task.OrgID, model.ShareResourceTask, true) {
+		return false
+	}
+	if task.UserID == userID {
+		return true
+	}
+	if task.SourcePageID != nil && h.Pages != nil {
+		page, err := h.Pages.GetByID(c.Request.Context(), *task.SourcePageID, userID)
+		if err == nil {
+			return h.Perms.CanWritePage(c, page, userID)
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			internalError(c, err)
+			return false
+		}
+	}
+	c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+	return false
 }
 
 // DELETE /tasks/:id
@@ -366,10 +549,18 @@ func (h *TaskHandler) UpsertTask(c *gin.Context) {
 	if !bindJSON(c, &body) {
 		return
 	}
+	// PUT replaces the task's org, so a bearer token must be granted the
+	// stored org as well as the body's.
+	if !h.checkStoredTaskScope(c, id, user.ID) {
+		return
+	}
 	if !checkTokenScope(c, body.OrgID, model.ShareResourceTask, true) {
 		return
 	}
 	if !h.Perms.CanUseOrg(c, body.OrgID, user.ID) {
+		return
+	}
+	if !h.Perms.CanUseFolder(c, h.Pages, body.FolderID, user.ID) {
 		return
 	}
 	body.ID = id
@@ -379,7 +570,9 @@ func (h *TaskHandler) UpsertTask(c *gin.Context) {
 		if !ok {
 			return
 		}
-		body.UserID = page.UserID
+		if !adoptSourcePage(c, &body, page) {
+			return
+		}
 	}
 	if body.Tags == nil {
 		body.Tags = []string{}
@@ -403,6 +596,24 @@ func (h *TaskHandler) UpsertTask(c *gin.Context) {
 	// status the bullet already shows.
 	h.notifyStatusChange(c, "", task)
 	c.JSON(http.StatusOK, task)
+}
+
+// checkStoredTaskScope checks a bearer token's write scope against the org
+// of the task id as stored, when the requester owns it (PUT only replaces
+// the owner's row). Cookie-session requests always pass.
+func (h *TaskHandler) checkStoredTaskScope(c *gin.Context, id, userID uuid.UUID) bool {
+	if currentTokenScope(c) == nil {
+		return true
+	}
+	existing, err := h.Tasks.GetByID(c.Request.Context(), id, userID)
+	if errors.Is(err, store.ErrNotFound) {
+		return true
+	}
+	if err != nil {
+		internalError(c, err)
+		return false
+	}
+	return existing.UserID != userID || checkTokenScope(c, existing.OrgID, model.ShareResourceTask, true)
 }
 
 // POST /tasks/filter

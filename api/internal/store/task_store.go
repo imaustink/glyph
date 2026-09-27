@@ -62,7 +62,7 @@ func scanTask(row interface{ Scan(...interface{}) error }) (*model.Task, error) 
 }
 
 func (s *pgTaskStore) ListByUser(ctx context.Context, userID uuid.UUID) ([]*model.Task, error) {
-	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` ORDER BY "order" ASC`
+	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` ORDER BY "order" ASC, id ASC`
 	rows, err := s.pool.Query(ctx, q, userID)
 	if err != nil {
 		return nil, fmt.Errorf("tasks list: %w", err)
@@ -87,7 +87,7 @@ func (s *pgTaskStore) ListByUserPaginated(ctx context.Context, userID uuid.UUID,
 		return nil, 0, fmt.Errorf("tasks count: %w", err)
 	}
 
-	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` ORDER BY "order" ASC LIMIT $2 OFFSET $3`
+	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` ORDER BY "order" ASC, id ASC LIMIT $2 OFFSET $3`
 	rows, err := s.pool.Query(ctx, q, userID, pg.Limit, pg.Offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("tasks list paginated: %w", err)
@@ -110,7 +110,7 @@ func (s *pgTaskStore) GetByID(ctx context.Context, id, userID uuid.UUID) (*model
 }
 
 func (s *pgTaskStore) ListBySourcePage(ctx context.Context, userID uuid.UUID, pageID uuid.UUID) ([]*model.Task, error) {
-	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` AND source_page_id = $2 ORDER BY "order" ASC`
+	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` AND source_page_id = $2 ORDER BY "order" ASC, id ASC`
 	rows, err := s.pool.Query(ctx, q, userID, pageID)
 	if err != nil {
 		return nil, fmt.Errorf("tasks list by page: %w", err)
@@ -128,7 +128,7 @@ func (s *pgTaskStore) ListBySourcePage(ctx context.Context, userID uuid.UUID, pa
 }
 
 func (s *pgTaskStore) ListBySourceNode(ctx context.Context, userID uuid.UUID, sourceNodeID string) ([]*model.Task, error) {
-	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` AND source_node_id = $2 ORDER BY "order" ASC`
+	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` AND source_node_id = $2 ORDER BY "order" ASC, id ASC`
 	rows, err := s.pool.Query(ctx, q, userID, sourceNodeID)
 	if err != nil {
 		return nil, fmt.Errorf("tasks list by node: %w", err)
@@ -263,6 +263,30 @@ func (s *pgTaskStore) CreateLinked(ctx context.Context, t *model.Task) (*model.T
 		return nil, false, fmt.Errorf("%w: task id already in use", ErrConflict)
 	}
 	if deleted {
+		var reason string
+		if err := tx.QueryRow(ctx, `SELECT deleted_reason FROM tasks WHERE id = $1`, existing.ID).Scan(&reason); err != nil {
+			return nil, false, fmt.Errorf("create linked task — deleted reason: %w", err)
+		}
+		if reason == "user" {
+			// Someone deleted this task on purpose: it is never brought back.
+			// Release the bullet from it and give the bullet a new task.
+			if _, err := tx.Exec(ctx, `UPDATE tasks SET source_node_id = NULL WHERE id = $1`, existing.ID); err != nil {
+				return nil, false, fmt.Errorf("create linked task — detach deleted: %w", err)
+			}
+			created, err := scanTask(tx.QueryRow(ctx, `INSERT INTO tasks (id, user_id, title, description, status, priority, tags, due_date, source_page_id, source_node_id, link, "order", org_id, is_private, folder_id)
+				  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+				  RETURNING `+taskColumns,
+				t.ID, t.UserID, t.Title, t.Description, t.Status, t.Priority,
+				t.Tags, t.DueDate, t.SourcePageID, t.SourceNodeID, linkJSON, t.Order, t.OrgID, t.IsPrivate, t.FolderID,
+			))
+			if err != nil {
+				return nil, false, mapUniqueViolation(err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return nil, false, fmt.Errorf("create linked task — commit: %w", err)
+			}
+			return created, true, nil
+		}
 		// Restoring someone else's deleted task would let any editor of the
 		// page resurrect (and so read) a task they were never shown.
 		if existing.UserID != t.UserID {
@@ -279,6 +303,73 @@ func (s *pgTaskStore) CreateLinked(ctx context.Context, t *model.Task) (*model.T
 		return nil, false, fmt.Errorf("create linked task — commit: %w", err)
 	}
 	return existing, false, nil
+}
+
+func (s *pgTaskStore) GetForMove(ctx context.Context, id uuid.UUID) (*model.Task, error) {
+	return scanTask(s.pool.QueryRow(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1`, id))
+}
+
+// MoveToBullet moves a task onto another bullet. See TaskStore.MoveToBullet.
+func (s *pgTaskStore) MoveToBullet(ctx context.Context, id uuid.UUID, from TaskMoveFrom, dest TaskMove) (*model.Task, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("move task — begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The row lock serialises this with the source note's reconcile (which
+	// soft-deletes or restores the task on each save of that note) and with
+	// any other move of the same task.
+	t, deleted, err := scanTaskWithDeleted(tx.QueryRow(ctx,
+		`SELECT `+taskColumns+`, deleted_at IS NOT NULL FROM tasks WHERE id = $1 FOR UPDATE`, id))
+	if err != nil {
+		return nil, err
+	}
+	if !MoveFromMatches(t, from) {
+		return nil, fmt.Errorf("%w: the task changed while it was being moved", ErrConflict)
+	}
+	if !deleted {
+		if OnBullet(t, dest) {
+			return t, nil
+		}
+		return nil, ErrTaskLive
+	}
+	var reason string
+	if err := tx.QueryRow(ctx, `SELECT deleted_reason FROM tasks WHERE id = $1`, id).Scan(&reason); err != nil {
+		return nil, fmt.Errorf("move task — deleted reason: %w", err)
+	}
+	if reason != "source_removed" || t.SourceNodeID == nil {
+		return nil, ErrTaskNotMovable
+	}
+	out, err := scanTask(tx.QueryRow(ctx,
+		`UPDATE tasks SET deleted_at = NULL, deleted_reason = NULL,
+		        source_page_id = $2, source_node_id = $3,
+		        user_id = $4, org_id = $5, is_private = $6, updated_at = NOW()
+		 WHERE id = $1
+		 RETURNING `+taskColumns,
+		id, dest.PageID, dest.NodeID, dest.OwnerID, dest.OrgID, dest.IsPrivate))
+	if err != nil {
+		return nil, mapUniqueViolation(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("move task — commit: %w", err)
+	}
+	return out, nil
+}
+
+// MoveFromMatches reports whether t still has the owner and source page a
+// move was authorized against.
+func MoveFromMatches(t *model.Task, from TaskMoveFrom) bool {
+	if t.UserID != from.OwnerID || (t.SourcePageID == nil) != (from.SourcePageID == nil) {
+		return false
+	}
+	return t.SourcePageID == nil || *t.SourcePageID == *from.SourcePageID
+}
+
+// OnBullet reports whether t is already linked to dest's bullet.
+func OnBullet(t *model.Task, dest TaskMove) bool {
+	return t.SourcePageID != nil && *t.SourcePageID == dest.PageID &&
+		t.SourceNodeID != nil && *t.SourceNodeID == dest.NodeID
 }
 
 func scanTaskWithDeleted(row interface{ Scan(...interface{}) error }) (*model.Task, bool, error) {
@@ -338,6 +429,53 @@ func (s *pgTaskStore) Update(ctx context.Context, t *model.Task) (*model.Task, e
 	return out, nil
 }
 
+// Patch is the read-modify-write behind PATCH /tasks/:id, done under a row
+// lock: reading outside the lock let two PATCHes to different fields each
+// write back the other's field with its old value.
+func (s *pgTaskStore) Patch(ctx context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error, opts ...TaskPatchOptions) (*model.Task, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("patch task — begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	t, err := scanTask(tx.QueryRow(ctx,
+		`SELECT `+taskColumns+` FROM tasks
+		 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+		 FOR UPDATE`, id, ownerID))
+	if err != nil {
+		return nil, err
+	}
+	titleBefore := t.Title
+	if err := fn(t); err != nil {
+		return nil, err
+	}
+	var linkJSON []byte
+	if t.Link != nil {
+		linkJSON, _ = json.Marshal(t.Link)
+	}
+	// title_renamed_at comes from the database clock: the collab service
+	// compares it with its own log's write times.
+	out, err := scanTask(tx.QueryRow(ctx, `UPDATE tasks
+		  SET user_id=$1, title=$2, description=$3, status=$4, priority=$5, tags=$6,
+		      due_date=$7, source_page_id=$8, source_node_id=$9, link=$10, "order"=$11,
+		      org_id=$12, is_private=$13, folder_id=$14, updated_at=NOW(),
+		      title_renamed_at = CASE WHEN $16 THEN NOW() ELSE title_renamed_at END
+		  WHERE id=$15
+		  RETURNING `+taskColumns,
+		t.UserID, t.Title, t.Description, t.Status, t.Priority, t.Tags,
+		t.DueDate, t.SourcePageID, t.SourceNodeID, linkJSON, t.Order,
+		t.OrgID, t.IsPrivate, t.FolderID, id, IsExternalRename(opts, titleBefore, t),
+	))
+	if err != nil {
+		return nil, mapUniqueViolation(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("patch task — commit: %w", err)
+	}
+	return out, nil
+}
+
 // Delete soft-deletes a task. The row is kept (deleted_reason 'user') so the
 // delete is recoverable and the bullet's link can't be claimed by a new task.
 func (s *pgTaskStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
@@ -356,11 +494,11 @@ func (s *pgTaskStore) Delete(ctx context.Context, id, userID uuid.UUID) error {
 func (s *pgTaskStore) ListByFilter(ctx context.Context, userID uuid.UUID, fs model.FilterSet) ([]*model.Task, error) {
 	filterClause, filterArgs := BuildTaskFilterSQL(fs, 2) // $1 = userID
 
-	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` ORDER BY "order" ASC`
+	q := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` ORDER BY "order" ASC, id ASC`
 	baseArgs := []interface{}{userID}
 
 	if filterClause != "" {
-		q = `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` AND ` + filterClause + ` ORDER BY "order" ASC`
+		q = `SELECT ` + taskColumns + ` FROM tasks WHERE ` + taskAccessFilter + ` AND ` + filterClause + ` ORDER BY "order" ASC, id ASC`
 		baseArgs = append(baseArgs, filterArgs...)
 	}
 
@@ -387,7 +525,7 @@ func (s *pgTaskStore) ListByFilter(ctx context.Context, userID uuid.UUID, fs mod
 func (s *pgTaskStore) ListByFolder(ctx context.Context, folderID uuid.UUID, descendantPageIDs []uuid.UUID) ([]*model.Task, error) {
 	if len(descendantPageIDs) == 0 {
 		// No descendants — only standalone tasks assigned to the folder.
-		q := `SELECT ` + taskColumns + ` FROM tasks WHERE folder_id = $1 AND deleted_at IS NULL ORDER BY "order" ASC`
+		q := `SELECT ` + taskColumns + ` FROM tasks WHERE folder_id = $1 AND deleted_at IS NULL ORDER BY "order" ASC, id ASC`
 		rows, err := s.pool.Query(ctx, q, folderID)
 		if err != nil {
 			return nil, fmt.Errorf("list tasks by folder (standalone): %w", err)
@@ -417,7 +555,7 @@ func (s *pgTaskStore) ListByFolder(ctx context.Context, folderID uuid.UUID, desc
 
 	q := `SELECT ` + taskColumns + ` FROM tasks
 		  WHERE (source_page_id IN ` + inClause + ` OR folder_id = $1) AND deleted_at IS NULL
-		  ORDER BY "order" ASC`
+		  ORDER BY "order" ASC, id ASC`
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list tasks by folder: %w", err)

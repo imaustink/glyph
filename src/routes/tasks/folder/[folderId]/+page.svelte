@@ -4,6 +4,7 @@
   import { folderBoardStore } from '$lib/stores/folderBoard.svelte';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
   import { pagesStore } from '$lib/stores/pages.svelte';
+  import { tasksStore } from '$lib/stores/tasks.svelte';
   import { storageMode } from '$lib/storage/config';
   import { applyFilter } from '$lib/storage/filterUtils';
   import Lane from '$lib/components/tasks/Lane.svelte';
@@ -79,6 +80,17 @@
     }
     return map;
   });
+
+  /**
+   * A drop onto another lane changes the task's status. Board tasks live in
+   * folderBoardStore (they may not be in the global tasks store at all, e.g.
+   * another user's task in a shared folder), so write through it and then
+   * bring the global copy, if any, in line.
+   */
+  async function handleBoardTaskUpdate(id: string, patch: Partial<Omit<Task, 'id' | 'createdAt'>>) {
+    await folderBoardStore.updateTask(id, patch);
+    if (tasksStore.getById(id)) await tasksStore.refreshTask(id).catch(() => {});
+  }
 
   async function handleCreateLane() {
     try {
@@ -161,6 +173,8 @@
               filteredTasks={displayedByLane.get(lane.id) ?? []}
               readonly={!folderBoardStore.canEdit}
               onconfig={() => { if (folderBoardStore.canEdit) configuringLane = lane; }}
+              onupdatelane={(id, patch) => folderBoardStore.updateLane(id, patch)}
+              onupdatetask={handleBoardTaskUpdate}
             />
           {/each}
         </div>
@@ -183,7 +197,7 @@
 
 {#if configuringLane}
   <LaneConfig
-    lane={configuringLane}
+    lane={folderBoardStore.lanes.find((l) => l.id === configuringLane?.id) ?? configuringLane}
     onclose={() => configuringLane = null}
     onupdate={(id, patch) => folderBoardStore.updateLane(id, patch)}
     ondelete={async (id) => { await folderBoardStore.deleteLane(id); configuringLane = null; }}

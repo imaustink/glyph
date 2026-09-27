@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -95,15 +96,36 @@ func (h *TemplateHandler) UpdateTemplate(c *gin.Context) {
 		return
 	}
 	var req UpdateTemplateRequest
-	if !bindJSON(c, &req) {
+	keys, ok := bindJSONWithKeys(c, &req)
+	if !ok {
 		return
 	}
-	if req.OrgID != nil && !h.Perms.CanUseOrg(c, req.OrgID, user.ID) {
+	// An org change must be to a destination the requester may move the
+	// template to (Personal: the owner only; within the token's grant).
+	if dest, sent := requestedOrg(keys, req.OrgID); sent && !sameOrg(existing.OrgID, dest) &&
+		!h.Perms.CanMoveToOrg(c, dest, existing.UserID, user.ID, model.ShareResourceTemplate) {
 		return
 	}
-	req.ApplyTo(existing)
-	tmpl, err := h.Templates.Update(c.Request.Context(), existing)
+	tmpl, err := h.Templates.Patch(c.Request.Context(), id, existing.UserID, func(t *model.Template) error {
+		req.ApplyTo(t)
+		// ApplyTo can't tell an explicit null from an omitted field: null
+		// clears these (move to Personal, no default folder, no trigger).
+		if raw, present := keys["orgId"]; present && isJSONNull(raw) {
+			t.OrgID = nil
+		}
+		if raw, present := keys["defaultFolderId"]; present && isJSONNull(raw) {
+			t.DefaultFolderID = nil
+		}
+		if raw, present := keys["todoTrigger"]; present && isJSONNull(raw) {
+			t.TodoTrigger = nil
+		}
+		return nil
+	})
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			notFoundOrError(c, err)
+			return
+		}
 		internalError(c, err)
 		return
 	}
@@ -144,6 +166,20 @@ func (h *TemplateHandler) UpsertTemplate(c *gin.Context) {
 	var body model.Template
 	if !bindJSON(c, &body) {
 		return
+	}
+	// PUT replaces the template's org, so a bearer token must be granted
+	// the stored org as well as the body's. Only the owner's row is
+	// replaced (the store's write is gated on user_id).
+	if currentTokenScope(c) != nil {
+		existing, err := h.Templates.GetByID(c.Request.Context(), id, user.ID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			internalError(c, err)
+			return
+		}
+		if err == nil && existing.UserID == user.ID &&
+			!checkTokenScope(c, existing.OrgID, model.ShareResourceTemplate, true) {
+			return
+		}
 	}
 	if !checkTokenScope(c, body.OrgID, model.ShareResourceTemplate, true) {
 		return

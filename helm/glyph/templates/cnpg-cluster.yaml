@@ -1,7 +1,12 @@
+{{- include "glyph.cnpg.validateBackup" . }}
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: {{ include "glyph.cnpg.clusterName" . }}
+  annotations:
+    # The database outlives the release: `helm uninstall`, an Argo prune or a
+    # chart refactor must never delete it. Delete it by hand if you mean to.
+    helm.sh/resource-policy: keep
   labels:
     {{- include "glyph.labels" . | nindent 4 }}
     app.kubernetes.io/component: database
@@ -31,15 +36,17 @@ spec:
       {{- if .Values.cnpg.backup.endpointURL }}
       endpointURL: {{ .Values.cnpg.backup.endpointURL | quote }}
       {{- end }}
-      {{- if .Values.cnpg.backup.s3 }}
       s3Credentials:
+        {{- if .Values.cnpg.backup.s3.secretName }}
         accessKeyId:
           name: {{ .Values.cnpg.backup.s3.secretName }}
           key: ACCESS_KEY_ID
         secretAccessKey:
           name: {{ .Values.cnpg.backup.s3.secretName }}
           key: ACCESS_SECRET_KEY
-      {{- end }}
+        {{- else }}
+        inheritFromIAMRole: true
+        {{- end }}
       wal:
         compression: gzip
       data:

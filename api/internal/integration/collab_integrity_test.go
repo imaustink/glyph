@@ -365,6 +365,57 @@ func TestTaskSourceIntegrity(t *testing.T) {
 			assert.Empty(t, h.Notifier.take())
 		},
 
+		// DI-29: a rename made outside the note (the task page, MCP, an API
+		// client) must reach the bullet, or the next keystroke in the bullet
+		// pushes its stale text back as the title. So it is announced to open
+		// copies of the note and recorded for the collab service to apply when
+		// the note is next loaded. The editor's own bullet→title writes are
+		// marked and never echoed back: by the time the echo arrived, the
+		// bullet may hold newer text that it would clobber.
+		"ExternalRenamesAreAnnouncedAndRecordedButBulletEditsAreNot": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			page := createPage(t, h, h.UserA.ID, "Plan")
+			task := createLinkedTask(t, h, h.UserA.ID, page.ID, "n1")
+			path := "/api/v1/tasks/" + task.ID.String()
+			// Drain what earlier subtests (run in map order) left behind.
+			h.Notifier.take()
+			h.Notifier.takeTitles()
+			_, renamed := h.TitleRenamedAt(t, task.ID)
+			assert.False(t, renamed, "a new task has not been renamed")
+
+			w := h.DoWithHeaders(t, "PATCH", path, map[string]interface{}{"title": "typed in the bullet"}, h.UserA.ID,
+				map[string]string{"X-Glyph-Change-Source": "bullet"})
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Equal(t, "typed in the bullet", Decode[model.Task](t, w).Title)
+			assert.Empty(t, h.Notifier.takeTitles(), "the bullet already shows its own text")
+			_, renamed = h.TitleRenamedAt(t, task.ID)
+			assert.False(t, renamed, "a title from the bullet is not a rename")
+
+			w = h.Do(t, "PATCH", path, map[string]interface{}{"title": "renamed on the task page"}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Equal(t, []titleNotification{{PageID: page.ID, NodeID: "n1", Title: "renamed on the task page"}}, h.Notifier.takeTitles())
+			first, renamed := h.TitleRenamedAt(t, task.ID)
+			require.True(t, renamed, "an outside rename is recorded")
+			assert.Empty(t, h.Notifier.take(), "a rename is not a status change")
+
+			// Sending the same title again (e.g. with another field) is no rename.
+			w = h.Do(t, "PATCH", path, map[string]interface{}{"title": "renamed on the task page", "priority": "high"}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Empty(t, h.Notifier.takeTitles())
+			again, _ := h.TitleRenamedAt(t, task.ID)
+			assert.True(t, first.Equal(again), "unchanged title keeps the recorded rename time")
+
+			// Standalone tasks have no bullet to update.
+			w = h.Do(t, "POST", "/api/v1/tasks", map[string]interface{}{"title": "standalone"}, h.UserA.ID)
+			require.Equal(t, http.StatusCreated, w.Code)
+			standalone := Decode[model.Task](t, w)
+			w = h.Do(t, "PATCH", "/api/v1/tasks/"+standalone.ID.String(), map[string]interface{}{"title": "standalone, renamed"}, h.UserA.ID)
+			require.Equal(t, http.StatusOK, w.Code)
+			assert.Empty(t, h.Notifier.takeTitles())
+			_, renamed = h.TitleRenamedAt(t, standalone.ID)
+			assert.False(t, renamed)
+		},
+
 		// Ownership follows the note, so creating a task "in" a note someone
 		// can't edit must fail — otherwise anyone could put tasks in anyone's
 		// account.
@@ -396,12 +447,16 @@ func TestTaskSourceIntegrity(t *testing.T) {
 		},
 
 		// Re-creating the task for a bullet whose task was soft-deleted
-		// restores the original rather than minting a second one.
+		// because the bullet disappeared restores the original rather than
+		// minting a second one. (A task the user deleted stays deleted: see
+		// TestLinkedTaskUserDeleteIsFinal.)
 		"RecreatingForASoftDeletedBulletRestoresTheOriginal": func(t *testing.T, h *Harness) {
 			h.ResetDB(t)
 			page := createPage(t, h, h.UserA.ID, "Plan")
 			task := createLinkedTask(t, h, h.UserA.ID, page.ID, "n1")
-			require.Equal(t, http.StatusNoContent, h.Do(t, "DELETE", "/api/v1/tasks/"+task.ID.String(), nil, h.UserA.ID).Code)
+			writeDoc(t, h, h.UserA.ID, page.ID, todoDoc(bullet{nodeID: "n1"}))
+			writeDoc(t, h, h.UserA.ID, page.ID, todoDoc())
+			require.False(t, taskVisible(t, h, h.UserA.ID, task.ID))
 
 			w := h.Do(t, "POST", "/api/v1/tasks", linkedTaskBody(page.ID, "n1", "again"), h.UserA.ID)
 			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
@@ -478,6 +533,32 @@ func TestCollabWritePath(t *testing.T) {
 			assert.Contains(t, string(currentContent(t, h, h.UserA.ID, page.ID).Content), "single-writer again")
 		},
 
+		// Flipping the kill switch must not strand the edits a live session
+		// has made since its last snapshot: while the page is still attached
+		// its final snapshots are accepted (DI-14). The response says the
+		// switch is off so the collab service can wind the session down.
+		"SnapshotIsAcceptedWhileCollabIsDisabledIfStillAttached": func(t *testing.T, h *Harness) {
+			h.ResetDB(t)
+			page := createPage(t, h, h.UserA.ID, "Plan")
+			writeDoc(t, h, h.UserA.ID, page.ID, doc("before"))
+			epoch := h.AttachCollab(t, page.ID)
+
+			h.CollabHandler.Enabled = false
+			h.PageHandler.CollabEnabled = false
+			defer func() { h.CollabHandler.Enabled, h.PageHandler.CollabEnabled = true, true }()
+
+			w := snapshot(t, h, page.ID, epoch, 1, doc("final collab edits"))
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Equal(t, true, Decode[map[string]interface{}](t, w)["disabled"])
+			assert.Contains(t, string(currentContent(t, h, h.UserA.ID, page.ID).Content), "final collab edits")
+
+			// The next REST save detaches from content that includes them.
+			writeDoc(t, h, h.UserA.ID, page.ID, doc("final collab edits, then single-writer"))
+			w = snapshot(t, h, page.ID, epoch, 2, doc("late collab snapshot"))
+			assert.Equal(t, http.StatusConflict, w.Code)
+			assert.Contains(t, string(currentContent(t, h, h.UserA.ID, page.ID).Content), "then single-writer")
+		},
+
 		"SnapshotRequiresTheServiceToken": func(t *testing.T, h *Harness) {
 			h.ResetDB(t)
 			page := createPage(t, h, h.UserA.ID, "Plan")
@@ -545,6 +626,10 @@ func TestCollabWritePath(t *testing.T) {
 
 			w := snapshot(t, h, page.ID, epoch, 5, doc("older"))
 			assert.Equal(t, http.StatusConflict, w.Code)
+			// "Behind" is not "replaced": another replica's newer snapshot
+			// landed first. A distinct code tells the collab service to catch
+			// up instead of evicting its editors (DI-11).
+			assert.Equal(t, "snapshot_behind", Decode[map[string]interface{}](t, w)["code"])
 			assert.Contains(t, string(currentContent(t, h, h.UserA.ID, page.ID).Content), "newer")
 		},
 

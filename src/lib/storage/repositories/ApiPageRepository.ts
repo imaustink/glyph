@@ -1,5 +1,6 @@
 import { api } from '$lib/storage/apiClient';
 import type { TreeNode, PageContent } from '$lib/models/types';
+import type { DeleteSubtreeOptions, WriteOptions } from '$lib/storage/interfaces';
 
 /**
  * API-backed page repository. Mirrors the interface of PageRepository
@@ -35,8 +36,9 @@ export class ApiPageRepository {
 		return api.getOrNull<PageContent>(`/api/v1/pages/${pageId}/content`);
 	}
 
-	async saveContent(content: PageContent): Promise<PageContent> {
-		return api.put<PageContent>(`/api/v1/pages/${content.pageId}/content`, content);
+	async saveContent(content: PageContent, opts?: WriteOptions): Promise<PageContent> {
+		const path = `/api/v1/pages/${content.pageId}/content`;
+		return opts ? api.put<PageContent>(path, content, opts) : api.put<PageContent>(path, content);
 	}
 
 	async deleteContent(_pageId: string): Promise<void> {
@@ -52,8 +54,15 @@ export class ApiPageRepository {
 	 * The API backend cascades the delete at the DB level, so only one request
 	 * is needed. The descendantIds parameter is accepted for interface
 	 * compatibility with the localStorage implementation but is unused.
+	 *
+	 * The server soft-deletes the subtree's tasks with it unless `keepTasks`
+	 * asks it to detach them into standalone tasks instead.
 	 */
-	async deleteSubtree(id: string, _descendantIds: string[]): Promise<void> {
+	async deleteSubtree(id: string, _descendantIds: string[], opts?: DeleteSubtreeOptions): Promise<void> {
+		if (opts?.keepTasks) {
+			await api.del(`/api/v1/pages/${id}?keepTasks=true`);
+			return;
+		}
 		await this.delete(id);
 	}
 

@@ -106,6 +106,18 @@ func (b *postgresBackend) AttachCollab(t *testing.T, pageID uuid.UUID) int {
 	return epoch
 }
 
+// TitleRenamedAt reads tasks.title_renamed_at.
+func (b *postgresBackend) TitleRenamedAt(t *testing.T, taskID uuid.UUID) (time.Time, bool) {
+	t.Helper()
+	var at *time.Time
+	err := b.pool.QueryRow(context.Background(), `SELECT title_renamed_at FROM tasks WHERE id = $1`, taskID).Scan(&at)
+	require.NoError(t, err)
+	if at == nil {
+		return time.Time{}, false
+	}
+	return *at, true
+}
+
 func (b *postgresBackend) Teardown() {
 	if b.pool != nil {
 		b.pool.Close()

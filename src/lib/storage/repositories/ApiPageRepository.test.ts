@@ -166,6 +166,13 @@ describe('ApiPageRepository', () => {
       expect(mockDel).toHaveBeenCalledTimes(1);
       expect(mockDel).toHaveBeenCalledWith('/api/v1/pages/root');
     });
+
+    it('asks the server to keep the subtree\'s tasks when told to', async () => {
+      mockDel.mockResolvedValueOnce(undefined);
+      await repo.deleteSubtree('root', ['child1'], { keepTasks: true });
+      expect(mockDel).toHaveBeenCalledTimes(1);
+      expect(mockDel).toHaveBeenCalledWith('/api/v1/pages/root?keepTasks=true');
+    });
   });
 
   describe('upsert', () => {

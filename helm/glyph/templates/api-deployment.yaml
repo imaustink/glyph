@@ -38,16 +38,14 @@ spec:
                 sleep 2
               done
               echo "Database is ready."
-        - name: run-migrations
+        # Check-only: blocks until the migrate Job (migrate-job.yaml) has
+        # brought the schema up to this release's latest migration. Pods never
+        # migrate themselves — that ran on every pod start, concurrently with
+        # the Job and with old pods still serving.
+        - name: wait-for-schema
           image: "{{ .Values.migrate.image.repository }}:{{ .Values.migrate.image.tag }}"
           imagePullPolicy: {{ .Values.migrate.image.pullPolicy }}
-          command:
-            - migrate
-            - -path
-            - /migrations
-            - -database
-            - $(DATABASE_URL)
-            - up
+          command: ["sh", "/migrations/glyph-migrate.sh", "wait"]
           env:
             - name: DATABASE_URL
               valueFrom:
@@ -71,6 +69,16 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+          {{- if and .Values.api.preStopSleepSeconds (semverCompare ">=1.30-0" .Capabilities.KubeVersion.Version) }}
+          # Keep serving while the pod is removed from the Service's endpoints,
+          # so in-flight saves aren't cut off by a SIGTERM that arrives first.
+          # The image is distroless (no sleep binary), hence the native sleep
+          # action (Kubernetes 1.30+).
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.api.preStopSleepSeconds }}
+          {{- end }}
           env:
             - name: PORT
               value: "8080"
@@ -111,7 +119,9 @@ spec:
               value: {{ .Values.api.cookieSecure | quote }}
             - name: COLLAB_ENABLED
               value: {{ .Values.collab.enabled | quote }}
-            {{- if .Values.collab.enabled }}
+            {{- /* Also with collab off, while a token is configured: the API
+                   still accepts final snapshots from draining collab pods. */}}
+            {{- if or .Values.collab.enabled .Values.collab.serviceToken .Values.collab.existingSecret }}
             - name: COLLAB_SERVICE_TOKEN
               valueFrom:
                 secretKeyRef:

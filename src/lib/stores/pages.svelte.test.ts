@@ -335,7 +335,16 @@ describe('pagesStore', () => {
 
       await store.deleteNode('parent');
 
-      expect(repo.deleteSubtree).toHaveBeenCalledWith('parent', ['child']);
+      expect(repo.deleteSubtree).toHaveBeenCalledWith('parent', ['child'], undefined);
+    });
+
+    it('passes keepTasks through to deleteSubtree', async () => {
+      vi.mocked(repo.getAll).mockResolvedValueOnce([makeNode({ id: 'note' })]);
+      await store.load();
+
+      await store.deleteNode('note', { keepTasks: true });
+
+      expect(repo.deleteSubtree).toHaveBeenCalledWith('note', [], { keepTasks: true });
     });
 
     it('deletes a leaf node correctly', async () => {
@@ -346,7 +355,7 @@ describe('pagesStore', () => {
       await store.deleteNode('leaf');
 
       expect(store.nodes).toHaveLength(0);
-      expect(repo.deleteSubtree).toHaveBeenCalledWith('leaf', []);
+      expect(repo.deleteSubtree).toHaveBeenCalledWith('leaf', [], undefined);
     });
   });
 
@@ -576,6 +585,93 @@ describe('pagesStore', () => {
       expect(descendantIds).toContain('child1');
       expect(descendantIds).toContain('child2');
       expect(descendantIds.indexOf('gc1')).toBeLessThan(descendantIds.indexOf('child1'));
+    });
+  });
+
+  // ─── placeAfter (sidebar sibling reorder) ────────────────────────────────
+
+  describe('placeAfter [DI-13]', () => {
+    /**
+     * Mirrors the API: dto.go declares `Order *int`, so Go's JSON decoder
+     * rejects a fractional order with a 400. Local storage accepts anything,
+     * which is why the bug only showed up in API mode.
+     */
+    function rejectFractionalOrders() {
+      vi.mocked(repo.update).mockImplementation(async (id: string, patch: Partial<TreeNode>) => {
+        if (patch.order !== undefined && !Number.isInteger(patch.order)) {
+          throw new Error(`400: order must be an integer, got ${patch.order}`);
+        }
+        return { ...store.getById(id)!, ...patch } as TreeNode;
+      });
+    }
+
+    function childIds(parentId: string | null) {
+      return store.getChildren(parentId).map((n) => n.id);
+    }
+
+    it('reorders adjacent integer siblings using integer orders only', async () => {
+      const a = makeNode({ id: 'a', order: 0 });
+      const b = makeNode({ id: 'b', order: 1 });
+      const c = makeNode({ id: 'c', order: 2 });
+      vi.mocked(repo.getAll).mockResolvedValueOnce([a, b, c]);
+      await store.load();
+      rejectFractionalOrders();
+
+      await store.placeAfter('c', 'a');
+
+      expect(childIds(null)).toEqual(['a', 'c', 'b']);
+      for (const [, patch] of vi.mocked(repo.update).mock.calls) {
+        if (patch.order !== undefined) expect(Number.isInteger(patch.order)).toBe(true);
+      }
+    });
+
+    it('writes only the dragged node when there is an integer gap after the target', async () => {
+      const a = makeNode({ id: 'a', order: 1000 });
+      const b = makeNode({ id: 'b', order: 3000 });
+      const c = makeNode({ id: 'c', order: 5000 });
+      vi.mocked(repo.getAll).mockResolvedValueOnce([a, b, c]);
+      await store.load();
+      rejectFractionalOrders();
+
+      await store.placeAfter('c', 'a');
+
+      expect(childIds(null)).toEqual(['a', 'c', 'b']);
+      expect(repo.update).toHaveBeenCalledTimes(1);
+      expect(repo.update).toHaveBeenCalledWith('c', expect.objectContaining({ parentId: null }));
+    });
+
+    it('moves a node from another parent in after the target', async () => {
+      const folder = makeNode({ id: 'f', type: 'folder', order: 0 });
+      const x = makeNode({ id: 'x', parentId: 'f', order: 0 });
+      const a = makeNode({ id: 'a', order: 1 });
+      const b = makeNode({ id: 'b', order: 2 });
+      vi.mocked(repo.getAll).mockResolvedValueOnce([folder, x, a, b]);
+      await store.load();
+      rejectFractionalOrders();
+
+      await store.placeAfter('x', 'a');
+
+      expect(childIds(null)).toEqual(['f', 'a', 'x', 'b']);
+      expect(childIds('f')).toEqual([]);
+    });
+
+    it('rejects placing a folder next to its own descendant', async () => {
+      const folder = makeNode({ id: 'f', type: 'folder', order: 0 });
+      const x = makeNode({ id: 'x', parentId: 'f', order: 0 });
+      vi.mocked(repo.getAll).mockResolvedValueOnce([folder, x]);
+      await store.load();
+
+      await expect(store.placeAfter('f', 'x')).rejects.toThrow(/descendants/i);
+    });
+
+    it('propagates a write failure so the caller can show a toast', async () => {
+      const a = makeNode({ id: 'a', order: 0 });
+      const b = makeNode({ id: 'b', order: 1 });
+      vi.mocked(repo.getAll).mockResolvedValueOnce([a, b]);
+      await store.load();
+      vi.mocked(repo.update).mockRejectedValue(new Error('network'));
+
+      await expect(store.placeAfter('a', 'b')).rejects.toThrow('network');
     });
   });
 });

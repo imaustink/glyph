@@ -7,6 +7,7 @@
 package memstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -41,6 +42,9 @@ type Registry struct {
 	// deletedTasks holds soft-deleted tasks. Keeping them out of `tasks`
 	// hides them from every read path without each one needing a check.
 	deletedTasks map[uuid.UUID]deletedTask
+	// titleRenamedAt mirrors tasks.title_renamed_at: when a note task was
+	// last renamed from outside its note.
+	titleRenamedAt map[uuid.UUID]time.Time
 
 	collab map[uuid.UUID]*collabDoc
 
@@ -67,6 +71,7 @@ func (r *Registry) init() {
 	r.versionSeq = 0
 	r.tasks = make(map[uuid.UUID]*model.Task)
 	r.deletedTasks = make(map[uuid.UUID]deletedTask)
+	r.titleRenamedAt = make(map[uuid.UUID]time.Time)
 	r.collab = make(map[uuid.UUID]*collabDoc)
 	r.lanes = make(map[uuid.UUID]*model.Lane)
 	r.templates = make(map[uuid.UUID]*model.Template)
@@ -250,8 +255,13 @@ func (s *userStore) Upsert(_ context.Context, sub, issuer string, email, name *s
 	defer s.r.mu.Unlock()
 	key := sub + "|" + issuer
 	if u, ok := s.r.usersBySub[key]; ok {
-		u.Email = email
-		u.Name = name
+		// A claim the IdP left out keeps the stored value (like Postgres).
+		if email != nil {
+			u.Email = email
+		}
+		if name != nil {
+			u.Name = name
+		}
 		u.UpdatedAt = time.Now()
 		cp := *u
 		return &cp, nil
@@ -271,7 +281,7 @@ func (s *userStore) GetByID(_ context.Context, id uuid.UUID) (*model.User, error
 	defer s.r.mu.RUnlock()
 	u, ok := s.r.usersByID[id]
 	if !ok {
-		return nil, fmt.Errorf("user get: not found")
+		return nil, fmt.Errorf("user get: %w", store.ErrNotFound)
 	}
 	cp := *u
 	return &cp, nil
@@ -280,13 +290,20 @@ func (s *userStore) GetByID(_ context.Context, id uuid.UUID) (*model.User, error
 func (s *userStore) GetByEmail(_ context.Context, email string) (*model.User, error) {
 	s.r.mu.RLock()
 	defer s.r.mu.RUnlock()
+	var found *model.User
 	for _, u := range s.r.usersByID {
 		if u.Email != nil && strings.EqualFold(*u.Email, email) {
-			cp := *u
-			return &cp, nil
+			if found != nil {
+				return nil, fmt.Errorf("%w: several accounts use this email", store.ErrConflict)
+			}
+			found = u
 		}
 	}
-	return nil, fmt.Errorf("user get by email: not found")
+	if found == nil {
+		return nil, fmt.Errorf("user get by email: %w", store.ErrNotFound)
+	}
+	cp := *found
+	return &cp, nil
 }
 
 func (s *userStore) Search(_ context.Context, query string, excludeID uuid.UUID, orgIDs []uuid.UUID, limit int) ([]*model.UserSearchResult, error) {
@@ -364,7 +381,14 @@ func (s *pageStore) ListByUser(_ context.Context, userID uuid.UUID) ([]*model.Pa
 			result = append(result, clonePage(p))
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Order < result[j].Order })
+	// Total order, like the Postgres ORDER BY "order", id (uuid compares
+	// byte-wise), so pagination is stable across order ties.
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Order != result[j].Order {
+			return result[i].Order < result[j].Order
+		}
+		return bytes.Compare(result[i].ID[:], result[j].ID[:]) < 0
+	})
 	return result, nil
 }
 
@@ -418,11 +442,18 @@ func (s *pageStore) Upsert(_ context.Context, p *model.Page) (*model.Page, error
 		if existing.UserID != p.UserID {
 			return nil, store.ErrNotFound
 		}
+		if s.r.wouldCycle(p.ID, p.ParentID) {
+			return nil, store.ErrCycle
+		}
+		p.Type = existing.Type // fixed at creation, as in Postgres
 		p.CreatedAt = existing.CreatedAt
 		p.UpdatedAt = time.Now()
 		stored := clonePage(p)
 		s.r.pages[stored.ID] = stored
 		return clonePage(stored), nil
+	}
+	if s.r.wouldCycle(p.ID, p.ParentID) {
+		return nil, store.ErrCycle
 	}
 	now := time.Now()
 	p.CreatedAt = now
@@ -431,6 +462,26 @@ func (s *pageStore) Upsert(_ context.Context, p *model.Page) (*model.Page, error
 	s.r.pages[stored.ID] = stored
 	return clonePage(stored), nil
 }
+
+// wouldCycle mirrors the Postgres cycle check: whether making parentID the
+// parent of id would make id its own ancestor. Terminates on a cycle already
+// in the data. Must be called with the lock held.
+func (r *Registry) wouldCycle(id uuid.UUID, parentID *uuid.UUID) bool {
+	seen := map[uuid.UUID]bool{}
+	for cur := parentID; cur != nil && !seen[*cur]; {
+		if *cur == id {
+			return true
+		}
+		seen[*cur] = true
+		p, ok := r.pages[*cur]
+		if !ok {
+			return false
+		}
+		cur = p.ParentID
+	}
+	return false
+}
+
 func (s *pageStore) Create(_ context.Context, p *model.Page) (*model.Page, error) {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
@@ -445,13 +496,61 @@ func (s *pageStore) Create(_ context.Context, p *model.Page) (*model.Page, error
 	return clonePage(stored), nil
 }
 
+// UpdateFields mirrors the Postgres field-level UPDATE: only the named
+// fields of p are copied onto the stored page.
+func (s *pageStore) UpdateFields(_ context.Context, p *model.Page, fields []string) (*model.Page, error) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	return s.updateFieldsLocked(p, fields)
+}
+
+// updateFieldsLocked is UpdateFields' body; the caller holds s.r.mu.
+func (s *pageStore) updateFieldsLocked(p *model.Page, fields []string) (*model.Page, error) {
+	existing, ok := s.r.pages[p.ID]
+	if !ok || existing.UserID != p.UserID {
+		return nil, fmt.Errorf("pages update: %w", store.ErrNotFound)
+	}
+	next := clonePage(existing)
+	src := clonePage(p)
+	for _, f := range fields {
+		switch f {
+		case "title":
+			next.Title = src.Title
+		case "parentId":
+			if s.r.wouldCycle(p.ID, src.ParentID) {
+				return nil, store.ErrCycle
+			}
+			next.ParentID = src.ParentID
+		case "order":
+			next.Order = src.Order
+		case "tags":
+			next.Tags = src.Tags
+		case "priority":
+			next.Priority = src.Priority
+		case "todoTrigger":
+			next.TodoTrigger = src.TodoTrigger
+		case "orgId":
+			next.OrgID = src.OrgID
+		case "isPrivate":
+			next.IsPrivate = src.IsPrivate
+		}
+	}
+	next.UpdatedAt = time.Now()
+	s.r.pages[next.ID] = next
+	return clonePage(next), nil
+}
+
 func (s *pageStore) Update(_ context.Context, p *model.Page) (*model.Page, error) {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
 	existing, ok := s.r.pages[p.ID]
 	if !ok || existing.UserID != p.UserID {
-		return nil, fmt.Errorf("pages update: not found")
+		return nil, fmt.Errorf("pages update: %w", store.ErrNotFound)
 	}
+	if s.r.wouldCycle(p.ID, p.ParentID) {
+		return nil, store.ErrCycle
+	}
+	p.Type = existing.Type // fixed at creation, as in Postgres
 	p.CreatedAt = existing.CreatedAt
 	p.UpdatedAt = time.Now()
 	stored := clonePage(p)
@@ -459,16 +558,108 @@ func (s *pageStore) Update(_ context.Context, p *model.Page) (*model.Page, error
 	return clonePage(stored), nil
 }
 
+// Delete mirrors the Postgres store: ErrNotFound unless the caller owns the
+// page, ErrSubtreeNotOwned if any descendant belongs to someone else, and
+// otherwise the whole subtree goes, as the parent_id cascade does — with each
+// page's content archived into the history, which outlives the page.
 func (s *pageStore) Delete(_ context.Context, id, userID uuid.UUID) error {
+	return s.deleteSubtree(id, userID, false)
+}
+
+// DeleteKeepingTasks mirrors the Postgres store: Delete, with the tasks it
+// would soft-delete detached (no source note, bullet or folder) instead.
+func (s *pageStore) DeleteKeepingTasks(_ context.Context, id, userID uuid.UUID) error {
+	return s.deleteSubtree(id, userID, true)
+}
+
+func (s *pageStore) deleteSubtree(id, userID uuid.UUID, keepTasks bool) error {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
 	p, ok := s.r.pages[id]
 	if !ok || p.UserID != userID {
-		return nil
+		return store.ErrNotFound
 	}
-	delete(s.r.pages, id)
-	delete(s.r.contents, id)
+	ids := s.r.subtreeIDs(id)
+	for _, pid := range ids {
+		if s.r.pages[pid].UserID != userID {
+			return store.ErrSubtreeNotOwned
+		}
+	}
+	inSubtree := make(map[uuid.UUID]bool, len(ids))
+	for _, pid := range ids {
+		inSubtree[pid] = true
+		if cur, ok := s.r.contents[pid]; ok {
+			s.r.versionSeq++
+			s.r.contentVersions[pid] = append(s.r.contentVersions[pid], model.PageContentVersion{
+				ID: s.r.versionSeq, PageID: pid, Content: cur.Content, Revision: cur.Revision,
+				SchemaVersion: cur.SchemaVersion, ReplacedAt: cur.UpdatedAt,
+			})
+		}
+		delete(s.r.pages, pid)
+		delete(s.r.contents, pid)
+		delete(s.r.collab, pid)
+	}
+	for sid, sh := range s.r.shares {
+		if (sh.ResourceType == model.ShareResourcePage || sh.ResourceType == model.ShareResourceFolder) && inSubtree[sh.ResourceID] {
+			delete(s.r.shares, sid)
+		}
+	}
+	// The subtree's tasks are soft-deleted, as in Postgres, or with
+	// keepTasks detached (clearRefs below, plus the bullet); another user's
+	// folder-board task is only unfiled.
+	now := time.Now()
+	for tid, t := range s.r.tasks {
+		if (t.SourcePageID != nil && inSubtree[*t.SourcePageID]) ||
+			(t.FolderID != nil && inSubtree[*t.FolderID] && t.UserID == userID) {
+			t.UpdatedAt = now
+			if keepTasks {
+				if t.SourcePageID != nil && inSubtree[*t.SourcePageID] {
+					t.SourceNodeID = nil
+				}
+				continue
+			}
+			s.r.deletedTasks[tid] = deletedTask{task: t, reason: deletedReasonSourceRemoved}
+			delete(s.r.tasks, tid)
+		}
+	}
+	// Mirror the remaining foreign keys: lanes.folder_id cascades, and the
+	// task references are SET NULL.
+	for lid, l := range s.r.lanes {
+		if l.FolderID != nil && inSubtree[*l.FolderID] {
+			delete(s.r.lanes, lid)
+		}
+	}
+	clearRefs := func(t *model.Task) {
+		if t.SourcePageID != nil && inSubtree[*t.SourcePageID] {
+			t.SourcePageID = nil
+		}
+		if t.FolderID != nil && inSubtree[*t.FolderID] {
+			t.FolderID = nil
+		}
+	}
+	for _, t := range s.r.tasks {
+		clearRefs(t)
+	}
+	for _, d := range s.r.deletedTasks {
+		clearRefs(d.task)
+	}
 	return nil
+}
+
+// subtreeIDs returns id and all its descendants, terminating on a cycle.
+// Must be called with the lock held.
+func (r *Registry) subtreeIDs(id uuid.UUID) []uuid.UUID {
+	out := []uuid.UUID{id}
+	seen := map[uuid.UUID]bool{id: true}
+	for i := 0; i < len(out); i++ {
+		for _, p := range r.pages {
+			if p.ParentID != nil && *p.ParentID == out[i] && !seen[p.ID] {
+				seen[p.ID] = true
+				out = append(out, p.ID)
+			}
+		}
+	}
+	return out
 }
 
 func (s *pageStore) GetContent(_ context.Context, pageID, userID uuid.UUID) (*model.PageContent, error) {
@@ -476,11 +667,11 @@ func (s *pageStore) GetContent(_ context.Context, pageID, userID uuid.UUID) (*mo
 	defer s.r.mu.RUnlock()
 	p, ok := s.r.pages[pageID]
 	if !ok || !s.r.canRead(userID, p.UserID, p.OrgID, p.IsPrivate, model.ShareResourcePage, p.ID) {
-		return nil, fmt.Errorf("get content: not found")
+		return nil, fmt.Errorf("get content: %w", store.ErrNotFound)
 	}
 	pc, ok := s.r.contents[pageID]
 	if !ok {
-		return nil, fmt.Errorf("get content: not found")
+		return nil, fmt.Errorf("get content: %w", store.ErrNotFound)
 	}
 	cp := *pc
 	return &cp, nil
@@ -656,8 +847,12 @@ func (s *pageStore) ListContentVersions(_ context.Context, pageID, userID uuid.U
 	}
 	src := s.r.contentVersions[pageID]
 	out := []model.PageContentVersion{}
-	// Newest first.
+	// Newest first. Versions older than the page belong to a deleted page
+	// that had the same id (mirrors the Postgres replaced_at >= created_at).
 	for i := len(src) - 1; i >= 0 && len(out) < limit; i-- {
+		if src[i].ReplacedAt.Before(p.CreatedAt) {
+			continue
+		}
 		out = append(out, src[i])
 	}
 	return out, nil
@@ -668,8 +863,12 @@ func (s *pageStore) ListContentVersions(_ context.Context, pageID, userID uuid.U
 func (s *pageStore) IsAncestor(_ context.Context, candidateAncestorID, nodeID uuid.UUID) (bool, error) {
 	s.r.mu.RLock()
 	defer s.r.mu.RUnlock()
+	// seen guards against a parent_id cycle already in the data, which
+	// would otherwise loop forever while holding the lock.
+	seen := map[uuid.UUID]bool{}
 	current := nodeID
-	for {
+	for !seen[current] {
+		seen[current] = true
 		p, ok := s.r.pages[current]
 		if !ok || p.ParentID == nil {
 			return false, nil
@@ -679,6 +878,7 @@ func (s *pageStore) IsAncestor(_ context.Context, candidateAncestorID, nodeID uu
 		}
 		current = *p.ParentID
 	}
+	return false, nil
 }
 
 func (s *pageStore) GetDescendantIDs(_ context.Context, folderID uuid.UUID) ([]uuid.UUID, error) {
@@ -687,11 +887,13 @@ func (s *pageStore) GetDescendantIDs(_ context.Context, folderID uuid.UUID) ([]u
 	// BFS to collect all descendants.
 	result := []uuid.UUID{folderID}
 	queue := []uuid.UUID{folderID}
+	seen := map[uuid.UUID]bool{folderID: true} // terminates on a cycle
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
 		for _, p := range s.r.pages {
-			if p.ParentID != nil && *p.ParentID == current {
+			if p.ParentID != nil && *p.ParentID == current && !seen[p.ID] {
+				seen[p.ID] = true
 				result = append(result, p.ID)
 				queue = append(queue, p.ID)
 			}
@@ -709,6 +911,18 @@ type taskStore struct {
 	listByUserErr error // set only in tests to inject a ListByUser error
 }
 
+// sortTasks gives task lists a total order, like the Postgres
+// ORDER BY "order", id (uuid compares byte-wise), so pagination is stable
+// across order ties.
+func sortTasks(result []*model.Task) {
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Order != result[j].Order {
+			return result[i].Order < result[j].Order
+		}
+		return bytes.Compare(result[i].ID[:], result[j].ID[:]) < 0
+	})
+}
+
 func (s *taskStore) ListByUser(_ context.Context, userID uuid.UUID) ([]*model.Task, error) {
 	if s.listByUserErr != nil {
 		return nil, s.listByUserErr
@@ -721,7 +935,7 @@ func (s *taskStore) ListByUser(_ context.Context, userID uuid.UUID) ([]*model.Ta
 			result = append(result, cloneTask(t))
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Order < result[j].Order })
+	sortTasks(result)
 	return result, nil
 }
 
@@ -747,7 +961,7 @@ func (s *taskStore) GetByID(_ context.Context, id, userID uuid.UUID) (*model.Tas
 	defer s.r.mu.RUnlock()
 	t, ok := s.r.tasks[id]
 	if !ok || !s.r.canReadTask(userID, t) {
-		return nil, fmt.Errorf("tasks get: not found")
+		return nil, fmt.Errorf("tasks get: %w", store.ErrNotFound)
 	}
 	return cloneTask(t), nil
 }
@@ -777,7 +991,7 @@ func (s *taskStore) ListBySourceNode(_ context.Context, userID uuid.UUID, source
 			}
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Order < result[j].Order })
+	sortTasks(result)
 	return result, nil
 }
 
@@ -844,7 +1058,11 @@ func (s *taskStore) CreateLinked(_ context.Context, t *model.Task) (*model.Task,
 	if existing, ok := s.r.tasks[s.r.liveOrDeletedBySource(*t.SourcePageID, *t.SourceNodeID)]; ok {
 		return cloneTask(existing), false, nil
 	}
-	if d, ok := s.r.deletedTasks[s.r.liveOrDeletedBySource(*t.SourcePageID, *t.SourceNodeID)]; ok {
+	if d, ok := s.r.deletedTasks[s.r.liveOrDeletedBySource(*t.SourcePageID, *t.SourceNodeID)]; ok && d.reason == deletedReasonUser {
+		// Deleted on purpose: never restored. Release the bullet from it and
+		// fall through to create a new task.
+		d.task.SourceNodeID = nil
+	} else if ok {
 		if d.task.UserID != t.UserID {
 			return nil, false, fmt.Errorf("%w: bullet is linked to a deleted task owned by another user", store.ErrConflict)
 		}
@@ -869,7 +1087,7 @@ func (s *taskStore) Update(_ context.Context, t *model.Task) (*model.Task, error
 	defer s.r.mu.Unlock()
 	existing, ok := s.r.tasks[t.ID]
 	if !ok || existing.UserID != t.UserID {
-		return nil, fmt.Errorf("tasks update: not found")
+		return nil, fmt.Errorf("tasks update: %w", store.ErrNotFound)
 	}
 	if s.r.sourceTaken(t, t.ID) {
 		return nil, fmt.Errorf("%w: tasks_source_page_node_uniq", store.ErrConflict)
@@ -881,17 +1099,110 @@ func (s *taskStore) Update(_ context.Context, t *model.Task) (*model.Task, error
 	return cloneTask(stored), nil
 }
 
+// Patch mirrors the Postgres implementation: read, modify and write under
+// the lock.
+func (s *taskStore) Patch(_ context.Context, id, ownerID uuid.UUID, fn func(*model.Task) error, opts ...store.TaskPatchOptions) (*model.Task, error) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	existing, ok := s.r.tasks[id]
+	if !ok || existing.UserID != ownerID {
+		return nil, fmt.Errorf("tasks patch: %w", store.ErrNotFound)
+	}
+	t := cloneTask(existing)
+	if err := fn(t); err != nil {
+		return nil, err
+	}
+	t.ID = id
+	if s.r.sourceTaken(t, id) {
+		return nil, fmt.Errorf("%w: tasks_source_page_node_uniq", store.ErrConflict)
+	}
+	t.CreatedAt = existing.CreatedAt
+	t.UpdatedAt = time.Now()
+	if store.IsExternalRename(opts, existing.Title, t) {
+		s.r.titleRenamedAt[id] = t.UpdatedAt
+	}
+	stored := cloneTask(t)
+	s.r.tasks[id] = stored
+	return cloneTask(stored), nil
+}
+
+// TitleRenamedAt reports when the task was last renamed from outside its
+// note (tasks.title_renamed_at). For tests.
+func (s *taskStore) TitleRenamedAt(id uuid.UUID) (time.Time, bool) {
+	s.r.mu.RLock()
+	defer s.r.mu.RUnlock()
+	at, ok := s.r.titleRenamedAt[id]
+	return at, ok
+}
+
 func (s *taskStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
 	t, ok := s.r.tasks[id]
 	if !ok || t.UserID != userID {
-		return nil
+		return fmt.Errorf("tasks delete: %w", store.ErrNotFound)
 	}
 	t.UpdatedAt = time.Now()
 	s.r.deletedTasks[id] = deletedTask{task: t, reason: deletedReasonUser}
 	delete(s.r.tasks, id)
 	return nil
+}
+
+// GetForMove mirrors the Postgres implementation: live or soft-deleted, no
+// access check.
+func (s *taskStore) GetForMove(_ context.Context, id uuid.UUID) (*model.Task, error) {
+	s.r.mu.RLock()
+	defer s.r.mu.RUnlock()
+	if t, ok := s.r.tasks[id]; ok {
+		return cloneTask(t), nil
+	}
+	if d, ok := s.r.deletedTasks[id]; ok {
+		return cloneTask(d.task), nil
+	}
+	return nil, fmt.Errorf("tasks get for move: %w", store.ErrNotFound)
+}
+
+// MoveToBullet mirrors the Postgres implementation.
+func (s *taskStore) MoveToBullet(_ context.Context, id uuid.UUID, from store.TaskMoveFrom, dest store.TaskMove) (*model.Task, error) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	if t, ok := s.r.tasks[id]; ok {
+		if !store.MoveFromMatches(t, from) {
+			return nil, fmt.Errorf("%w: the task changed while it was being moved", store.ErrConflict)
+		}
+		if store.OnBullet(t, dest) {
+			return cloneTask(t), nil
+		}
+		return nil, store.ErrTaskLive
+	}
+	d, ok := s.r.deletedTasks[id]
+	if !ok {
+		return nil, fmt.Errorf("tasks move: %w", store.ErrNotFound)
+	}
+	if !store.MoveFromMatches(d.task, from) {
+		return nil, fmt.Errorf("%w: the task changed while it was being moved", store.ErrConflict)
+	}
+	if d.reason != deletedReasonSourceRemoved || d.task.SourceNodeID == nil {
+		return nil, store.ErrTaskNotMovable
+	}
+	moved := cloneTask(d.task)
+	pageID, nodeID := dest.PageID, dest.NodeID
+	moved.SourcePageID = &pageID
+	moved.SourceNodeID = &nodeID
+	moved.UserID = dest.OwnerID
+	moved.OrgID = nil
+	if dest.OrgID != nil {
+		orgID := *dest.OrgID
+		moved.OrgID = &orgID
+	}
+	moved.IsPrivate = dest.IsPrivate
+	if s.r.sourceTaken(moved, id) {
+		return nil, fmt.Errorf("%w: tasks_source_page_node_uniq", store.ErrConflict)
+	}
+	moved.UpdatedAt = time.Now()
+	s.r.tasks[id] = moved
+	delete(s.r.deletedTasks, id)
+	return cloneTask(moved), nil
 }
 
 func (s *taskStore) ListByFilter(ctx context.Context, userID uuid.UUID, fs model.FilterSet) ([]*model.Task, error) {
@@ -1108,7 +1419,7 @@ func (s *taskStore) ListByFolder(_ context.Context, folderID uuid.UUID, descenda
 			result = append(result, &cloned)
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Order < result[j].Order })
+	sortTasks(result)
 	return result, nil
 }
 
@@ -1134,7 +1445,7 @@ func (s *laneStore) GetByID(_ context.Context, id, userID uuid.UUID) (*model.Lan
 	defer s.r.mu.RUnlock()
 	l, ok := s.r.lanes[id]
 	if !ok || l.UserID != userID {
-		return nil, fmt.Errorf("lanes get: not found")
+		return nil, fmt.Errorf("lanes get: %w", store.ErrNotFound)
 	}
 	return cloneLane(l), nil
 }
@@ -1213,7 +1524,7 @@ func (s *laneStore) Update(_ context.Context, l *model.Lane) (*model.Lane, error
 	defer s.r.mu.Unlock()
 	existing, ok := s.r.lanes[l.ID]
 	if !ok || existing.UserID != l.UserID {
-		return nil, fmt.Errorf("lanes update: not found")
+		return nil, fmt.Errorf("lanes update: %w", store.ErrNotFound)
 	}
 	l.CreatedAt = existing.CreatedAt
 	l.UpdatedAt = time.Now()
@@ -1222,12 +1533,43 @@ func (s *laneStore) Update(_ context.Context, l *model.Lane) (*model.Lane, error
 	return cloneLane(stored), nil
 }
 
+func (s *laneStore) Patch(_ context.Context, id, userID uuid.UUID, fn func(*model.Lane) error) (*model.Lane, error) {
+	return s.patch(id, func(l *model.Lane) bool { return l.UserID == userID }, fn)
+}
+
+func (s *laneStore) PatchByIDAndFolder(_ context.Context, id, folderID uuid.UUID, fn func(*model.Lane) error) (*model.Lane, error) {
+	return s.patch(id, func(l *model.Lane) bool { return l.FolderID != nil && *l.FolderID == folderID }, fn)
+}
+
+// patch mirrors the Postgres implementation: only title, filters, sort and
+// order are writable.
+func (s *laneStore) patch(id uuid.UUID, match func(*model.Lane) bool, fn func(*model.Lane) error) (*model.Lane, error) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	existing, ok := s.r.lanes[id]
+	if !ok || !match(existing) {
+		return nil, fmt.Errorf("lanes patch: %w", store.ErrNotFound)
+	}
+	l := cloneLane(existing)
+	if err := fn(l); err != nil {
+		return nil, err
+	}
+	stored := cloneLane(existing)
+	stored.Title = l.Title
+	stored.FilterSet = l.FilterSet
+	stored.SortConfig = l.SortConfig
+	stored.Order = l.Order
+	stored.UpdatedAt = time.Now()
+	s.r.lanes[id] = stored
+	return cloneLane(stored), nil
+}
+
 func (s *laneStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
 	l, ok := s.r.lanes[id]
 	if !ok || l.UserID != userID {
-		return nil
+		return fmt.Errorf("lanes delete: %w", store.ErrNotFound)
 	}
 	delete(s.r.lanes, id)
 	return nil
@@ -1309,7 +1651,7 @@ func (s *templateStore) GetByID(_ context.Context, id, userID uuid.UUID) (*model
 	defer s.r.mu.RUnlock()
 	t, ok := s.r.templates[id]
 	if !ok || !s.r.canRead(userID, t.UserID, t.OrgID, t.IsPrivate, model.ShareResourceTemplate, t.ID) {
-		return nil, fmt.Errorf("templates get: not found")
+		return nil, fmt.Errorf("templates get: %w", store.ErrNotFound)
 	}
 	return cloneTemplate(t), nil
 }
@@ -1356,7 +1698,7 @@ func (s *templateStore) Update(_ context.Context, t *model.Template) (*model.Tem
 	defer s.r.mu.Unlock()
 	existing, ok := s.r.templates[t.ID]
 	if !ok || existing.UserID != t.UserID {
-		return nil, fmt.Errorf("templates update: not found")
+		return nil, fmt.Errorf("templates update: %w", store.ErrNotFound)
 	}
 	t.CreatedAt = existing.CreatedAt
 	t.UpdatedAt = time.Now()
@@ -1365,14 +1707,37 @@ func (s *templateStore) Update(_ context.Context, t *model.Template) (*model.Tem
 	return cloneTemplate(stored), nil
 }
 
+func (s *templateStore) Patch(_ context.Context, id, ownerID uuid.UUID, fn func(*model.Template) error) (*model.Template, error) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	existing, ok := s.r.templates[id]
+	if !ok || existing.UserID != ownerID {
+		return nil, fmt.Errorf("templates patch: %w", store.ErrNotFound)
+	}
+	t := cloneTemplate(existing)
+	if err := fn(t); err != nil {
+		return nil, err
+	}
+	t.ID, t.UserID, t.CreatedAt = id, existing.UserID, existing.CreatedAt
+	t.UpdatedAt = time.Now()
+	stored := cloneTemplate(t)
+	s.r.templates[id] = stored
+	return cloneTemplate(stored), nil
+}
+
 func (s *templateStore) Delete(_ context.Context, id, userID uuid.UUID) error {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
 	t, ok := s.r.templates[id]
 	if !ok || t.UserID != userID {
-		return nil
+		return fmt.Errorf("templates delete: %w", store.ErrNotFound)
 	}
 	delete(s.r.templates, id)
+	for sid, sh := range s.r.shares {
+		if sh.ResourceType == model.ShareResourceTemplate && sh.ResourceID == id {
+			delete(s.r.shares, sid)
+		}
+	}
 	return nil
 }
 
@@ -1396,12 +1761,34 @@ func (s *orgStore) Create(_ context.Context, org *model.Organization) (*model.Or
 	return cloneOrg(stored), nil
 }
 
+func (s *orgStore) CreateWithOwner(_ context.Context, org *model.Organization) (*model.Organization, error) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	if org.ID == uuid.Nil {
+		org.ID = uuid.New()
+	}
+	now := time.Now()
+	org.CreatedAt = now
+	org.UpdatedAt = now
+	stored := cloneOrg(org)
+	s.r.orgs[stored.ID] = stored
+	m := &model.OrgMember{OrgID: stored.ID, UserID: stored.CreatedBy, Role: model.OrgRoleOwner, JoinedAt: now}
+	if u, ok := s.r.usersByID[stored.CreatedBy]; ok {
+		m.Email = u.Email
+		m.Name = u.Name
+	}
+	s.r.members[orgMemberKey{stored.ID, stored.CreatedBy}] = m
+	out := cloneOrg(stored)
+	out.MemberCount = 1
+	return out, nil
+}
+
 func (s *orgStore) GetByID(_ context.Context, id uuid.UUID) (*model.Organization, error) {
 	s.r.mu.RLock()
 	defer s.r.mu.RUnlock()
 	org, ok := s.r.orgs[id]
 	if !ok {
-		return nil, fmt.Errorf("org get: not found")
+		return nil, fmt.Errorf("org get: %w", store.ErrNotFound)
 	}
 	cp := cloneOrg(org)
 	for k := range s.r.members {
@@ -1441,7 +1828,7 @@ func (s *orgStore) Update(_ context.Context, org *model.Organization) (*model.Or
 	defer s.r.mu.Unlock()
 	existing, ok := s.r.orgs[org.ID]
 	if !ok {
-		return nil, fmt.Errorf("org update: not found")
+		return nil, fmt.Errorf("org update: %w", store.ErrNotFound)
 	}
 	existing.Name = org.Name
 	existing.UpdatedAt = time.Now()
@@ -1457,6 +1844,29 @@ func (s *orgStore) Delete(_ context.Context, id uuid.UUID) error {
 			delete(s.r.members, k)
 		}
 	}
+	// Mirrors org_id ... ON DELETE SET NULL: the org's resources become
+	// their owners' personal ones.
+	inOrg := func(orgID *uuid.UUID) bool { return orgID != nil && *orgID == id }
+	for _, p := range s.r.pages {
+		if inOrg(p.OrgID) {
+			p.OrgID = nil
+		}
+	}
+	for _, t := range s.r.tasks {
+		if inOrg(t.OrgID) {
+			t.OrgID = nil
+		}
+	}
+	for _, d := range s.r.deletedTasks {
+		if inOrg(d.task.OrgID) {
+			d.task.OrgID = nil
+		}
+	}
+	for _, t := range s.r.templates {
+		if inOrg(t.OrgID) {
+			t.OrgID = nil
+		}
+	}
 	return nil
 }
 
@@ -1464,6 +1874,9 @@ func (s *orgStore) AddMember(_ context.Context, orgID, userID uuid.UUID, role mo
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
 	k := orgMemberKey{orgID, userID}
+	if _, exists := s.r.members[k]; exists {
+		return nil, fmt.Errorf("%w: already a member", store.ErrConflict)
+	}
 	m := &model.OrgMember{OrgID: orgID, UserID: userID, Role: role, JoinedAt: time.Now()}
 	if u, ok := s.r.usersByID[userID]; ok {
 		m.Email = u.Email
@@ -1502,16 +1915,34 @@ func (s *orgStore) UpdateMemberRole(_ context.Context, orgID, userID uuid.UUID, 
 	k := orgMemberKey{orgID, userID}
 	m, ok := s.r.members[k]
 	if !ok {
-		return nil, fmt.Errorf("member not found")
+		return nil, fmt.Errorf("member: %w", store.ErrNotFound)
+	}
+	if m.Role == model.OrgRoleOwner && role != model.OrgRoleOwner && s.r.ownerCount(orgID) <= 1 {
+		return nil, store.ErrLastOwner
 	}
 	m.Role = role
 	return cloneMember(m), nil
 }
 
+// ownerCount must be called with the lock held.
+func (r *Registry) ownerCount(orgID uuid.UUID) int {
+	n := 0
+	for k, m := range r.members {
+		if k.orgID == orgID && m.Role == model.OrgRoleOwner {
+			n++
+		}
+	}
+	return n
+}
+
 func (s *orgStore) RemoveMember(_ context.Context, orgID, userID uuid.UUID) error {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()
-	delete(s.r.members, orgMemberKey{orgID, userID})
+	k := orgMemberKey{orgID, userID}
+	if m, ok := s.r.members[k]; ok && m.Role == model.OrgRoleOwner && s.r.ownerCount(orgID) <= 1 {
+		return store.ErrLastOwner
+	}
+	delete(s.r.members, k)
 	return nil
 }
 
@@ -1539,6 +1970,13 @@ func (s *shareStore) Create(_ context.Context, sh *model.Share) (*model.Share, e
 	if sh.ID == uuid.Nil {
 		sh.ID = uuid.New()
 	}
+	// Mirrors UNIQUE (resource_type, resource_id, shared_with_id).
+	for _, existing := range s.r.shares {
+		if existing.ResourceType == sh.ResourceType && existing.ResourceID == sh.ResourceID &&
+			existing.SharedWith.ID == sh.SharedWith.ID {
+			return nil, fmt.Errorf("%w: already shared with this user", store.ErrConflict)
+		}
+	}
 	sh.CreatedAt = time.Now()
 	if u, ok := s.r.usersByID[sh.SharedWith.ID]; ok {
 		sh.SharedWith.Email = u.Email
@@ -1554,7 +1992,7 @@ func (s *shareStore) GetByID(_ context.Context, id uuid.UUID) (*model.Share, err
 	defer s.r.mu.RUnlock()
 	sh, ok := s.r.shares[id]
 	if !ok {
-		return nil, fmt.Errorf("share get: not found")
+		return nil, fmt.Errorf("share get: %w", store.ErrNotFound)
 	}
 	return cloneShare(sh), nil
 }
@@ -1588,7 +2026,7 @@ func (s *shareStore) UpdatePermission(_ context.Context, id uuid.UUID, permissio
 	defer s.r.mu.Unlock()
 	sh, ok := s.r.shares[id]
 	if !ok {
-		return nil, fmt.Errorf("share update: not found")
+		return nil, fmt.Errorf("share update: %w", store.ErrNotFound)
 	}
 	sh.Permission = permission
 	return cloneShare(sh), nil

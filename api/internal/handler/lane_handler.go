@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -16,6 +17,52 @@ type LaneHandler struct {
 	// Pages resolves a folder-board lane's workspace (its folder's org) so the
 	// bearer-token scope check in GetLane can be applied against the right org.
 	Pages store.PageStore
+	// Perms checks a lane's folderId is a folder the caller may write.
+	// Optional: nil allows only the caller's own folders.
+	Perms *PermissionChecker
+}
+
+// validLaneConfig reports whether a lane's filter and sort settings use only
+// values the board understands. They are stored as JSON, so without this an
+// unknown conjunction, operator, sort mode or direction was saved as-is.
+// Empty conjunction/mode are allowed (they fall back to the defaults).
+func validLaneConfig(fs *model.FilterSet, sc *model.SortConfig) bool {
+	if fs != nil {
+		switch fs.Conjunction {
+		case "", model.ConjunctionAnd, model.ConjunctionOr:
+		default:
+			return false
+		}
+		for _, r := range fs.Rules {
+			switch r.Operator {
+			case model.FilterOpEq, model.FilterOpNeq, model.FilterOpIn, model.FilterOpNotIn,
+				model.FilterOpContains, model.FilterOpBefore, model.FilterOpAfter,
+				model.FilterOpAny, model.FilterOpExists, model.FilterOpNotExists:
+			default:
+				return false
+			}
+		}
+	}
+	if sc != nil {
+		switch sc.Mode {
+		case "", model.SortModeAuto, model.SortModeField, model.SortModeManual:
+		default:
+			return false
+		}
+		if sc.Direction != nil && *sc.Direction != model.SortDirectionAsc && *sc.Direction != model.SortDirectionDesc {
+			return false
+		}
+	}
+	return true
+}
+
+// checkLaneConfig writes 400 and returns false if validLaneConfig fails.
+func checkLaneConfig(c *gin.Context, fs *model.FilterSet, sc *model.SortConfig) bool {
+	if validLaneConfig(fs, sc) {
+		return true
+	}
+	c.JSON(http.StatusBadRequest, gin.H{"error": "invalid filterSet or sortConfig"})
+	return false
 }
 
 // ─── Lanes ────────────────────────────────────────────────────────────────────
@@ -44,6 +91,12 @@ func (h *LaneHandler) CreateLane(c *gin.Context) {
 	}
 	var body model.Lane
 	if !bindJSON(c, &body) {
+		return
+	}
+	if !checkLaneConfig(c, &body.FilterSet, &body.SortConfig) {
+		return
+	}
+	if !h.Perms.CanUseFolder(c, h.Pages, body.FolderID, user.ID) {
 		return
 	}
 	body.UserID = user.ID
@@ -84,6 +137,12 @@ func (h *LaneHandler) BatchCreateLanes(c *gin.Context) {
 	}
 	lanes := make([]*model.Lane, 0, len(bodies))
 	for i := range bodies {
+		if !checkLaneConfig(c, &bodies[i].FilterSet, &bodies[i].SortConfig) {
+			return
+		}
+		if !h.Perms.CanUseFolder(c, h.Pages, bodies[i].FolderID, user.ID) {
+			return
+		}
 		bodies[i].UserID = user.ID
 		if bodies[i].FilterSet.Rules == nil {
 			bodies[i].FilterSet.Rules = []model.FilterRule{}
@@ -154,9 +213,18 @@ func (h *LaneHandler) UpdateLane(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
-	req.ApplyTo(existing)
-	lane, err := h.Lanes.Update(c.Request.Context(), existing)
+	if !checkLaneConfig(c, req.FilterSet, req.SortConfig) {
+		return
+	}
+	lane, err := h.Lanes.Patch(c.Request.Context(), existing.ID, user.ID, func(l *model.Lane) error {
+		req.ApplyTo(l)
+		return nil
+	})
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			notFoundOrError(c, err)
+			return
+		}
 		internalError(c, err)
 		return
 	}
@@ -192,6 +260,12 @@ func (h *LaneHandler) UpsertLane(c *gin.Context) {
 	}
 	var body model.Lane
 	if !bindJSON(c, &body) {
+		return
+	}
+	if !checkLaneConfig(c, &body.FilterSet, &body.SortConfig) {
+		return
+	}
+	if !h.Perms.CanUseFolder(c, h.Pages, body.FolderID, user.ID) {
 		return
 	}
 	body.ID = id

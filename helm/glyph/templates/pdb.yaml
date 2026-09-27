@@ -1,0 +1,29 @@
+{{- /*
+Voluntary disruptions (node drains, cluster upgrades) take at most
+podDisruptionBudget.maxUnavailable pods of each component at a time. Only for
+components with more than one replica: a budget on a single replica would
+block drains outright.
+*/}}
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- $components := list (list "api" .Values.api.replicaCount true) (list "frontend" .Values.frontend.replicaCount true) (list "collab" .Values.collab.replicaCount .Values.collab.enabled) }}
+{{- range $components }}
+{{- $name := index . 0 }}
+{{- $replicas := int (index . 1) }}
+{{- if and (index . 2) (gt $replicas 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "glyph.fullname" $ }}-{{ $name }}
+  labels:
+    {{- include "glyph.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  maxUnavailable: {{ $.Values.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "glyph.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ $name }}
+{{- end }}
+{{- end }}
+{{- end }}

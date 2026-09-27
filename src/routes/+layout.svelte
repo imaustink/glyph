@@ -12,7 +12,7 @@
   import { evaluateTitleTemplate, evaluateContentTemplate } from '$lib/utils/titleTemplate';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { storageMode } from '$lib/storage/config';
-  import { API_BASE, handleAuthError } from '$lib/storage/apiClient';
+  import { API_BASE, handleAuthError, apiErrorMessage } from '$lib/storage/apiClient';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
   import { estimateStorageUsage, downloadExport } from '$lib/utils/export';
   import Sidebar from '$lib/components/sidebar/Sidebar.svelte';
@@ -72,11 +72,19 @@
       }
     }
 
-    // Seed defaults after all loads complete (idempotent)
-    await Promise.all([
+    // Seed defaults after all loads complete (idempotent). A refusal here
+    // (e.g. corrupt local data that must not be overwritten) is reported, not
+    // fatal.
+    const seeded = await Promise.allSettled([
       lanesStore.seedDefaults(),
       templatesStore.seedDefaults()
     ]);
+    for (const r of seeded) {
+      if (r.status === 'rejected') {
+        console.error('[layout] seeding defaults failed:', r.reason);
+        notificationsStore.error(apiErrorMessage(r.reason, 'Failed to set up default lanes and templates.'));
+      }
+    }
 
     // Check localStorage quota (local mode only) — drives the persistent banner
     if (storageMode === 'local') {
@@ -88,8 +96,12 @@
       if (pages.length === 0) {
         const template = templatesStore.defaultTemplate;
         const content = template?.content ? evaluateContentTemplate(template.content) : undefined;
-        const newPage = await pagesStore.createPage(null, 'Getting Started', content, template?.todoTrigger);
-        goto(`/notes/${newPage.id}`);
+        try {
+          const newPage = await pagesStore.createPage(null, 'Getting Started', content, template?.todoTrigger);
+          goto(`/notes/${newPage.id}`);
+        } catch (err) {
+          notificationsStore.error(apiErrorMessage(err, 'Failed to create a page.'));
+        }
       } else {
         goto(`/notes/${pages[0].id}`);
       }
@@ -99,6 +111,8 @@
   // Block SvelteKit client-side navigation while saves are in-flight.
   // The navigation is cancelled and retried once all pending writes resolve.
   let navRetrying = false;
+  /** Where to go once pending writes settle: the latest navigation requested meanwhile. */
+  let retryTarget: string | null = null;
   beforeNavigate((navigation) => {
     // Close sidebar on mobile when navigating
     if (window.innerWidth <= 768) {
@@ -110,11 +124,22 @@
 
     if (uiStore.hasPendingWrites && navigation.to) {
       navigation.cancel();
-      navRetrying = true;
-      // Wait for saves with a 2-second timeout to prevent blocking the user
-      uiStore.waitForSaveComplete(2000).finally(() => {
-        navRetrying = false;
-        goto(navigation.to!.url.pathname);
+      // A navigation requested while waiting replaces the earlier one rather
+      // than slipping through and then being undone by the earlier retry.
+      const alreadyWaiting = retryTarget !== null;
+      retryTarget = navigation.to.url.pathname;
+      if (alreadyWaiting) return;
+      // Wait for saves with a 2-second timeout to prevent blocking the user.
+      // navRetrying stays set until the retried navigation has run, so it
+      // passes this guard even if a write is still pending (e.g. timed out) —
+      // otherwise the guard would cancel and retry it forever.
+      uiStore.waitForSaveComplete(2000).catch(() => {}).finally(() => {
+        const target = retryTarget!;
+        retryTarget = null;
+        navRetrying = true;
+        goto(target).finally(() => {
+          navRetrying = false;
+        });
       });
     }
   });

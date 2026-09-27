@@ -1,3 +1,38 @@
+{{- /*
+Migrations run exactly once per install/upgrade, here. API pods never migrate;
+they only wait for the schema (api-deployment.yaml).
+
+On upgrade this is a pre-upgrade hook: it finishes before any Deployment is
+touched, and if it fails the upgrade fails (and `helm upgrade --atomic` rolls
+back) rather than new pods starting on a half-migrated schema. It reads this
+release's migrations from a hook ConfigMap, because hooks run before the
+release's own ConfigMap is updated.
+
+On first install it is an ordinary Job: pre-install hooks run before the CNPG
+Cluster exists, so a hook would wait for a database that is never created.
+The API pods wait for it to finish.
+
+Migrations run while the previous release's pods are still serving, so they
+must be backwards-compatible (expand/contract). See docs/runbooks/migrations.md.
+*/}}
+{{- $cm := printf "%s-migrations" (include "glyph.fullname" .) }}
+{{- if .Release.IsUpgrade }}
+{{- $cm = printf "%s-migrations-hook" (include "glyph.fullname" .) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $cm }}
+  labels:
+    {{- include "glyph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  {{- include "glyph.migrations.data" . | trim | nindent 2 }}
+---
+{{- end }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -5,6 +40,14 @@ metadata:
   labels:
     {{- include "glyph.labels" . | nindent 4 }}
     app.kubernetes.io/component: migrate
+  {{- if .Release.IsUpgrade }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "0"
+    # Kept after it finishes (until ttlSecondsAfterFinished) so its logs can
+    # be read; replaced by the next upgrade's Job.
+    "helm.sh/hook-delete-policy": before-hook-creation
+  {{- end }}
 
 spec:
   backoffLimit: 3
@@ -38,13 +81,7 @@ spec:
         - name: migrate
           image: "{{ .Values.migrate.image.repository }}:{{ .Values.migrate.image.tag }}"
           imagePullPolicy: {{ .Values.migrate.image.pullPolicy }}
-          command:
-            - migrate
-            - -path
-            - /migrations
-            - -database
-            - $(DATABASE_URL)
-            - up
+          command: ["sh", "/migrations/glyph-migrate.sh", "apply"]
           env:
             - name: DATABASE_URL
               valueFrom:
@@ -57,4 +94,4 @@ spec:
       volumes:
         - name: migrations
           configMap:
-            name: {{ include "glyph.fullname" . }}-migrations
+            name: {{ $cm }}

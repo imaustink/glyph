@@ -1,5 +1,6 @@
 import { api } from '$lib/storage/apiClient';
 import type { FilterContext } from '$lib/storage/filterUtils';
+import type { TaskBullet, WriteOptions } from '$lib/storage/interfaces';
 import type { Task, FilterSet } from '$lib/models/types';
 
 /**
@@ -18,8 +19,8 @@ export class ApiTaskRepository {
 		return api.post<Task>('/api/v1/tasks', item);
 	}
 
-	async update(id: string, patch: Partial<Omit<Task, 'id'>>): Promise<Task | null> {
-		return api.patch<Task>(`/api/v1/tasks/${id}`, patch);
+	async update(id: string, patch: Partial<Omit<Task, 'id'>>, opts?: WriteOptions): Promise<Task | null> {
+		return api.patch<Task>(`/api/v1/tasks/${id}`, patch, opts);
 	}
 
 	async delete(id: string): Promise<boolean> {
@@ -29,6 +30,11 @@ export class ApiTaskRepository {
 
 	async upsert(item: Task): Promise<Task> {
 		return api.put<Task>(`/api/v1/tasks/${item.id}`, item);
+	}
+
+	/** Move the task onto a bullet pasted into another note (see ITaskRepository.adopt). */
+	async adopt(id: string, dest: TaskBullet): Promise<Task> {
+		return api.post<Task>(`/api/v1/tasks/${id}/adopt`, dest);
 	}
 
 	async getByPageId(pageId: string): Promise<Task[]> {

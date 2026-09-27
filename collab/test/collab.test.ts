@@ -17,6 +17,7 @@ import {
 	textOf,
 	eventually,
 	sleep,
+	recordingLogger,
 	type TestServer,
 	type TestClient
 } from './support/harness.js';
@@ -38,6 +39,24 @@ function open(o: Parameters<typeof connect>[2], s: TestServer = server): TestCli
 	const c = connect(s, PAGE, o);
 	clients.push(c);
 	return c;
+}
+
+/** A gate a persistence hook can wait on until the test releases it. */
+function hold() {
+	let release!: () => void;
+	const gate = new Promise<void>((r) => (release = r));
+	return { wait: () => gate, release };
+}
+
+/**
+ * A valid update another replica could have appended: a paragraph inserted at
+ * the top of the document as it is currently stored.
+ */
+function foreignEdit(text: string): Uint8Array {
+	const foreign = persistence.replay(PAGE);
+	const before = Y.encodeStateVector(foreign);
+	foreign.getXmlFragment(COLLAB_FRAGMENT).insert(0, [paragraph(text)]);
+	return Y.encodeStateAsUpdate(foreign, before);
 }
 
 beforeEach(async () => {
@@ -159,6 +178,102 @@ describe('convergence and persistence', () => {
 		await eventually(() => textOf(persistence.replay(PAGE)).includes('parked edit'), 5000, 'parked edit persisted');
 	});
 
+	it('a reopen during the unload flush keeps the new session persisting [DI-12]', async () => {
+		// A failed persist leaves a retry pending, so the last client leaving
+		// runs a real (awaited) flush. Someone reopens the note while that
+		// flush is in flight. When the flush finishes it must tear down only
+		// its own copy — deleting the new session's state would leave every
+		// later edit unpersisted and Reset the new editor.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		persistence.failAppends = 1;
+		alice.fragment.insert(alice.fragment.length, [paragraph('before leaving')]);
+		await sleep(150); // the first persist fails; a retry is scheduled
+
+		const flush = hold();
+		persistence.beforeAppend = () => flush.wait();
+		alice.destroy(); // the unload flush's append is now held in flight
+		await sleep(100);
+
+		const bob = open({ user: 'bob' });
+		await sleep(100); // bob's document is loading while the flush is held
+		flush.release();
+		persistence.beforeAppend = null;
+		await bob.synced();
+
+		bob.fragment.insert(bob.fragment.length, [paragraph('after reopening')]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('after reopening'), 5000, 'new session persisted');
+		expect(textOf(persistence.replay(PAGE))).toContain('before leaving');
+		expect(bob.closeReasons).not.toContain(CollabReason.Reset);
+	});
+
+	it('a batch that fails during the unload flush moves to the reopened copy [DI-12]', async () => {
+		// Same race, but the held flush append fails. Its batch goes back onto
+		// the parked copy — which the reopen has already replaced. The reopen
+		// must wait for the parked copy's in-flight work before carrying its
+		// updates over, or the batch lands on a dead copy that never retries.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		persistence.failAppends = 1;
+		alice.fragment.insert(alice.fragment.length, [paragraph('batch in flight')]);
+		await sleep(150);
+
+		const flush = hold();
+		persistence.beforeAppend = async () => {
+			persistence.beforeAppend = null;
+			await flush.wait();
+			persistence.failAppends = 1; // this (the flush's) append fails
+		};
+		alice.destroy();
+		await sleep(100);
+
+		const bob = open({ user: 'bob' });
+		await sleep(100);
+		flush.release();
+		await bob.synced();
+
+		await eventually(() => textOf(bob.doc).includes('batch in flight'), 5000, 'reopened copy has the failed batch');
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('batch in flight'), 5000, 'failed batch persisted');
+	});
+
+	it('shutdown keeps retrying parked edits until persistence recovers [DI-15]', async () => {
+		// SIGTERM during an outage. Hocuspocus considers itself destroyed once
+		// no documents are loaded, but a parked copy (its last client left
+		// while appends failed) still holds edits the client was told were
+		// saved. Closing the pool then loses them.
+		const s2 = await startServer(persistence, api, { shutdownDrainMs: 5000 });
+		const alice = open({ user: 'alice' }, s2);
+		await alice.synced();
+		persistence.failAppends = 1000;
+		alice.fragment.insert(alice.fragment.length, [paragraph('unsaved at shutdown')]);
+		await sleep(150);
+		alice.destroy();
+		await sleep(150); // the unload flush failed: the copy is parked
+
+		setTimeout(() => (persistence.failAppends = 0), 400); // recovers mid-shutdown
+		await s2.stop();
+		expect(textOf(persistence.replay(PAGE))).toContain('unsaved at shutdown');
+	});
+
+	it('shutdown gives up at its deadline and says what it dropped [DI-15]', async () => {
+		const rec = recordingLogger();
+		const s2 = await startServer(persistence, api, { shutdownDrainMs: 300, log: rec.log });
+		const alice = open({ user: 'alice' }, s2);
+		await alice.synced();
+		persistence.failAppends = 1000;
+		alice.fragment.insert(alice.fragment.length, [paragraph('never saved')]);
+		await sleep(150);
+		alice.destroy();
+		await sleep(150);
+
+		const started = Date.now();
+		await s2.stop();
+		expect(Date.now() - started).toBeLessThan(3000);
+		const dropped = rec.entries.find((e) => e.level === 'error' && /shutting down/.test(e.msg) && e.fields?.pageId === PAGE);
+		expect(dropped, 'an error naming the page whose updates were dropped').toBeDefined();
+		persistence.failAppends = 0;
+	});
+
 	it('reloads the same document from the log after every client leaves', async () => {
 		const alice = open({ user: 'alice' });
 		await alice.synced();
@@ -229,6 +344,62 @@ describe('convergence and persistence', () => {
 			'foreign append survived compaction in the snapshot'
 		);
 		await eventually(() => textOf(alice.doc).includes('from another replica'));
+	});
+
+	it('a foreign append between catch-up and append is not skipped [DI-11]', async () => {
+		// Replica A catches up to seq N; replica B appends N+1; A appends N+2.
+		// Jumping A's lastSeq to N+2 would make every later catch-up (strictly
+		// seq > lastSeq) skip B's row, and A's snapshots would drop B's edit.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		const foreign = foreignEdit('appended by another replica');
+		persistence.beforeAppend = (pageId, epoch) => {
+			persistence.beforeAppend = null;
+			persistence.injectRow(pageId, epoch, foreign);
+		};
+		alice.fragment.insert(alice.fragment.length, [paragraph('local edit')]);
+
+		await eventually(() => textOf(alice.doc).includes('appended by another replica'), 3000, 'foreign row reached the replica');
+		await eventually(
+			() => JSON.stringify(api.latest(PAGE) ?? '').includes('appended by another replica'),
+			3000,
+			'foreign row reached the snapshot'
+		);
+	});
+
+	it('a snapshot that loses the race to another replica\'s newer one does not evict [DI-11]', async () => {
+		// Two replicas snapshot concurrently: A's (for seq N) arrives after B's
+		// (for N+1) and is refused as behind. That is not a replaced document —
+		// A must catch up, not Reset its editors and drop their pending edits.
+		const other = await startServer(persistence, api);
+		try {
+			const a = open({ user: 'alice' });
+			const b = open({ user: 'bob' }, other);
+			await Promise.all([a.synced(), b.synced()]);
+
+			const gate = hold();
+			let held = false;
+			api.beforeSnapshot = async () => {
+				if (held) return;
+				held = true;
+				await gate.wait();
+			};
+			a.fragment.insert(a.fragment.length, [paragraph('via replica A')]);
+			await eventually(() => held, 3000, "A's snapshot in flight");
+			b.fragment.insert(b.fragment.length, [paragraph('via replica B')]);
+			await eventually(() => JSON.stringify(api.latest(PAGE) ?? '').includes('via replica B'), 3000, "B's newer snapshot accepted");
+			gate.release();
+			await sleep(200);
+			expect(a.closeReasons).not.toContain(CollabReason.Reset);
+
+			a.fragment.insert(a.fragment.length, [paragraph('A keeps editing')]);
+			await eventually(() => {
+				const snap = JSON.stringify(api.latest(PAGE));
+				return snap.includes('A keeps editing') && snap.includes('via replica A') && snap.includes('via replica B');
+			}, 5000, 'A persists again after losing the race');
+		} finally {
+			await other.stop();
+		}
 	});
 
 	it('replicas pick up each other\'s updates before snapshotting', async () => {
@@ -356,6 +527,24 @@ describe('epochs', () => {
 		expect(textOf(persistence.replay(PAGE))).not.toContain('edit made before the restore');
 	});
 
+	it('the kill switch still takes the final snapshot of an attached page [DI-14]', async () => {
+		// COLLAB_ENABLED=false on the API. Edits since the last snapshot are
+		// in the log, but only a snapshot puts them in page_contents — which
+		// the next REST save detaches from. Refusing that snapshot (and
+		// evicting) strands them.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		api.enabled = false;
+		alice.fragment.insert(alice.fragment.length, [paragraph('typed as the switch flipped')]);
+		await eventually(
+			() => JSON.stringify(api.latest(PAGE) ?? '').includes('typed as the switch flipped'),
+			3000,
+			'final snapshot landed in page_contents'
+		);
+		// …and the session then winds down: editors fall back to single-writer.
+		await eventually(() => alice.closeReasons.includes(CollabReason.Disabled), 3000, 'editor told collab is off');
+	});
+
 	it('evicts when the API rejects a snapshot as stale', async () => {
 		const alice = open({ user: 'alice' });
 		await alice.synced();
@@ -372,6 +561,37 @@ describe('epochs', () => {
 		alice.fragment.insert(alice.fragment.length, [paragraph('lost to the restore')]);
 		await eventually(() => alice.closeReasons.includes(CollabReason.Reset));
 		expect(api.latest(PAGE) ? JSON.stringify(api.latest(PAGE)) : '').not.toContain('lost to the restore');
+	});
+
+	it('a schema upgrade does not reseed over another replica\'s unappended edits [DI-16]', async () => {
+		// Rolling deploy: a replica of the older build still has the note open,
+		// and its editor's latest edits are waiting out the store debounce.
+		// The first new-build editor, on a new replica, wants to re-seed the
+		// document for the new schema. Doing so replaces the epoch under the
+		// old replica: its append fails, it evicts, and those edits are gone.
+		const old = await startServer(persistence, api, { fingerprint: 'old-build', debounce: 1500, maxDebounce: 1500 });
+		try {
+			const alice = open({ user: 'alice', fingerprint: 'old-build' }, old);
+			await alice.synced();
+			alice.fragment.insert(alice.fragment.length, [paragraph('typed on the old build')]);
+			await sleep(100); // not yet appended by the old replica
+
+			const bob = open({ user: 'bob' }); // new build, new replica
+			await sleep(2000); // long enough for the old replica to have persisted
+			expect(alice.closeReasons).not.toContain(CollabReason.Reset);
+			expect(textOf(persistence.replay(PAGE))).toContain('typed on the old build');
+			bob.destroy();
+
+			// Once the old build's editor has gone, the upgrade goes ahead —
+			// and carries the edits over.
+			alice.destroy();
+			await sleep(300);
+			const later = open({ user: 'bob' });
+			await later.synced();
+			expect(textOf(later.doc)).toContain('typed on the old build');
+		} finally {
+			await old.stop();
+		}
 	});
 
 	it('re-seeds through JSON when the stored log predates the current schema', async () => {
@@ -505,6 +725,316 @@ describe('task status from outside the editor', () => {
 		await sleep(100);
 		expect(server.collab.onTaskStatus(PAGE, 'plain', 'done')).toBe(false);
 		expect(server.collab.onTaskStatus('22222222-2222-4222-8222-222222222222', 'n1', 'done')).toBe(false);
+	});
+});
+
+describe('task titles from outside the editor (DI-29)', () => {
+	/** The text of the linked bullet n1 in a client's copy. */
+	const bulletText = (c: TestClient) =>
+		(toJSON(c.doc).content!.find((n) => n.type === 'bulletList')?.content?.[0].content?.[0].content ?? []).map((n) => n.text).join('');
+	const occurrences = (doc: Y.Doc, text: string) => textOf(doc).split(text).length - 1;
+
+	it('puts a rename made on the task page into the bullet in every open copy, live', async () => {
+		const alice = open({ user: 'alice' });
+		const bob = open({ user: 'bob' });
+		await Promise.all([alice.synced(), bob.synced()]);
+		alice.fragment.insert(alice.fragment.length, [bulletList([{ nodeId: 'n1', taskId: 't1', text: 'Buy milk' }])]);
+		await eventually(() => bulletText(bob) === 'Buy milk');
+
+		expect(await server.collab.onTaskTitle(PAGE, 'n1', 'Buy oat milk')).toBe(true);
+		for (const c of [alice, bob]) await eventually(() => bulletText(c) === 'Buy oat milk', 3000, 'title reached client');
+		// …and it's in the log, for whoever opens the note next.
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy oat milk'));
+
+		// Repeating it is a no-op, not another write.
+		expect(await server.collab.onTaskTitle(PAGE, 'n1', 'Buy oat milk')).toBe(false);
+		expect(occurrences(persistence.replay(PAGE), 'oat')).toBe(1);
+	});
+
+	it('leaves bullets without a task, notes nobody has open, and quarantined notes alone', async () => {
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [
+			bulletList([
+				{ nodeId: 'plain', text: 'no task' },
+				{ nodeId: 'n1', taskId: 't1', text: 'Buy milk' }
+			])
+		]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy milk'));
+		expect(await server.collab.onTaskTitle(PAGE, 'plain', 'renamed')).toBe(false);
+		expect(await server.collab.onTaskTitle('22222222-2222-4222-8222-222222222222', 'n1', 'renamed')).toBe(false);
+
+		api.onSnapshot = () => ({ kind: 'invalid', message: 'refused' });
+		alice.fragment.insert(alice.fragment.length, [paragraph('trigger a snapshot')]);
+		await eventually(() => persistence.docs.get(PAGE)!.quarantined);
+		expect(await server.collab.onTaskTitle(PAGE, 'n1', 'renamed')).toBe(false);
+		expect(textOf(persistence.replay(PAGE))).not.toContain('renamed');
+	});
+
+	it('two replicas with the note open write the rename once, not twice', async () => {
+		// Both replicas get the notification. Each making the text edit on its
+		// own copy would merge into "Buy oat oat milk".
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [bulletList([{ nodeId: 'n1', taskId: 't1', text: 'Buy milk' }])]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy milk'));
+		const other = await startServer(persistence, api);
+		try {
+			const bob = open({ user: 'bob' }, other);
+			await bob.synced();
+			expect(bulletText(bob)).toBe('Buy milk');
+
+			const changed = await Promise.all([server.collab.onTaskTitle(PAGE, 'n1', 'Buy oat milk'), other.collab.onTaskTitle(PAGE, 'n1', 'Buy oat milk')]);
+			expect(changed.filter(Boolean)).toHaveLength(1);
+			server.collab.catchUpAll();
+			other.collab.catchUpAll();
+			for (const c of [alice, bob]) await eventually(() => bulletText(c) === 'Buy oat milk', 3000, 'title reached client');
+			expect(occurrences(persistence.replay(PAGE), 'oat')).toBe(1);
+		} finally {
+			await other.stop();
+		}
+	});
+});
+
+describe('task titles renamed while the note was closed (DI-29)', () => {
+	const bulletText = (c: TestClient) =>
+		(toJSON(c.doc).content!.find((n) => n.type === 'bulletList')?.content?.[0].content?.[0].content ?? []).map((n) => n.text).join('');
+	const occurrences = (doc: Y.Doc, text: string) => textOf(doc).split(text).length - 1;
+	/** The text run of bullet n1's paragraph in a client's copy. */
+	const bulletRun = (c: TestClient) => {
+		const list = c.fragment.toArray().find((n) => n instanceof Y.XmlElement && n.nodeName === 'bulletList') as Y.XmlElement;
+		const li = list.get(0) as Y.XmlElement;
+		return (li.get(0) as Y.XmlElement).get(0) as Y.XmlText;
+	};
+	const linkedDoc = (text: string) => ({
+		type: 'doc',
+		content: [
+			{
+				type: 'bulletList',
+				content: [{ type: 'listItem', attrs: { nodeId: 'n1', taskId: 't1' }, content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] }]
+			},
+			{ type: 'paragraph' }
+		]
+	});
+
+	/** Open the note, add the linked bullet, and close it again once it's in the log. */
+	async function noteWithLinkedBullet(text: string) {
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [bulletList([{ nodeId: 'n1', taskId: 't1', text }])]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes(text));
+		alice.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+	}
+
+	it('shows a rename made while the note was closed when it is next opened', async () => {
+		await noteWithLinkedBullet('Buy milk');
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		// Before bob can type: the next keystroke must not push "Buy milk" back.
+		expect(bulletText(bob)).toBe('Buy oat milk');
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy oat milk'));
+		expect(occurrences(persistence.replay(PAGE), 'oat')).toBe(1);
+	});
+
+	it('keeps a bullet edit made after the rename', async () => {
+		// The rename reached an open note only as a record — e.g. the note was
+		// held by a collab build that predates live renames. The user then
+		// edited the bullet, and the task took that text: it wins.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [bulletList([{ nodeId: 'n1', taskId: 't1', text: 'Buy milk' }])]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy milk'));
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+		const run = bulletRun(alice);
+		run.delete(0, run.length);
+		run.insert(0, 'Buy soy milk');
+		persistence.titleFromBullet(PAGE, 'n1', 'Buy soy milk'); // the editor's debounced title sync
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy soy milk'));
+		alice.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		expect(bulletText(bob)).toBe('Buy soy milk');
+		expect(occurrences(persistence.replay(PAGE), 'soy')).toBe(1);
+	});
+
+	/** Put a plain bullet "Call mom" (nodeId x) after the linked bullet n1. */
+	const withOtherBullet = (text: string) => bulletList([{ nodeId: 'n1', taskId: 't1', text }, { nodeId: 'x', text: 'Call mom' }]);
+	/** Retype the plain bullet x in a client's copy. */
+	const editOtherBullet = (c: TestClient, text: string) => {
+		const list = c.fragment.toArray().find((n) => n instanceof Y.XmlElement && n.nodeName === 'bulletList') as Y.XmlElement;
+		const run = ((list.get(1) as Y.XmlElement).get(0) as Y.XmlElement).get(0) as Y.XmlText;
+		run.delete(0, run.length);
+		run.insert(0, text);
+	};
+
+	it('applies a rename that missed the open note, even after another bullet was edited', async () => {
+		// The rename reached the open note only as a record (a missed
+		// notification, a collab build that predates live renames). Editing a
+		// different bullet afterwards makes the note newer than the rename, but
+		// says nothing about this bullet.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [withOtherBullet('Buy milk')]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Call mom'));
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+		editOtherBullet(alice, 'Call dad');
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Call dad'));
+		alice.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		expect(bulletText(bob)).toBe('Buy oat milk');
+		expect(occurrences(persistence.replay(PAGE), 'oat')).toBe(1);
+	});
+
+	it('applies a rename whose first load failed to apply it, even after another bullet was edited', async () => {
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [withOtherBullet('Buy milk')]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Call mom'));
+		alice.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+
+		// Reopened while renames can't be read: the note opens as it is…
+		persistence.failRenamedTitles = true;
+		const again = open({ user: 'alice' });
+		await again.synced();
+		expect(bulletText(again)).toBe('Buy milk');
+		editOtherBullet(again, 'Call dad');
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Call dad'));
+		again.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+
+		// …and the next load still owes the bullet its rename.
+		persistence.failRenamedTitles = false;
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		expect(bulletText(bob)).toBe('Buy oat milk');
+	});
+
+	it('a rename the bullet has shown is not applied again on the next load', async () => {
+		// Applied live, it is recorded as applied: a later edit to the bullet
+		// keeps its text even if its title sync never reached the task.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [bulletList([{ nodeId: 'n1', taskId: 't1', text: 'Buy milk' }])]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy milk'));
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+		expect(await server.collab.onTaskTitle(PAGE, 'n1', 'Buy oat milk')).toBe(true);
+		await eventually(() => bulletText(alice) === 'Buy oat milk', 3000, 'title reached client');
+		const run = bulletRun(alice);
+		run.delete(0, run.length);
+		run.insert(0, 'Buy soy milk');
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy soy milk'));
+		alice.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		expect(bulletText(bob)).toBe('Buy soy milk');
+	});
+
+	it('a rename the bullet never showed wins over a bullet edit whose title never reached the task', async () => {
+		// Nothing records which bullet an edit touched, so an unapplied rename
+		// over a bullet that doesn't match the task looks the same whether or
+		// not the bullet was typed in; the task's title is the one on record.
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		alice.fragment.insert(alice.fragment.length, [bulletList([{ nodeId: 'n1', taskId: 't1', text: 'Buy milk' }])]);
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy milk'));
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+		const run = bulletRun(alice);
+		run.delete(0, run.length);
+		run.insert(0, 'Buy soy milk'); // …and the tab closes before the title sync
+		await eventually(() => textOf(persistence.replay(PAGE)).includes('Buy soy milk'));
+		alice.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		expect(bulletText(bob)).toBe('Buy oat milk');
+	});
+
+	it('applies a rename newer than the stored content a note is seeded from, and only that', async () => {
+		persistence.detach(PAGE, linkedDoc('Buy milk'));
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+		const alice = open({ user: 'alice' });
+		await alice.synced();
+		expect(bulletText(alice)).toBe('Buy oat milk');
+		alice.destroy();
+		await eventually(() => server.collab.inspectState(`page:${PAGE}`) === null, 3000, 'note unloaded');
+
+		// Content written after the rename (a version restore, say) wins.
+		persistence.renameTask(PAGE, 'n1', 'Buy rice milk');
+		persistence.detach(PAGE, linkedDoc('Buy milk, restored'));
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		expect(bulletText(bob)).toBe('Buy milk, restored');
+	});
+
+	it('two replicas opening the note at once apply the rename once', async () => {
+		await noteWithLinkedBullet('Buy milk');
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+		const other = await startServer(persistence, api);
+		try {
+			const alice = open({ user: 'alice' });
+			const bob = open({ user: 'bob' }, other);
+			await Promise.all([alice.synced(), bob.synced()]);
+			server.collab.catchUpAll();
+			other.collab.catchUpAll();
+			for (const c of [alice, bob]) await eventually(() => bulletText(c) === 'Buy oat milk', 3000, 'title reached client');
+			expect(occurrences(persistence.replay(PAGE), 'oat')).toBe(1);
+		} finally {
+			await other.stop();
+		}
+	});
+
+	it('opens the note anyway when renames cannot be read', async () => {
+		await noteWithLinkedBullet('Buy milk');
+		persistence.renameTask(PAGE, 'n1', 'Buy oat milk');
+		persistence.failRenamedTitles = true;
+		const bob = open({ user: 'bob' });
+		await bob.synced();
+		expect(bulletText(bob)).toBe('Buy milk');
+	});
+
+	it('a title written over unsaved edits survives a crash before they are saved', async () => {
+		// The title edit is built on this copy, which holds edits not yet in
+		// the log (the store debounce). If the row it appends depends on them
+		// and the process dies before they're saved, no replica can integrate
+		// it; recording the rename as applied in the same append would leave
+		// the bullet on its old text for good.
+		persistence.detach(PAGE, linkedDoc('Buy milk'));
+		const slow = await startServer(persistence, api, { debounce: 60_000, maxDebounce: 60_000 });
+		try {
+			const alice = open({ user: 'alice' }, slow);
+			await alice.synced();
+			const run = bulletRun(alice);
+			run.delete(0, 3);
+			run.insert(0, 'Get'); // "Get milk", not saved yet
+			await eventually(() => (slow.collab.inspectState(`page:${PAGE}`)?.pending ?? 0) > 0, 3000, 'edit reached the server');
+			persistence.renameTask(PAGE, 'n1', 'Get oat milk');
+			await slow.collab.onTaskTitle(PAGE, 'n1', 'Get oat milk');
+
+			// The process dies here: what a fresh replica gets is the log and
+			// the rename records, nothing else.
+			const shown = (toJSON(persistence.replay(PAGE)).content!.find((n) => n.type === 'bulletList')?.content?.[0].content?.[0].content ?? [])
+				.map((n) => n.text)
+				.join('');
+			const owed = (await persistence.renamedTaskTitles(PAGE)).some((t) => t.nodeId === 'n1');
+			// Either the logged title integrates, or the rename is still owed
+			// and the next load applies it.
+			expect(shown === 'Get oat milk' || owed, `a fresh load shows "${shown}"; rename still owed: ${owed}`).toBe(true);
+		} finally {
+			await slow.stop();
+		}
 	});
 });
 

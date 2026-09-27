@@ -3,6 +3,7 @@ package memstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/glyph/api/internal/model"
@@ -156,12 +157,13 @@ func TestPageStore_Delete_Success(t *testing.T) {
 	}
 }
 
-func TestPageStore_Delete_WrongUser_NoError(t *testing.T) {
+// Mirrors Postgres (DELETE … WHERE user_id matches nothing → ErrNotFound).
+func TestPageStore_Delete_WrongUser_NotFound(t *testing.T) {
 	s := &pageStore{r: NewRegistry()}
 	userID := uuid.New()
 	p, _ := s.Create(ctx, &model.Page{UserID: userID, Type: model.NodeTypePage, Title: "Del"})
-	if err := s.Delete(ctx, p.ID, uuid.New()); err != nil {
-		t.Errorf("Delete wrong user should not error: %v", err)
+	if err := s.Delete(ctx, p.ID, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Delete wrong user = %v, want ErrNotFound", err)
 	}
 	// Page should still exist
 	if _, err := s.GetByID(ctx, p.ID, userID); err != nil {
