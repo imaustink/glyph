@@ -1,5 +1,7 @@
 <script lang="ts">
   import { orgsStore } from '$lib/stores/orgs.svelte';
+  import { notificationsStore } from '$lib/stores/notifications.svelte';
+  import { apiErrorMessage } from '$lib/storage/apiClient';
   import type { OrgMember, OrgRole, Organization } from '$lib/models/types';
 
   let newOrgName = $state('');
@@ -56,7 +58,12 @@
 
   async function deleteOrg(id: string) {
     if (!confirm('Delete this organization? This cannot be undone.')) return;
-    await orgsStore.deleteOrg(id);
+    try {
+      await orgsStore.deleteOrg(id);
+    } catch (e) {
+      notificationsStore.error(apiErrorMessage(e, 'Failed to delete organization.'));
+      return;
+    }
     if (selectedOrgId === id) selectedOrgId = null;
   }
 
@@ -67,7 +74,12 @@
 
   async function commitEditOrg() {
     if (!editingOrgId || !editingName.trim()) return;
-    await orgsStore.updateOrg(editingOrgId, editingName.trim());
+    try {
+      await orgsStore.updateOrg(editingOrgId, editingName.trim());
+    } catch (e) {
+      notificationsStore.error(apiErrorMessage(e, 'Failed to rename organization.'));
+      return;
+    }
     editingOrgId = null;
   }
 
@@ -101,7 +113,12 @@
 
   async function removeMember(userId: string) {
     if (!selectedOrgId) return;
-    await orgsStore.removeMember(selectedOrgId, userId);
+    try {
+      await orgsStore.removeMember(selectedOrgId, userId);
+    } catch (e) {
+      membersError = e instanceof Error ? e.message : 'Failed to remove member';
+      return;
+    }
     members = members.filter((m) => m.userId !== userId);
   }
 

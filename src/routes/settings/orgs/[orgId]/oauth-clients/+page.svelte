@@ -2,6 +2,8 @@
   import { page } from '$app/state';
   import { orgsStore } from '$lib/stores/orgs.svelte';
   import { oauthClientsStore } from '$lib/stores/oauthClients.svelte';
+  import { notificationsStore } from '$lib/stores/notifications.svelte';
+  import { apiErrorMessage } from '$lib/storage/apiClient';
   import { scopeReadable } from '$lib/utils/oauthScopes';
   import type { OAuthClient, OAuthClientWithSecret, OAuthScope } from '$lib/models/types';
 
@@ -94,7 +96,9 @@
   function selectClient(id: string) {
     selectedClientId = id;
     revealedSecret = null;
-    oauthClientsStore.loadTokens(orgId, id);
+    oauthClientsStore
+      .loadTokens(orgId, id)
+      .catch((e) => notificationsStore.error(apiErrorMessage(e, 'Failed to load tokens.')));
   }
 
   function toggleScope(resource: ResourceRow['key'], perm: 'read' | 'write') {
@@ -167,7 +171,13 @@
       )
     )
       return;
-    const rotated = await oauthClientsStore.rotateSecret(orgId, selectedClientId);
+    let rotated;
+    try {
+      rotated = await oauthClientsStore.rotateSecret(orgId, selectedClientId);
+    } catch (e) {
+      notificationsStore.error(apiErrorMessage(e, 'Failed to rotate secret.'));
+      return;
+    }
     revealedSecret = { clientId: rotated.id, secret: rotated.clientSecret };
   }
 
@@ -181,16 +191,26 @@
       )
     )
       return;
-    const rotated = await oauthClientsStore.rotateSecret(orgId, selectedClientId, {
-      revokeExisting: true
-    });
+    let rotated;
+    try {
+      rotated = await oauthClientsStore.rotateSecret(orgId, selectedClientId, {
+        revokeExisting: true
+      });
+    } catch (e) {
+      notificationsStore.error(apiErrorMessage(e, 'Failed to rotate secret.'));
+      return;
+    }
     revealedSecret = { clientId: rotated.id, secret: rotated.clientSecret };
   }
 
   async function revokeClient() {
     if (!selectedClientId) return;
     if (!confirm('Revoke this client? All of its tokens will stop working immediately.')) return;
-    await oauthClientsStore.revokeClient(orgId, selectedClientId);
+    try {
+      await oauthClientsStore.revokeClient(orgId, selectedClientId);
+    } catch (e) {
+      notificationsStore.error(apiErrorMessage(e, 'Failed to revoke client.'));
+    }
   }
 
   async function addOrgToClient() {
@@ -206,18 +226,31 @@
 
   async function removeOrgFromClient(otherOrgId: string) {
     if (!selectedClientId) return;
-    await oauthClientsStore.removeOrg(orgId, selectedClientId, otherOrgId);
+    orgActionError = '';
+    try {
+      await oauthClientsStore.removeOrg(orgId, selectedClientId, otherOrgId);
+    } catch (e) {
+      orgActionError = e instanceof Error ? e.message : 'Failed to remove org';
+    }
   }
 
   async function revokeToken(tokenId: string) {
     if (!selectedClientId) return;
-    await oauthClientsStore.revokeToken(orgId, selectedClientId, tokenId);
+    try {
+      await oauthClientsStore.revokeToken(orgId, selectedClientId, tokenId);
+    } catch (e) {
+      notificationsStore.error(apiErrorMessage(e, 'Failed to revoke token.'));
+    }
   }
 
   async function revokeAllTokens() {
     if (!selectedClientId) return;
     if (!confirm('Revoke all active tokens for this client?')) return;
-    await oauthClientsStore.revokeAllTokens(orgId, selectedClientId);
+    try {
+      await oauthClientsStore.revokeAllTokens(orgId, selectedClientId);
+    } catch (e) {
+      notificationsStore.error(apiErrorMessage(e, 'Failed to revoke tokens.'));
+    }
   }
 
   function orgName(id: string): string {

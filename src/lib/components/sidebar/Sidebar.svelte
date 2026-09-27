@@ -4,6 +4,8 @@
   import { pagesStore } from '$lib/stores/pages.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { templatesStore } from '$lib/stores/templates.svelte';
+  import { notificationsStore } from '$lib/stores/notifications.svelte';
+  import { apiErrorMessage } from '$lib/storage/apiClient';
   import { storageMode } from '$lib/storage/config';
   import type { NoteTemplate } from '$lib/models/types';
   import { evaluateTitleTemplate, evaluateContentTemplate } from '$lib/utils/titleTemplate';
@@ -20,7 +22,13 @@
     const title = template?.titleTemplate ? evaluateTitleTemplate(template.titleTemplate) : '';
     const content = template?.content ? evaluateContentTemplate(template.content) : undefined;
     const parentId = template?.defaultFolderId ?? null;
-    const newPage = await pagesStore.createPage(parentId, title, content, template?.todoTrigger);
+    let newPage;
+    try {
+      newPage = await pagesStore.createPage(parentId, title, content, template?.todoTrigger);
+    } catch (err) {
+      notificationsStore.error(apiErrorMessage(err, 'Failed to create a page.'));
+      return;
+    }
     uiStore.setShouldFocusTitle(true);
     goto(`/notes/${newPage.id}`);
   }
@@ -30,13 +38,23 @@
     const title = template.titleTemplate ? evaluateTitleTemplate(template.titleTemplate) : '';
     const content = evaluateContentTemplate(template.content);
     const parentId = template.defaultFolderId ?? null;
-    const newPage = await pagesStore.createPage(parentId, title, content, template.todoTrigger);
+    let newPage;
+    try {
+      newPage = await pagesStore.createPage(parentId, title, content, template.todoTrigger);
+    } catch (err) {
+      notificationsStore.error(apiErrorMessage(err, 'Failed to create a page.'));
+      return;
+    }
     uiStore.setShouldFocusTitle(true);
     goto(`/notes/${newPage.id}`);
   }
 
   async function handleNewFolder() {
-    await pagesStore.createFolder(null);
+    try {
+      await pagesStore.createFolder(null);
+    } catch (err) {
+      notificationsStore.error(apiErrorMessage(err, 'Failed to create a folder.'));
+    }
   }
 
   /**
@@ -72,7 +90,11 @@
 
     const siblings = pagesStore.getChildren(null);
     const maxOrder = siblings.reduce((m, n) => Math.max(m, n.order), -1);
-    await pagesStore.moveNode(draggedId, null, maxOrder + 1);
+    try {
+      await pagesStore.moveNode(draggedId, null, maxOrder + 1);
+    } catch (err) {
+      notificationsStore.error(apiErrorMessage(err, 'Failed to move page.'));
+    }
   }
 
   /**
