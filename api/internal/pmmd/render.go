@@ -267,6 +267,8 @@ func renderItemBody(it *node) ([]string, string) {
 	}
 	taskID := stringAttr(it.Attrs, "taskId")
 	checked, _ := it.Attrs["checked"].(bool)
+	_, hasChecked := it.Attrs["checked"]
+	_, hasStatus := it.Attrs["taskStatus"]
 	box := ""
 	if taskID != "" {
 		switch stringAttr(it.Attrs, "taskStatus") {
@@ -281,8 +283,21 @@ func renderItemBody(it *node) ([]string, string) {
 		default:
 			box = "[ ] "
 		}
-	} else if checked {
-		box = "[x] "
+	} else if hasChecked && !hasStatus {
+		// A GFM checkbox parsed from Markdown that isn't linked to a task. The
+		// parser records `checked` (true or false) and no taskStatus for
+		// `- [x]` / `- [ ]`, so both boxes survive a round trip. Rendering an
+		// unchecked box only for `checked:true` (the old behaviour) silently
+		// flattened `- [ ]` to a plain bullet (#58).
+		//
+		// A plain bullet typed in the editor is excluded: every editor list
+		// item carries a taskStatus (default "todo") alongside checked:false,
+		// so hasStatus is true and it stays a bullet.
+		if checked {
+			box = "[x] "
+		} else {
+			box = "[ ] "
+		}
 	}
 
 	lines := []string{""}
