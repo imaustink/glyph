@@ -8,6 +8,7 @@
   import { goto } from '$app/navigation';
   import { documentExtensions, COLLAB_FRAGMENT } from '$lib/editor/schema';
   import { TodoDetectionExtension, type DetectedBullet } from '$lib/editor/extensions/TodoDetectionExtension';
+  import { UrlPreviewExtension, setUrlPreviewEnabled } from '$lib/editor/extensions/UrlPreviewExtension';
   import { NodeIdMapExtension } from '$lib/editor/plugins/NodeIdMapPlugin';
   import { CollabNodeIdExtension } from '$lib/editor/plugins/CollabNodeIdExtension';
   import { PasteIdentityExtension } from '$lib/editor/plugins/PasteIdentityExtension';
@@ -23,6 +24,9 @@
   import { useBulletRemoval } from '$lib/editor/useBulletRemoval';
   import { applyStoredContent, checkStoredContent } from '$lib/editor/loadDocument';
   import { storageMode } from '$lib/storage/config';
+  import { api } from '$lib/storage/apiClient';
+  import { preferencesStore } from '$lib/stores/preferences.svelte';
+  import type { LinkMeta } from '$lib/models/types';
   import { CollabSession } from '$lib/collab/CollabSession';
   import { collabSupported, collabWebSocketUrl, getCollabSession } from '$lib/collab/client';
   import { isLocalTransaction } from '$lib/collab/isLocalTransaction';
@@ -228,6 +232,24 @@
     pending = { ...pending, bulletText: title };
   }
 
+  // ─── URL previews (opt-in) ────────────────────────────────────────────────────
+
+  /**
+   * Previews render only when the user opts in *and* the API backend is
+   * available — the unfurl endpoint that supplies OG metadata is server-side
+   * (it needs to make cross-origin requests and guard against SSRF), so there
+   * is nothing to fetch from in local-storage mode.
+   */
+  function urlPreviewsEnabled(): boolean {
+    return preferencesStore.urlPreviews && storageMode === 'api';
+  }
+
+  const urlPreviewFetch =
+    storageMode === 'api'
+      ? (url: string): Promise<LinkMeta | null> =>
+          api.post<LinkMeta>('/api/v1/unfurl', { url }).catch(() => null)
+      : null;
+
   // ─── Lifecycle ──────────────────────────────────────────────────────────────
 
   /**
@@ -285,6 +307,14 @@
         pageId: collab ? () => collabPageId ?? '' : () => pageId,
         todoTrigger: () => pagesStore.getById(collab ? (collabPageId ?? '') : pageId)?.todoTrigger,
         localChangesOnly: collab
+      }),
+      // Opt-in OG/URL preview cards under bare links. Behaviour-only (widget
+      // decorations, no schema changes); starts at the current preference and
+      // is kept in sync by the $effect below. Fetching only works with the API
+      // backend, where the unfurl endpoint lives.
+      UrlPreviewExtension.configure({
+        enabled: urlPreviewsEnabled(),
+        fetchMeta: urlPreviewFetch
       })
     ];
     if (s) {
@@ -600,6 +630,16 @@
     });
   });
 
+  // Keep the live editor's URL-preview plugin in step with the preference.
+  // A new editor already initialises from urlPreviewsEnabled(); this only has
+  // to react to the user toggling the setting while a note is open.
+  $effect(() => {
+    const enabled = urlPreviewsEnabled();
+    const ed = editor;
+    if (!ed || ed.isDestroyed) return;
+    ed.view.dispatch(setUrlPreviewEnabled(ed.state.tr, enabled));
+  });
+
   onDestroy(() => {
     mounted = false;
     openGeneration++;
@@ -870,5 +910,102 @@
   :global(.tiptap-editor .ProseMirror-selectednode) {
     outline: 2px solid var(--accent);
     border-radius: var(--radius-sm);
+  }
+
+  /* ─── URL preview cards (opt-in) ─────────────────────────────────────────── */
+  :global(.tiptap-editor .url-preview-card) {
+    margin: 0.5em 0 0.8em;
+    max-width: 480px;
+    user-select: none;
+  }
+  :global(.tiptap-editor .url-preview-loading) {
+    display: flex;
+    align-items: center;
+    padding: 12px 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+  }
+  :global(.tiptap-editor .url-preview-link) {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color var(--transition-fast);
+  }
+  :global(.tiptap-editor .url-preview-link:hover) {
+    border-color: var(--border-default);
+  }
+  :global(.tiptap-editor .url-preview-image) {
+    width: 100%;
+    max-height: 180px;
+    overflow: hidden;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg-tertiary);
+  }
+  :global(.tiptap-editor .url-preview-image img) {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  :global(.tiptap-editor .url-preview-body) {
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  :global(.tiptap-editor .url-preview-header) {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  :global(.tiptap-editor .url-preview-favicon) {
+    width: 16px;
+    height: 16px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+  :global(.tiptap-editor .url-preview-site) {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  :global(.tiptap-editor .url-preview-title) {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  :global(.tiptap-editor .url-preview-desc) {
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  :global(.tiptap-editor .url-preview-url) {
+    font-size: 11px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>
