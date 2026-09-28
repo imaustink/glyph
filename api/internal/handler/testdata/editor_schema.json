@@ -12,6 +12,7 @@
 		],
 		"horizontalRule": [],
 		"listItem": [
+			"checkbox",
 			"checked",
 			"nodeId",
 			"taskId",
