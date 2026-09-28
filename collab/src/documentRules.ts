@@ -141,6 +141,7 @@ export function repair(doc: Y.Doc, origin: unknown): RepairReport {
 			el.removeAttribute('taskId');
 			el.removeAttribute('checked');
 			el.removeAttribute('taskStatus');
+			el.removeAttribute('checkbox');
 			report.dedupedNodeIds++;
 		}
 		for (const { text, index, length, attr } of unsafeLinks) {
@@ -176,6 +177,7 @@ export function normaliseForSeed(json: ProseMirrorJSON | null | undefined): Pros
 					delete attrs.taskId;
 					delete attrs.checked;
 					delete attrs.taskStatus;
+					delete attrs.checkbox;
 				}
 				attrs.nodeId = nanoid();
 			}

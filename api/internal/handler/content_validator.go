@@ -39,7 +39,7 @@ var allowedNodeTypes = map[string]bool{
 var allowedAttrs = map[string]map[string]bool{
 	"heading":     {"level": true},
 	"orderedList": {"start": true, "type": true},
-	"listItem":    {"nodeId": true, "taskId": true, "checked": true, "taskStatus": true},
+	"listItem":    {"nodeId": true, "taskId": true, "checked": true, "taskStatus": true, "checkbox": true},
 	"codeBlock":   {"language": true},
 }
 
