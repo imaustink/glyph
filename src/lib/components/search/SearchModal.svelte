@@ -200,8 +200,17 @@
 
   .results-container {
     overflow-y: auto;
-    flex: 1;
+    /* Fixed height so the panel doesn't resize (and re-center) on every
+       keypress as the number of results changes — the list scrolls inside
+       this defined height instead of twitching the whole modal. */
+    height: min(60vh, 420px);
     padding: 8px;
+    animation: results-in 0.14s ease;
+  }
+
+  @keyframes results-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
   }
 
   .result-group { margin-bottom: 6px; }

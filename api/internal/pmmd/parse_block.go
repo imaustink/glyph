@@ -549,6 +549,13 @@ func buildItem(itemLines []string, depth int) *node {
 	if hasBox || taskID != "" {
 		attrs["checked"] = checked
 	}
+	if hasBox && taskID == "" {
+		// Mark a GFM checkbox that isn't task-linked explicitly, so the
+		// renderer can tell it from a plain bullet even after the editor has
+		// stamped its schema-default taskStatus onto the item (#65). Absence of
+		// taskStatus alone stops distinguishing them once the page is edited.
+		attrs["checkbox"] = true
+	}
 	if taskID != "" {
 		attrs["taskId"] = taskID
 		if checked {

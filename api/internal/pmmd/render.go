@@ -267,6 +267,7 @@ func renderItemBody(it *node) ([]string, string) {
 	}
 	taskID := stringAttr(it.Attrs, "taskId")
 	checked, _ := it.Attrs["checked"].(bool)
+	checkbox, _ := it.Attrs["checkbox"].(bool)
 	_, hasChecked := it.Attrs["checked"]
 	_, hasStatus := it.Attrs["taskStatus"]
 	box := ""
@@ -283,16 +284,21 @@ func renderItemBody(it *node) ([]string, string) {
 		default:
 			box = "[ ] "
 		}
-	} else if hasChecked && !hasStatus {
+	} else if checkbox || (hasChecked && !hasStatus) {
 		// A GFM checkbox parsed from Markdown that isn't linked to a task. The
-		// parser records `checked` (true or false) and no taskStatus for
-		// `- [x]` / `- [ ]`, so both boxes survive a round trip. Rendering an
-		// unchecked box only for `checked:true` (the old behaviour) silently
-		// flattened `- [ ]` to a plain bullet (#58).
+		// parser records `checked` (true or false) for `- [x]` / `- [ ]`, so
+		// both boxes survive a round trip. Rendering an unchecked box only for
+		// `checked:true` (the old behaviour) silently flattened `- [ ]` to a
+		// plain bullet (#58).
 		//
-		// A plain bullet typed in the editor is excluded: every editor list
-		// item carries a taskStatus (default "todo") alongside checked:false,
-		// so hasStatus is true and it stays a bullet.
+		// The `checkbox` attribute is the durable discriminator: the parser
+		// sets it on an imported checkbox and the editor schema preserves it, so
+		// the box survives even after the editor stamps its schema-default
+		// taskStatus onto the item (#65). The `hasChecked && !hasStatus` branch
+		// still catches checkboxes stored before `checkbox` existed, as long as
+		// they have not yet been through the editor. A plain bullet typed in the
+		// editor has neither `checkbox` nor a bare `checked`, so it stays a
+		// bullet.
 		if checked {
 			box = "[x] "
 		} else {

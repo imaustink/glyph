@@ -94,6 +94,18 @@ export const TaskLinkExtension = ListItem.extend<TaskLinkOptions>({
         renderHTML: (attrs) =>
           attrs.checked ? { 'data-checked': 'true' } : {}
       },
+      // Marks a GFM checkbox (`- [ ]` / `- [x]`) imported from Markdown that is
+      // not linked to a task. The Markdown parser sets it; the editor only
+      // preserves it. Without a durable marker, once the editor stamps its
+      // default taskStatus onto an imported checkbox it becomes indistinguishable
+      // from a plain typed bullet, and the Markdown renderer drops the box (#65).
+      checkbox: {
+        default: false,
+        keepOnSplit: false,
+        parseHTML: (el) => el.getAttribute('data-checkbox') === 'true',
+        renderHTML: (attrs) =>
+          attrs.checkbox ? { 'data-checkbox': 'true' } : {}
+      },
       taskStatus: {
         default: 'todo',
         keepOnSplit: false,
