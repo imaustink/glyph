@@ -80,4 +80,69 @@ test.describe('Search', () => {
 		const results = page.locator('.result-item');
 		await expect(results.first()).toBeVisible({ timeout: 3_000 });
 	});
+
+	// Regression guard for #54 ("Search is super jittery"). The modal used to be
+	// sized by its content and centered in the viewport, so every keypress that
+	// changed the result count resized the panel and re-centered it vertically.
+	// The fix gives the results list a fixed height, so the panel now occupies
+	// the exact same box regardless of how many results are showing. This test
+	// fails if that fixed height is ever reverted to a content-driven size
+	// (e.g. `flex: 1`), which would bring the jitter back.
+	test('search modal keeps a stable size and position across result counts (#54)', async ({
+		page
+	}) => {
+		// Seed several pages that share a token so one query returns many results.
+		for (let i = 1; i <= 4; i++) {
+			await createNewPage(page);
+			const titleInput = page.locator('input.title-edit');
+			await titleInput.waitFor({ timeout: 15_000 });
+			await titleInput.fill(`Nebula Cluster ${i}`);
+			await titleInput.press('Enter');
+			await expect(page.locator('.page-title')).toHaveText(`Nebula Cluster ${i}`, {
+				timeout: 15_000
+			});
+		}
+
+		const panel = page.locator('.search-panel');
+		const results = page.locator('.result-item');
+
+		// Type a query into the open modal, wait for its result state to settle,
+		// and return the panel's bounding box.
+		async function boxForQuery(query: string, state: 'results' | 'none') {
+			await page.locator('.search-input').fill(query);
+			if (state === 'none') {
+				await expect(page.locator('.no-results')).toBeVisible({ timeout: 15_000 });
+			} else {
+				await expect(results.first()).toBeVisible({ timeout: 15_000 });
+			}
+			// Let the debounced search (120ms) and the one-time fade-in settle
+			// before measuring.
+			await page.waitForTimeout(300);
+			const box = await panel.boundingBox();
+			expect(box, 'search panel should have a bounding box').not.toBeNull();
+			return box!;
+		}
+
+		await openSearchModal(page);
+
+		const many = await boxForQuery('Nebula', 'results');
+		const manyCount = await results.count();
+		expect(manyCount).toBeGreaterThan(1);
+
+		const one = await boxForQuery('Getting Started', 'results');
+		const oneCount = await results.count();
+		expect(oneCount).toBeGreaterThanOrEqual(1);
+		// Sanity-check that the states genuinely differ in result count — that is
+		// exactly what used to move the panel.
+		expect(oneCount).toBeLessThan(manyCount);
+
+		const none = await boxForQuery('zznomatchqz', 'none');
+
+		// The panel's top (y) and height must be identical across all three
+		// states: this is the anti-jitter invariant.
+		expect(Math.abs(many.y - one.y)).toBeLessThanOrEqual(1);
+		expect(Math.abs(many.y - none.y)).toBeLessThanOrEqual(1);
+		expect(Math.abs(many.height - one.height)).toBeLessThanOrEqual(1);
+		expect(Math.abs(many.height - none.height)).toBeLessThanOrEqual(1);
+	});
 });

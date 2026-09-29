@@ -68,7 +68,7 @@ describe('repair', () => {
 		const doc = docWith(
 			bulletList([
 				{ nodeId: 'n1', taskId: 't1', text: 'original' },
-				{ nodeId: 'n1', taskId: 't1', text: 'copy' },
+				{ nodeId: 'n1', taskId: 't1', checkbox: true, checked: true, text: 'copy' },
 				{ nodeId: 'n2', text: 'other' }
 			])
 		);
@@ -79,6 +79,10 @@ describe('repair', () => {
 		expect(items[0]).toMatchObject({ nodeId: 'n1', taskId: 't1' });
 		expect(items[1].nodeId).not.toBe('n1');
 		expect(items[1].taskId).toBeUndefined();
+		// The dropped duplicate loses its checkbox marker too, so it can't render
+		// as a ticked box (checkbox:true) with no checked state after de-dup.
+		expect(items[1].checkbox).toBeUndefined();
+		expect(items[1].checked).toBeUndefined();
 		expect(items[2].nodeId).toBe('n2');
 	});
 
@@ -132,7 +136,7 @@ describe('seeding', () => {
 					content: [
 						{ type: 'listItem', content: [{ type: 'paragraph' }] },
 						{ type: 'listItem', attrs: { nodeId: 'x', taskId: 't' }, content: [{ type: 'paragraph' }] },
-						{ type: 'listItem', attrs: { nodeId: 'x', taskId: 't' }, content: [{ type: 'paragraph' }] }
+						{ type: 'listItem', attrs: { nodeId: 'x', taskId: 't', checkbox: true, checked: true }, content: [{ type: 'paragraph' }] }
 					]
 				}
 			]
@@ -142,6 +146,8 @@ describe('seeding', () => {
 		expect(items[1]).toMatchObject({ nodeId: 'x', taskId: 't' });
 		expect(items[2].nodeId).not.toBe('x');
 		expect(items[2].taskId).toBeUndefined();
+		expect(items[2].checkbox).toBeUndefined();
+		expect(items[2].checked).toBeUndefined();
 	});
 
 	it('seeds an empty page with one paragraph', () => {

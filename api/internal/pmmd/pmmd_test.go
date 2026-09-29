@@ -219,9 +219,11 @@ func TestFromMarkdownStructure(t *testing.T) {
 		{"lazy continuation", "- a\nstill a", doc(ul(li(p(txt("a still a")))))},
 		{"task items", "- [ ] open\n- [x] closed\n- [X] closed too",
 			doc(ul(
-				`{"type":"listItem","attrs":{"checked":false},"content":[`+p(txt("open"))+`]}`,
-				`{"type":"listItem","attrs":{"checked":true},"content":[`+p(txt("closed"))+`]}`,
-				`{"type":"listItem","attrs":{"checked":true},"content":[`+p(txt("closed too"))+`]}`))},
+				// A GFM checkbox not linked to a task carries an explicit `checkbox`
+				// marker so the box survives an editor visit (#65).
+				`{"type":"listItem","attrs":{"checkbox":true,"checked":false},"content":[`+p(txt("open"))+`]}`,
+				`{"type":"listItem","attrs":{"checkbox":true,"checked":true},"content":[`+p(txt("closed"))+`]}`,
+				`{"type":"listItem","attrs":{"checkbox":true,"checked":true},"content":[`+p(txt("closed too"))+`]}`))},
 		{"empty item", "-\n- b", doc(ul(li(p()), li(p(txt("b")))))},
 		// The editor schema has no image node (DI-01): a block image becomes
 		// a paragraph linking to it.
@@ -412,6 +414,16 @@ func TestToMarkdown(t *testing.T) {
 				"- [x] box checked\n" +
 				"- [ ] box unchecked\n" +
 				"- plain\n"},
+		// An imported GFM checkbox that has been opened in the editor. The editor
+		// stamps its schema-default taskStatus onto every list item, which used
+		// to make the box flatten to a plain bullet (#65) — ticked and unticked
+		// alike. The explicit `checkbox` attribute set by the parser survives the
+		// editor, so both boxes keep their state.
+		{"imported checkbox after editor visit", doc(ul(
+			`{"type":"listItem","attrs":{"nodeId":"n1","checkbox":true,"checked":true,"taskStatus":"todo"},"content":[`+p(txt("done"))+`]}`,
+			`{"type":"listItem","attrs":{"nodeId":"n2","checkbox":true,"checked":false,"taskStatus":"todo"},"content":[`+p(txt("todo"))+`]}`,
+		)),
+			"- [x] done\n- [ ] todo\n"},
 		{"empty task item", doc(ul(task(taskA, "todo", false, p()))), "- [ ] <!-- task:" + taskA + " -->\n"},
 		{"unknown nodes", doc(`{"type":"table","content":[{"type":"tableRow","content":[{"type":"tableCell","content":[`+p(txt("c1"))+`]},{"type":"tableCell","content":[`+p(txt("c2"))+`]}]}]}`,
 			p(txt("a"), `{"type":"mention","attrs":{"id":"x"},"content":[{"type":"text","text":"@bob"}]}`)),
