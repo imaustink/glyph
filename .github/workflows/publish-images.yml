@@ -1,0 +1,85 @@
+name: Publish images
+
+# Force-(re)build and push all three container images for a chosen ref —
+# normally the tip of main. Publishing only; this does NOT deploy (cd.yml owns
+# rollout to production).
+#
+# Why this exists: images are tagged by git tree hash, not commit SHA. On a PR
+# whose branch is up to date with main the merge is effectively a fast-forward,
+# so the merge commit's tree equals the PR-head tree that ci.yml's
+# build-and-push already published, and cd.yml deploys that prebuilt image. But
+# when a PR is merged while its branch is behind main (branch protection does
+# not require branches to be up to date), GitHub writes a real merge commit
+# whose tree differs from the PR-head tree. ci.yml built an image for the
+# PR-head tree, so the tip-of-main tree has no matching image. cd.yml's
+# build-missing job normally backfills it on the push to main, but this is the
+# on-demand escape hatch for when it did not (e.g. its run was superseded by a
+# newer push in the cd-deploy concurrency group), or when an image otherwise
+# needs to be rebuilt.
+#
+# The matrix, runner, tag scheme and registry login are kept in sync with
+# ci.yml's build-and-push and cd.yml's build-missing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref (branch, tag, or SHA) to build from. Defaults to the ref this workflow is dispatched on (tip of main)."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.repository == 'imaustink/glyph'
+    # Self-hosted, arm64 — matches the production cluster's nodes. Building on
+    # ubuntu-latest (amd64) produces images that fail with "exec format error"
+    # when the kubelet tries to run them.
+    runs-on: arc-runner-set
+    # One job per image so the three builds run in parallel on separate
+    # runners. Keep in sync with ci.yml's build-and-push and cd.yml's
+    # build-missing.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: frontend
+            dockerfile: Dockerfile
+            context: .
+            build-args: --build-arg VITE_STORAGE_MODE=api --build-arg VITE_API_URL=
+          - image: api
+            dockerfile: api/Dockerfile
+            context: api/
+          - image: collab
+            dockerfile: collab/Dockerfile
+            context: .
+    steps:
+      # An empty `ref` input falls back to the ref this workflow was dispatched
+      # on (the default branch, i.e. the tip of main, unless another is picked).
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Docker login
+        run: |
+          echo "$REGISTRY_PASSWORD" | docker login docker.io \
+            -u "$REGISTRY_USERNAME" --password-stdin
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+
+      # Tagged by git tree hash (content) so the tag matches exactly what
+      # cd.yml resolves and deploys. Unconditional build + push (unlike
+      # cd.yml's build-missing, which skips when the tag already exists): this
+      # is a *force* publish, so it also overwrites a bad or stale image under
+      # the same tag.
+      - name: Build & push ${{ matrix.image }} (forced)
+        run: |
+          ref="docker.io/blackmarket/glyph-${{ matrix.image }}:$(git rev-parse HEAD^{tree})"
+          echo "Force-publishing $ref"
+          docker build ${{ matrix.build-args }} \
+            -t "$ref" \
+            -f ${{ matrix.dockerfile }} ${{ matrix.context }}
+          docker push "$ref"
