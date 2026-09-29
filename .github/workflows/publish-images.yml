@@ -74,12 +74,16 @@ jobs:
       # cd.yml resolves and deploys. Unconditional build + push (unlike
       # cd.yml's build-missing, which skips when the tag already exists): this
       # is a *force* publish, so it also overwrites a bad or stale image under
-      # the same tag.
+      # the same tag. `--pull --no-cache` guarantees a genuinely fresh build so
+      # the force path also fixes an image whose contents (not just the pushed
+      # tag) went bad — a base image that moved under a floating tag, or a
+      # poisoned local layer cache on a reused arc-runner-set runner — which a
+      # cache-reusing rebuild would otherwise reproduce byte-for-byte.
       - name: Build & push ${{ matrix.image }} (forced)
         run: |
           ref="docker.io/blackmarket/glyph-${{ matrix.image }}:$(git rev-parse HEAD^{tree})"
           echo "Force-publishing $ref"
-          docker build ${{ matrix.build-args }} \
+          docker build --pull --no-cache ${{ matrix.build-args }} \
             -t "$ref" \
             -f ${{ matrix.dockerfile }} ${{ matrix.context }}
           docker push "$ref"
