@@ -50,20 +50,32 @@
   async function commitTitle() {
     editingTitle = false;
     if (titleValue.trim() && node) {
-      await pagesStore.updateNode(node.id, { title: titleValue.trim() });
+      try {
+        await pagesStore.updateNode(node.id, { title: titleValue.trim() });
+      } catch (err) {
+        notificationsStore.error(apiErrorMessage(err, 'Failed to update title.'));
+      }
     }
   }
 
   async function commitTags() {
     editingTags = false;
     if (node) {
-      await pagesStore.updateNode(node.id, { tags: nodeTags });
+      try {
+        await pagesStore.updateNode(node.id, { tags: nodeTags });
+      } catch (err) {
+        notificationsStore.error(apiErrorMessage(err, 'Failed to update tags.'));
+      }
     }
   }
 
   async function commitPriority(priority: Priority) {
     if (node) {
-      await pagesStore.updateNode(node.id, { priority });
+      try {
+        await pagesStore.updateNode(node.id, { priority });
+      } catch (err) {
+        notificationsStore.error(apiErrorMessage(err, 'Failed to update priority.'));
+      }
     }
   }
 

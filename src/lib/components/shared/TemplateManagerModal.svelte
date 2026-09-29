@@ -1,5 +1,7 @@
 <script lang="ts">
   import { templatesStore } from '$lib/stores/templates.svelte';
+  import { notificationsStore } from '$lib/stores/notifications.svelte';
+  import { apiErrorMessage } from '$lib/storage/apiClient';
   import type { NoteTemplate, TodoTriggerMatchMode } from '$lib/models/types';
   import ShareDialog from '$lib/components/shared/ShareDialog.svelte';
   import TemplateListView from './TemplateListView.svelte';
@@ -30,22 +32,28 @@
     todoTrigger: { pattern: string; matchMode: TodoTriggerMatchMode; blockTypes: string[] };
     defaultFolderId: string | null;
   }) {
-    if (editingTemplate) {
-      await templatesStore.updateTemplate(editingTemplate.id, {
-        name: data.name,
-        content: data.content,
-        titleTemplate: data.titleTemplate,
-        todoTrigger: data.todoTrigger,
-        defaultFolderId: data.defaultFolderId
-      });
-    } else {
-      await templatesStore.createTemplate(
-        data.name,
-        data.content,
-        data.titleTemplate,
-        data.todoTrigger,
-        data.defaultFolderId
-      );
+    try {
+      if (editingTemplate) {
+        await templatesStore.updateTemplate(editingTemplate.id, {
+          name: data.name,
+          content: data.content,
+          titleTemplate: data.titleTemplate,
+          todoTrigger: data.todoTrigger,
+          defaultFolderId: data.defaultFolderId
+        });
+      } else {
+        await templatesStore.createTemplate(
+          data.name,
+          data.content,
+          data.titleTemplate,
+          data.todoTrigger,
+          data.defaultFolderId
+        );
+      }
+    } catch (err) {
+      // Keep the edit form open so the user can retry without losing input.
+      notificationsStore.error(apiErrorMessage(err, 'Failed to save template.'));
+      return;
     }
     view = 'list';
   }

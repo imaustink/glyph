@@ -39,6 +39,14 @@
     }
   }
 
+  async function handleCreateLane() {
+    try {
+      await lanesStore.createLane('New Lane');
+    } catch {
+      notificationsStore.error('Failed to create lane.');
+    }
+  }
+
   // Filtered tasks per lane — sync lanes (empty rules / local mode) update immediately;
   // API-backed async lanes update when their network call resolves.
   let filteredByLane = $state<Map<string, Task[]>>(new Map());
@@ -147,7 +155,7 @@
       <div class="add-lane-col">
         <button
           class="add-lane-btn"
-          onclick={() => lanesStore.createLane('New Lane')}
+          onclick={handleCreateLane}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="12" y1="5" x2="12" y2="19"/>

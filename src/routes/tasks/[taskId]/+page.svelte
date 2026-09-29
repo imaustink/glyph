@@ -14,7 +14,7 @@
   import { notificationsStore } from '$lib/stores/notifications.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { storageMode } from '$lib/storage/config';
-  import { api } from '$lib/storage/apiClient';
+  import { api, apiErrorMessage } from '$lib/storage/apiClient';
   import type { Priority, TaskStatus, LinkMeta } from '$lib/models/types';
 
   const canUnfurl = storageMode === 'api';
@@ -246,7 +246,11 @@
 
   async function handleVisibilityChange(newOrgId: string | null, newIsPrivate: boolean) {
     if (!task) return;
-    await tasksStore.updateTask(task.id, { orgId: newOrgId, isPrivate: newIsPrivate });
+    try {
+      await tasksStore.updateTask(task.id, { orgId: newOrgId, isPrivate: newIsPrivate });
+    } catch (err) {
+      notificationsStore.error(apiErrorMessage(err, 'Failed to update visibility.'));
+    }
   }
 
   // ── Delete task ──────────────────────────────────────────────────────────
@@ -274,6 +278,8 @@
         }
       }
       goto('/tasks');
+    } catch (err) {
+      notificationsStore.error(apiErrorMessage(err, 'Failed to delete task. Please try again.'));
     } finally {
       deleting = false;
       showDeleteConfirm = false;
