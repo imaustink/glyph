@@ -310,6 +310,61 @@ describe('setStatusForNode', () => {
   });
 });
 
+// ─── checkbox attribute survives an editor round trip (#65) ───────────────────
+
+describe('imported checkbox attribute round trip (#65)', () => {
+  /**
+   * A listItem as it arrives from an imported GFM checkbox: `checkbox:true`
+   * plus the editor's default `taskStatus:"todo"`. The #65 fix depends on the
+   * editor schema *keeping* the `checkbox` marker through a round trip — if the
+   * schema dropped it (or normalised it away), an imported box would once again
+   * be indistinguishable from a typed bullet and the Markdown renderer would
+   * lose it, with every Go test still green. This pins that mechanism.
+   */
+  function importedCheckboxDoc(checked: boolean): Content {
+    return {
+      type: 'doc',
+      content: [{
+        type: 'bulletList',
+        content: [{
+          type: 'listItem',
+          attrs: { nodeId: 'cb-1', taskId: null, checked, checkbox: true, taskStatus: 'todo' },
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'imported item' }] }]
+        }]
+      }]
+    } as Content;
+  }
+
+  it('keeps checkbox:true (and checked:true) through setContent', () => {
+    const editor = createEditor();
+    editor.commands.setContent(importedCheckboxDoc(true));
+
+    const attrs = getFirstListItemAttrs(editor);
+    expect(attrs.checkbox).toBe(true);
+    expect(attrs.checked).toBe(true);
+  });
+
+  it('keeps checkbox:true (and checked:false) through setContent', () => {
+    const editor = createEditor();
+    editor.commands.setContent(importedCheckboxDoc(false));
+
+    const attrs = getFirstListItemAttrs(editor);
+    expect(attrs.checkbox).toBe(true);
+    expect(attrs.checked).toBe(false);
+  });
+
+  it('parses data-checkbox from HTML content', () => {
+    const editor = createEditor();
+    editor.commands.setContent(
+      '<ul><li data-node-id="cb-html" data-checkbox="true" data-checked="true"><p>from html</p></li></ul>'
+    );
+
+    const attrs = getFirstListItemAttrs(editor);
+    expect(attrs.checkbox).toBe(true);
+    expect(attrs.checked).toBe(true);
+  });
+});
+
 // ─── setTaskIdForNode fallback traversal ──────────────────────────────────────
 
 describe('setTaskIdForNode fallback traversal (no NodeIdMap)', () => {

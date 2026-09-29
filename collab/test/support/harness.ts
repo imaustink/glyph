@@ -228,7 +228,9 @@ export function paragraph(text: string): Y.XmlElement {
 	return p;
 }
 
-export function bulletList(items: { nodeId?: string; taskId?: string; text: string }[]): Y.XmlElement {
+export function bulletList(
+	items: { nodeId?: string; taskId?: string; checked?: boolean; checkbox?: boolean; text: string }[]
+): Y.XmlElement {
 	const list = new Y.XmlElement('bulletList');
 	list.insert(
 		0,
@@ -236,6 +238,10 @@ export function bulletList(items: { nodeId?: string; taskId?: string; text: stri
 			const li = new Y.XmlElement('listItem');
 			if (i.nodeId) li.setAttribute('nodeId', i.nodeId);
 			if (i.taskId) li.setAttribute('taskId', i.taskId);
+			// y-prosemirror stores attribute values by identity, so keep the real
+			// boolean rather than a string (setAttribute's type is too narrow).
+			if (i.checked !== undefined) li.setAttribute('checked', i.checked as unknown as string);
+			if (i.checkbox !== undefined) li.setAttribute('checkbox', i.checkbox as unknown as string);
 			li.insert(0, [paragraph(i.text)]);
 			return li;
 		})
