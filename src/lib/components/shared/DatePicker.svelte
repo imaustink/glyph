@@ -286,6 +286,8 @@
     padding: 12px;
     width: 300px;
     max-width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
     user-select: none;
   }
 
