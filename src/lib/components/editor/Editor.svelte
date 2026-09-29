@@ -666,6 +666,10 @@
     caret-color: var(--accent);
     max-width: 760px;
     margin: 0 auto;
+    /* Break long words/URLs rather than forcing a horizontal scroll that
+       pushes text off screen (especially on narrow mobile viewports). */
+    overflow-wrap: break-word;
+    word-break: break-word;
   }
 
   :global(.tiptap-editor h1) { font-size: 2em; font-weight: 700; color: var(--text-heading); margin: 1.2em 0 0.4em; line-height: 1.25; }

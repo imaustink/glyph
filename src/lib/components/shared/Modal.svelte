@@ -174,4 +174,20 @@
 		padding: 0.25rem;
 		border-radius: 4px;
 	}
+
+	/* ─── Mobile: dock the dialog to the bottom as a full-width sheet so it
+	   never overflows a narrow viewport. ─────────────────────────────────── */
+	@media (max-width: 768px) {
+		.modal-container {
+			align-items: flex-end;
+		}
+
+		.modal {
+			min-width: 0;
+			width: 100%;
+			max-width: 100%;
+			max-height: 90vh;
+			border-radius: 12px 12px 0 0;
+		}
+	}
 </style>
