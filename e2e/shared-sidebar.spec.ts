@@ -18,7 +18,7 @@
  * - An editor share shows no "View" badge.
  */
 
-import { test, expect, switchUser, createNewFolder, waitForEditorReady } from './fixtures';
+import { test, expect, switchUser, createNewFolder, createNewPage, waitForEditorReady } from './fixtures';
 import type { Page } from '@playwright/test';
 
 /** Become one of the seed users and wait for their sidebar to load. */
@@ -132,6 +132,40 @@ test.describe('Shared with me sidebar (api)', () => {
 		await row.click();
 		await page.waitForURL((url) => url.pathname.startsWith('/notes/'), { timeout: 15_000 });
 		await page.waitForSelector('main .tiptap-editor', { timeout: 15_000 });
+	});
+
+	test('a note shared at the owner root renders once (tree only, not duplicated in the section)', async ({
+		page,
+		seedUsers,
+		baseURL
+	}) => {
+		if (!seedUsers || !baseURL) throw new Error('fixtures missing');
+		const { userA, userB } = seedUsers;
+
+		// As Alice: create a root-level note (parent = null), title and share it.
+		await become(page, baseURL, userA.id);
+		await createNewPage(page);
+		await page.waitForSelector('input.title-edit');
+		await page.locator('input.title-edit').fill('Root Shared Note');
+		await page.locator('input.title-edit').press('Enter');
+
+		await page.locator('.visibility-btn').click();
+		await page.locator('.visibility-picker .option:has-text("Share with people")').click();
+		await page.waitForSelector('.modal[aria-label="Share"]');
+		await page.locator('.modal .email-input').fill(userB.email);
+		await page.locator('.modal .btn-primary:has-text("Invite")').click();
+		await expect(page.locator('.share-list .share-row')).toHaveCount(1);
+		await page.locator('.modal button[aria-label="Close"]').click();
+
+		// As Bob: a root-shared note is reachable in his main tree, so it renders
+		// there exactly once and is NOT duplicated in "Shared with me". With it
+		// being the only share, the section is absent entirely.
+		await become(page, baseURL, userB.id);
+		await expect(
+			page.locator('.page-tree-container .node-label:has-text("Root Shared Note")')
+		).toHaveCount(1);
+		await expect(page.locator('.shared-list-container')).toHaveCount(0);
+		await expect(page.locator('.section-label:has-text("Shared with me")')).toHaveCount(0);
 	});
 
 	test('section is absent for a user with nothing shared with them', async ({

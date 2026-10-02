@@ -80,9 +80,12 @@
         tasksStore.load(),
         lanesStore.load(),
         templatesStore.load(),
-        orgsStore.load(),
-        sharedStore.load()
+        orgsStore.load()
       ]);
+      // Non-essential: its failure must not block the rest of the app from
+      // loading. handleAuthError still runs the redirect for a real
+      // UnauthorizedError before .catch swallows the re-throw.
+      void sharedStore.load().catch(() => {});
     } catch (err) {
       try {
         handleAuthError(err);
