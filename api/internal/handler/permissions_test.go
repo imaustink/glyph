@@ -155,6 +155,7 @@ type mockShareStore struct {
 	updatePermissionFn      func(id uuid.UUID, permission model.SharePermission) (*model.Share, error)
 	deleteShareFn           func(id uuid.UUID) error
 	createShareFn           func(s *model.Share) (*model.Share, error)
+	listSharedWithUserFn    func(userID uuid.UUID) ([]*model.SharedItem, error)
 }
 
 func (m *mockShareStore) GetForUserAndResource(ctx context.Context, userID uuid.UUID, rt model.ShareResourceType, rid uuid.UUID) (*model.Share, error) {
@@ -179,6 +180,12 @@ func (m *mockShareStore) GetByID(_ context.Context, id uuid.UUID) (*model.Share,
 func (m *mockShareStore) ListForResource(_ context.Context, resourceType model.ShareResourceType, resourceID uuid.UUID) ([]*model.Share, error) {
 	if m.listForResourceFn != nil {
 		return m.listForResourceFn(resourceType, resourceID)
+	}
+	return nil, nil
+}
+func (m *mockShareStore) ListSharedWithUser(_ context.Context, userID uuid.UUID) ([]*model.SharedItem, error) {
+	if m.listSharedWithUserFn != nil {
+		return m.listSharedWithUserFn(userID)
 	}
 	return nil, nil
 }

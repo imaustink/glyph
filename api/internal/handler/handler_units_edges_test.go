@@ -741,6 +741,55 @@ func TestShareHandler_CreateShare_BadJSON_Returns400(t *testing.T) {
 	}
 }
 
+func TestShareHandler_SharedWithMe_Success(t *testing.T) {
+	uid := testUser().ID
+	h := &ShareHandler{
+		Shares: &mockShareStore{
+			listSharedWithUserFn: func(userID uuid.UUID) ([]*model.SharedItem, error) {
+				if userID != uid {
+					t.Errorf("SharedWithMe should scope to current user; got %s", userID)
+				}
+				return []*model.SharedItem{
+					{ResourceType: model.ShareResourceFolder, ResourceID: uuid.New(), Title: "Shared Folder", Permission: model.SharePermissionViewer},
+				}, nil
+			},
+		},
+	}
+	r := gin.New()
+	r.Use(injectTestUser())
+	r.GET("/shares/shared-with-me", h.SharedWithMe)
+
+	req := httptest.NewRequest(http.MethodGet, "/shares/shared-with-me", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("SharedWithMe: want 200, got %d", w.Code)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("Shared Folder")) {
+		t.Errorf("SharedWithMe body missing item: %s", w.Body.String())
+	}
+}
+
+func TestShareHandler_SharedWithMe_StoreError_Returns500(t *testing.T) {
+	h := &ShareHandler{
+		Shares: &mockShareStore{
+			listSharedWithUserFn: func(userID uuid.UUID) ([]*model.SharedItem, error) {
+				return nil, errors.New("db error")
+			},
+		},
+	}
+	r := gin.New()
+	r.Use(injectTestUser())
+	r.GET("/shares/shared-with-me", h.SharedWithMe)
+
+	req := httptest.NewRequest(http.MethodGet, "/shares/shared-with-me", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("SharedWithMe store error: want 500, got %d", w.Code)
+	}
+}
+
 func TestShareHandler_UpdateSharePermission_InvalidID_Returns400(t *testing.T) {
 	h := &ShareHandler{Shares: &mockShareStore{}}
 	r := gin.New()

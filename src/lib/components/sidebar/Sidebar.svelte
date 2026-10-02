@@ -9,7 +9,9 @@
   import { storageMode } from '$lib/storage/config';
   import type { NoteTemplate } from '$lib/models/types';
   import { evaluateTitleTemplate, evaluateContentTemplate } from '$lib/utils/titleTemplate';
+  import { sharedStore } from '$lib/stores/shared.svelte';
   import PageTree from './PageTree.svelte';
+  import SharedList from './SharedList.svelte';
   import TemplateManagerModal from '$lib/components/shared/TemplateManagerModal.svelte';
 
   let showTemplateDropdown = $state(false);
@@ -304,6 +306,15 @@
   >
     <PageTree {childrenByParent} parentId={null} />
   </div>
+
+  {#if storageMode === 'api' && sharedStore.items.length > 0}
+    <div class="section-header">
+      <span class="section-label">Shared with me</span>
+    </div>
+    <div class="shared-list-container">
+      <SharedList items={sharedStore.items} />
+    </div>
+  {/if}
 </aside>
 
 {#if showTemplateManager}
@@ -439,6 +450,16 @@
     background: var(--accent-bg);
     box-shadow: inset 0 0 0 1px var(--accent-muted);
     border-radius: var(--radius-sm);
+  }
+
+  /* The shared section sits below the (flex:1) page tree. It keeps its own
+     scroll and is capped so a long shared list can't crowd out the tree. */
+  .shared-list-container {
+    flex-shrink: 0;
+    max-height: 32vh;
+    overflow-y: auto;
+    padding: 4px 6px 12px;
+    border-top: 1px solid var(--border-subtle);
   }
 
   .new-page-btn-wrapper {

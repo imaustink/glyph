@@ -267,6 +267,13 @@ type ShareStore interface {
 	ListForResource(ctx context.Context, resourceType model.ShareResourceType, resourceID uuid.UUID) ([]*model.Share, error)
 	// GetForUserAndResource returns the share for a specific user+resource, if one exists.
 	GetForUserAndResource(ctx context.Context, userID uuid.UUID, resourceType model.ShareResourceType, resourceID uuid.UUID) (*model.Share, error)
+	// ListSharedWithUser returns the notes and folders shared directly with
+	// userID (resource_type 'page' or 'folder'), projected with each resource's
+	// own title and type and the sharer's identity, newest first. It powers the
+	// sidebar's "Shared with me" section: these items are reachable only by URL
+	// otherwise, since a shared note is orphaned under an invisible parent and a
+	// shared folder is not returned by the page list at all.
+	ListSharedWithUser(ctx context.Context, userID uuid.UUID) ([]*model.SharedItem, error)
 	UpdatePermission(ctx context.Context, id uuid.UUID, permission model.SharePermission) (*model.Share, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 }
