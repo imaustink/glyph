@@ -1,0 +1,186 @@
+name: Build images
+
+# Reusable multi-arch build+push for all three container images (frontend, api,
+# collab). The single source of truth for how images are built — ci.yml,
+# cd.yml and publish-images.yml all call this so the matrix, tag scheme and
+# registry login can never drift between them.
+#
+# Images are tagged by git *tree* hash (content), not commit SHA: a PR branch's
+# commit SHA and the eventual merge commit SHA on main differ (unless every
+# merge is a fast-forward), but the tree hash is identical on both as long as
+# the file contents are unchanged. That lets cd.yml compute this exact tag after
+# merge and deploy the image built on the PR without rebuilding it.
+#
+# Multi-arch, built on GitHub-hosted runners: production runs arm64, but we
+# publish a manifest list covering linux/amd64 + linux/arm64 so the images also
+# run on amd64 (local dev, CI, amd64 nodes). Each platform builds *natively* on
+# its own hosted runner (amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm) and
+# pushes by digest; a per-image merge job then assembles the digests into one
+# manifest list tagged by tree hash. Native per-platform runners (no QEMU) give
+# maximum concurrency and avoid the slow emulated arm64 builds. Deploying the
+# manifest is NOT done here — cd.yml owns rollout and runs on self-hosted
+# runners, the only ones with production credentials.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build from. Empty = default checkout (the triggering ref), which on a pull_request is the merge ref."
+        required: false
+        type: string
+        default: ""
+      skip-existing:
+        description: "Skip building an image whose tree-hash manifest is already in the registry (cd.yml's idempotent backfill)."
+        required: false
+        type: boolean
+        default: false
+      force:
+        description: "Force a genuinely fresh build (--pull --no-cache) and overwrite the tag even if it exists (publish-images escape hatch)."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # One job per (image, platform) so all six builds run in parallel on separate
+  # native runners. Each pushes its single-platform image by digest only (no
+  # tag); the merge job below stitches the per-platform digests into the final
+  # tree-hash-tagged manifest list.
+  build:
+    runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [frontend, api, collab]
+        platform: [linux/amd64, linux/arm64]
+        # Merged into the matrix combinations by `image` (per-image build
+        # settings apply to both that image's platform combinations).
+        include:
+          - image: frontend
+            dockerfile: Dockerfile
+            context: .
+            build-args: --build-arg VITE_STORAGE_MODE=api --build-arg VITE_API_URL=
+          - image: api
+            dockerfile: api/Dockerfile
+            context: api/
+          - image: collab
+            dockerfile: collab/Dockerfile
+            context: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker login
+        run: |
+          echo "$REGISTRY_PASSWORD" | docker login docker.io \
+            -u "$REGISTRY_USERNAME" --password-stdin
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build & push ${{ matrix.image }} (${{ matrix.platform }}) by digest
+        id: build
+        run: |
+          set -euo pipefail
+          repo="docker.io/blackmarket/glyph-${{ matrix.image }}"
+          tag="$(git rev-parse HEAD^{tree})"
+          arch="${{ matrix.platform }}"; arch="${arch##*/}"
+
+          # Idempotent backfill (cd.yml): if the final manifest is already in the
+          # registry, this content was published on the PR — nothing to rebuild.
+          if [ "${{ inputs.skip-existing }}" = "true" ] && \
+             docker manifest inspect "$repo:$tag" >/dev/null 2>&1; then
+            echo "$repo:$tag already in registry — skipping build"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Force path (publish-images): --pull --no-cache guarantees a fresh
+          # build so a force also fixes an image whose contents went bad (a base
+          # image that moved under a floating tag), not just a stale pushed tag.
+          extra=""
+          if [ "${{ inputs.force }}" = "true" ]; then extra="--pull --no-cache"; fi
+
+          # push-by-digest: push the single-platform image addressed only by its
+          # content digest (no tag). The merge job references these digests.
+          docker buildx build --platform "${{ matrix.platform }}" $extra ${{ matrix.build-args }} \
+            --output "type=image,name=$repo,push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file metadata.json \
+            -f ${{ matrix.dockerfile }} ${{ matrix.context }}
+
+          mkdir -p digests
+          jq -r '."containerimage.digest"' metadata.json > "digests/$arch"
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+
+      - name: Upload digest
+        if: steps.build.outputs.skipped == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.image }}-${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # One job per image: combine that image's per-platform digests into a single
+  # manifest list tagged by tree hash — the tag cd.yml resolves and deploys.
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [frontend, api, collab]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Docker login
+        run: |
+          echo "$REGISTRY_PASSWORD" | docker login docker.io \
+            -u "$REGISTRY_USERNAME" --password-stdin
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Resolve tag & existence
+        id: check
+        run: |
+          set -euo pipefail
+          repo="docker.io/blackmarket/glyph-${{ matrix.image }}"
+          tag="$(git rev-parse HEAD^{tree})"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # Mirror the build job's skip: when backfilling and the manifest is
+          # already present, the build jobs produced no digests — nothing to do.
+          if [ "${{ inputs.skip-existing }}" = "true" ] && \
+             docker manifest inspect "$repo:$tag" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download digests
+        if: steps.check.outputs.exists == 'false'
+        uses: actions/download-artifact@v4
+        with:
+          path: digests
+          pattern: digest-${{ matrix.image }}-*
+          merge-multiple: true
+
+      - name: Create manifest list
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          repo="${{ steps.check.outputs.repo }}"
+          tag="${{ steps.check.outputs.tag }}"
+          refs=""
+          for f in digests/*; do refs="$refs $repo@$(cat "$f")"; done
+          docker buildx imagetools create -t "$repo:$tag" $refs
+          docker buildx imagetools inspect "$repo:$tag"
