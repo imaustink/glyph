@@ -53,7 +53,10 @@
     // Clamp to the viewport on both axes: align/flip horizontally and flip
     // above (or cap the height so it scrolls) when it would run off the bottom.
     const width = dropdownRef?.offsetWidth ?? 220;
-    const height = dropdownRef?.offsetHeight ?? 320;
+    // Measure the natural content height (scrollHeight), not offsetHeight: once a
+    // max-height has been applied, offsetHeight reports the clamped box, which
+    // would make the flip/placement decision re-run against a capped value.
+    const height = dropdownRef?.scrollHeight ?? 320;
     const { top, left, maxHeight } = clampPopoverToViewport(
       rect,
       { width, height },
