@@ -9,7 +9,9 @@
   import { storageMode } from '$lib/storage/config';
   import type { NoteTemplate } from '$lib/models/types';
   import { evaluateTitleTemplate, evaluateContentTemplate } from '$lib/utils/titleTemplate';
+  import { sharedStore } from '$lib/stores/shared.svelte';
   import PageTree from './PageTree.svelte';
+  import SharedList from './SharedList.svelte';
   import TemplateManagerModal from '$lib/components/shared/TemplateManagerModal.svelte';
 
   let showTemplateDropdown = $state(false);
@@ -156,6 +158,38 @@
     }
     return m;
   });
+
+  /**
+   * Whether a page node already renders in the main tree: it exists in the
+   * recipient's nodes and every ancestor up to the root is visible too. A note
+   * shared at the owner's root (parentId null) is returned by GET /pages and
+   * renders at the recipient's tree root, so it would otherwise appear both
+   * there and in "Shared with me". A note shared from inside a folder is in
+   * nodes but orphaned (its parent folder is invisible), so it is not in the
+   * tree and belongs in the section. Shared folders are never in nodes at all.
+   */
+  function isReachableInTree(id: string): boolean {
+    const seen = new Set<string>();
+    let current = pagesStore.getById(id);
+    if (!current) return false;
+    while (current.parentId !== null) {
+      if (seen.has(current.id)) return false; // defensive: parent_id cycle
+      seen.add(current.id);
+      const parent = pagesStore.getById(current.parentId);
+      if (!parent) return false; // ancestor invisible → orphaned
+      current = parent;
+    }
+    return true;
+  }
+
+  // Only surface shared items the recipient can't already see in their tree:
+  // folder shares and folder-nested notes. Root-shared notes already render in
+  // the main tree, so they are filtered out to avoid a double listing.
+  const sharedItems = $derived(
+    sharedStore.items.filter((item) =>
+      item.resourceType === 'folder' ? true : !isReachableInTree(item.resourceId)
+    )
+  );
 </script>
 
 <svelte:window ondragend={handleDragEnd} />
@@ -304,6 +338,15 @@
   >
     <PageTree {childrenByParent} parentId={null} />
   </div>
+
+  {#if storageMode === 'api' && sharedItems.length > 0}
+    <div class="section-header">
+      <span class="section-label">Shared with me</span>
+    </div>
+    <div class="shared-list-container">
+      <SharedList items={sharedItems} />
+    </div>
+  {/if}
 </aside>
 
 {#if showTemplateManager}
@@ -439,6 +482,16 @@
     background: var(--accent-bg);
     box-shadow: inset 0 0 0 1px var(--accent-muted);
     border-radius: var(--radius-sm);
+  }
+
+  /* The shared section sits below the (flex:1) page tree. It keeps its own
+     scroll and is capped so a long shared list can't crowd out the tree. */
+  .shared-list-container {
+    flex-shrink: 0;
+    max-height: 32vh;
+    overflow-y: auto;
+    padding: 4px 6px 12px;
+    border-top: 1px solid var(--border-subtle);
   }
 
   .new-page-btn-wrapper {

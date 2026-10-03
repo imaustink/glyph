@@ -2021,6 +2021,41 @@ func (s *shareStore) GetForUserAndResource(_ context.Context, userID uuid.UUID, 
 	return nil, store.ErrNotFound
 }
 
+func (s *shareStore) ListSharedWithUser(_ context.Context, userID uuid.UUID) ([]*model.SharedItem, error) {
+	s.r.mu.RLock()
+	defer s.r.mu.RUnlock()
+	items := make([]*model.SharedItem, 0)
+	for _, sh := range s.r.shares {
+		if sh.SharedWith.ID != userID {
+			continue
+		}
+		if sh.ResourceType != model.ShareResourcePage && sh.ResourceType != model.ShareResourceFolder {
+			continue
+		}
+		p, ok := s.r.pages[sh.ResourceID]
+		if !ok {
+			// Resource deleted out from under the share — skip it, mirroring
+			// the SQL inner join to pages.
+			continue
+		}
+		it := &model.SharedItem{
+			ResourceType: sh.ResourceType,
+			ResourceID:   sh.ResourceID,
+			Title:        p.Title,
+			Permission:   sh.Permission,
+			SharedBy:     model.ShareUser{ID: sh.SharedByID},
+			SharedAt:     sh.CreatedAt,
+		}
+		if u, ok := s.r.usersByID[sh.SharedByID]; ok {
+			it.SharedBy.Email = u.Email
+			it.SharedBy.Name = u.Name
+		}
+		items = append(items, it)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].SharedAt.After(items[j].SharedAt) })
+	return items, nil
+}
+
 func (s *shareStore) UpdatePermission(_ context.Context, id uuid.UUID, permission model.SharePermission) (*model.Share, error) {
 	s.r.mu.Lock()
 	defer s.r.mu.Unlock()

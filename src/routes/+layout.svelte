@@ -8,6 +8,7 @@
   import { lanesStore } from '$lib/stores/lanes.svelte';
   import { templatesStore } from '$lib/stores/templates.svelte';
   import { orgsStore } from '$lib/stores/orgs.svelte';
+  import { sharedStore } from '$lib/stores/shared.svelte';
   import { authStore, type AuthLoadResult } from '$lib/stores/auth.svelte';
   import { evaluateTitleTemplate, evaluateContentTemplate } from '$lib/utils/titleTemplate';
   import { uiStore } from '$lib/stores/ui.svelte';
@@ -37,6 +38,26 @@
     if (uiStore.saveState === 'saved') refreshStorageUsage();
   });
 
+  // Re-pull "Shared with me" when the user returns to the tab, so shares
+  // granted while they were away show up without a full reload. Only meaningful
+  // in API mode, and only once the initial load has completed (so this never
+  // races the onMount fetch). The store's refresh() no-ops in local mode.
+  function refreshSharedOnReturn() {
+    if (document.visibilityState !== 'visible') return;
+    if (!sharedStore.loaded) return;
+    sharedStore.refresh();
+  }
+
+  $effect(() => {
+    if (storageMode !== 'api') return;
+    document.addEventListener('visibilitychange', refreshSharedOnReturn);
+    window.addEventListener('focus', refreshSharedOnReturn);
+    return () => {
+      document.removeEventListener('visibilitychange', refreshSharedOnReturn);
+      window.removeEventListener('focus', refreshSharedOnReturn);
+    };
+  });
+
   onMount(async () => {
     // In API mode, verify the session before loading data.
     // If not authenticated the /auth/me call returns 401 and
@@ -61,6 +82,10 @@
         templatesStore.load(),
         orgsStore.load()
       ]);
+      // Non-essential: its failure must not block the rest of the app from
+      // loading. handleAuthError still runs the redirect for a real
+      // UnauthorizedError before .catch swallows the re-throw.
+      void sharedStore.load().catch(() => {});
     } catch (err) {
       try {
         handleAuthError(err);

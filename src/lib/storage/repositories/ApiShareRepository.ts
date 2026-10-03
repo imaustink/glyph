@@ -1,5 +1,11 @@
 import { api } from '$lib/storage/apiClient';
-import type { Share, SharePermission, ShareResourceType, UserSearchResult } from '$lib/models/types';
+import type {
+	Share,
+	SharedItem,
+	SharePermission,
+	ShareResourceType,
+	UserSearchResult
+} from '$lib/models/types';
 
 export class ApiShareRepository {
 	async list(resourceType: ShareResourceType, resourceId: string): Promise<Share[]> {
@@ -8,6 +14,11 @@ export class ApiShareRepository {
 				`/api/v1/shares?resourceType=${resourceType}&resourceId=${resourceId}`
 			)) ?? []
 		);
+	}
+
+	/** Notes and folders shared with the current user (for the sidebar). */
+	async sharedWithMe(): Promise<SharedItem[]> {
+		return (await api.get<SharedItem[]>('/api/v1/shares/shared-with-me')) ?? [];
 	}
 
 	async create(

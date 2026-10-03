@@ -55,6 +55,25 @@ func (h *ShareHandler) ListShares(c *gin.Context) {
 	c.JSON(http.StatusOK, shares)
 }
 
+// GET /shares/shared-with-me
+//
+// Lists the notes and folders shared directly with the current user, for the
+// sidebar's "Shared with me" section. Unlike ListShares this is recipient-
+// scoped (not owner-gated): a user may always see what has been shared with
+// them.
+func (h *ShareHandler) SharedWithMe(c *gin.Context) {
+	user := auth.CurrentUser(c)
+	if !requireSessionAuth(c) {
+		return
+	}
+	items, err := h.Shares.ListSharedWithUser(c.Request.Context(), user.ID)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, items)
+}
+
 // POST /shares
 func (h *ShareHandler) CreateShare(c *gin.Context) {
 	user := auth.CurrentUser(c)
