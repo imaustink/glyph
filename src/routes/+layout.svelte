@@ -38,6 +38,18 @@
   });
 
   onMount(async () => {
+    // On phones the sidebar is a slide-in drawer, not a persistent panel. The
+    // store defaults it to open (correct for desktop, where it's always shown).
+    // Start it closed on narrow viewports so a fresh load or refresh doesn't
+    // bury the note/board behind a full-screen drawer + backdrop. Safe to run
+    // before the first paint of the shell: the sidebar only mounts once
+    // `pagesStore.loaded` flips true (after the awaited loads below), so it
+    // never renders open on mobile. Mirrors the breakpoint used in
+    // beforeNavigate.
+    if (window.innerWidth <= 768) {
+      uiStore.closeSidebar();
+    }
+
     // In API mode, verify the session before loading data.
     // If not authenticated the /auth/me call returns 401 and
     // the apiClient redirects to the OIDC login page.
