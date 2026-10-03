@@ -117,6 +117,8 @@ func renderBlock(n *node, alt bool) []string {
 			return nil
 		}
 		return []string{s}
+	case "table":
+		return renderTable(n)
 	case "bulletList", "orderedList":
 		return renderList(n, alt)
 	case "listItem":
@@ -199,6 +201,82 @@ func formatDest(href string) string {
 		return "<" + strings.NewReplacer("<", "%3C", ">", "%3E", "\n", "%0A").Replace(href) + ">"
 	}
 	return strings.ReplaceAll(href, `\`, `\\`)
+}
+
+// renderTable renders a ProseMirror table node as a GFM table: the first row
+// becomes the header, followed by a delimiter row carrying each column's
+// alignment (taken from the header cells' `align` attribute), then the body
+// rows. Pipes and newlines inside a cell are escaped/flattened so every row
+// stays a single, parseable line.
+func renderTable(n *node) []string {
+	rows := n.Content
+	if len(rows) == 0 {
+		return nil
+	}
+	ncol := 0
+	for _, row := range rows {
+		if len(row.Content) > ncol {
+			ncol = len(row.Content)
+		}
+	}
+	if ncol == 0 {
+		return nil
+	}
+	aligns := make([]string, ncol)
+	for c, cell := range rows[0].Content {
+		aligns[c] = stringAttr(cell.Attrs, "align")
+	}
+
+	out := []string{tableRowLine(rows[0], ncol)}
+	delim := make([]string, ncol)
+	for c := range delim {
+		delim[c] = alignMarker(aligns[c])
+	}
+	out = append(out, "| "+strings.Join(delim, " | ")+" |")
+	for _, row := range rows[1:] {
+		out = append(out, tableRowLine(row, ncol))
+	}
+	return out
+}
+
+func tableRowLine(row *node, ncol int) string {
+	cells := make([]string, ncol)
+	for c := 0; c < ncol; c++ {
+		if c < len(row.Content) {
+			cells[c] = renderTableCell(row.Content[c])
+		}
+	}
+	return "| " + strings.Join(cells, " | ") + " |"
+}
+
+// renderTableCell renders a cell's content as single-line inline Markdown. A
+// cell may hold block content (block+); each block's inline text is joined
+// with a space, hard breaks collapse to spaces (inHeading), and literal pipes
+// are escaped so they don't split the row.
+func renderTableCell(cell *node) string {
+	var parts []string
+	for _, b := range cell.Content {
+		if s := renderInline(b.Content, true); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	s := strings.Join(parts, " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "|", `\|`)
+	return strings.TrimSpace(s)
+}
+
+func alignMarker(align string) string {
+	switch align {
+	case "left":
+		return ":---"
+	case "right":
+		return "---:"
+	case "center":
+		return ":---:"
+	default:
+		return "---"
+	}
 }
 
 func renderList(n *node, alt bool) []string {
