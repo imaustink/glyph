@@ -39,6 +39,14 @@ on:
         required: false
         type: boolean
         default: false
+    # Only the two Docker Hub credentials are needed. Declared explicitly (not
+    # `secrets: inherit`) so an image-build workflow that logs into a public
+    # registry can't reach the homelab App key or the Tauri signing keys.
+    secrets:
+      REGISTRY_USERNAME:
+        required: true
+      REGISTRY_PASSWORD:
+        required: true
 
 permissions:
   contents: read

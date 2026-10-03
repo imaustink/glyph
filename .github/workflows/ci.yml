@@ -317,4 +317,6 @@ jobs:
       github.repository == 'imaustink/glyph' &&
       github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/build-images.yml
-    secrets: inherit
+    secrets:
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}

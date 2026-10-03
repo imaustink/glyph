@@ -67,7 +67,9 @@ jobs:
     uses: ./.github/workflows/build-images.yml
     with:
       skip-existing: true
-    secrets: inherit
+    secrets:
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
 
   deploy:
     needs: build-missing

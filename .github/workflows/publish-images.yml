@@ -44,4 +44,6 @@ jobs:
       # Empty falls back to the ref this workflow was dispatched on (tip of main).
       ref: ${{ inputs.ref }}
       force: true
-    secrets: inherit
+    secrets:
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
