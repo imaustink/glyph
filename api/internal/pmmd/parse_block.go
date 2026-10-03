@@ -197,24 +197,113 @@ func isTableDelimiter(line string) bool {
 	return strings.Contains(line, "|") && tableDelimiterRe.MatchString(line)
 }
 
-// parseTable reads a GFM table starting at lines[i]. The editor schema has no
-// table node, so the table is kept as one paragraph with a line (hard break)
-// per row, pipes included — readable, and stable across round trips — rather
-// than letting its rows run together as a single garbled line.
+// parseTable reads a GFM table starting at lines[i]. lines[i] is the header
+// row and lines[i+1] the delimiter row (the caller has checked both). It
+// produces a ProseMirror table node — table > tableRow > (tableHeader|tableCell)
+// > paragraph — so the editor renders a real table (issue #75). The header
+// fixes the column count; body cells beyond it are dropped and missing ones
+// filled with empty cells, matching GFM. Per-column alignment from the
+// delimiter row becomes each cell's `align` attribute.
 func parseTable(lines []string, i int) (*node, int) {
-	var rows []string
-	for i < len(lines) && !isBlank(lines[i]) && (len(rows) < 2 || !startsBlock(lines[i])) {
-		rows = append(rows, strings.TrimSpace(lines[i]))
+	header := splitTableRow(lines[i])
+	aligns := parseTableAligns(lines[i+1])
+	ncol := len(header)
+	i += 2
+
+	var bodyRows [][]string
+	for i < len(lines) && !isBlank(lines[i]) && !startsBlock(lines[i]) {
+		bodyRows = append(bodyRows, splitTableRow(lines[i]))
 		i++
 	}
-	p := &node{Type: "paragraph"}
-	for k, row := range rows {
-		if k > 0 {
-			p.Content = append(p.Content, &node{Type: "hardBreak"})
+
+	alignAt := func(col int) string {
+		if col < len(aligns) {
+			return aligns[col]
 		}
-		p.Content = append(p.Content, finishInline(parseInline(row, 0))...)
+		return ""
 	}
-	return p, i
+	buildRow := func(cells []string, cellType string) *node {
+		row := &node{Type: "tableRow"}
+		for col := 0; col < ncol; col++ {
+			text := ""
+			if col < len(cells) {
+				text = cells[col]
+			}
+			row.Content = append(row.Content, tableCellNode(cellType, alignAt(col), text))
+		}
+		return row
+	}
+
+	table := &node{Type: "table"}
+	table.Content = append(table.Content, buildRow(header, "tableHeader"))
+	for _, cells := range bodyRows {
+		table.Content = append(table.Content, buildRow(cells, "tableCell"))
+	}
+	return table, i
+}
+
+// tableCellNode builds a tableHeader/tableCell holding a single paragraph. An
+// empty cell keeps an empty paragraph so the cell's content model (block+) is
+// satisfied. A non-"" align becomes the cell's `align` attribute.
+func tableCellNode(cellType, align, text string) *node {
+	para := &node{Type: "paragraph"}
+	if content := finishInline(parseInline(strings.TrimSpace(text), 0)); len(content) > 0 {
+		para.Content = content
+	}
+	n := &node{Type: cellType, Content: []*node{para}}
+	if align != "" {
+		n.Attrs = map[string]any{"align": align}
+	}
+	return n
+}
+
+// splitTableRow splits one GFM table row into its cell texts. Optional leading
+// and trailing pipes are dropped and each cell is trimmed; a backslash-escaped
+// pipe (\|) is a literal character, not a column separator.
+func splitTableRow(line string) []string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "|")
+	line = strings.TrimSuffix(line, "|")
+	var cells []string
+	var cur strings.Builder
+	for j := 0; j < len(line); j++ {
+		switch c := line[j]; c {
+		case '\\':
+			if j+1 < len(line) && line[j+1] == '|' {
+				cur.WriteByte('|')
+				j++
+			} else {
+				cur.WriteByte('\\')
+			}
+		case '|':
+			cells = append(cells, strings.TrimSpace(cur.String()))
+			cur.Reset()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	cells = append(cells, strings.TrimSpace(cur.String()))
+	return cells
+}
+
+// parseTableAligns reads per-column alignment from a GFM delimiter row:
+// ":--" left, ":-:" center, "--:" right, "---" none ("").
+func parseTableAligns(line string) []string {
+	specs := splitTableRow(line)
+	aligns := make([]string, len(specs))
+	for k, s := range specs {
+		left := strings.HasPrefix(s, ":")
+		right := strings.HasSuffix(s, ":")
+		switch {
+		case left && right:
+			aligns[k] = "center"
+		case right:
+			aligns[k] = "right"
+		case left:
+			aligns[k] = "left"
+		}
+	}
+	return aligns
 }
 
 // startsBlock reports whether line begins a block that interrupts a
