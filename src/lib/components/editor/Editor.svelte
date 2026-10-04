@@ -995,6 +995,51 @@
     margin: 1.5em 0;
   }
 
+  /* ─── Tables (GFM, issue #75) ────────────────────────────────────────────── */
+  :global(.tiptap-editor table) {
+    border-collapse: collapse;
+    margin: 0.6em 0;
+    width: auto;
+    max-width: 100%;
+    overflow: hidden;
+    table-layout: fixed;
+  }
+
+  :global(.tiptap-editor th),
+  :global(.tiptap-editor td) {
+    border: 1px solid var(--border-strong);
+    padding: 6px 10px;
+    vertical-align: top;
+    text-align: left;
+    min-width: 3em;
+  }
+
+  :global(.tiptap-editor th) {
+    background: var(--bg-tertiary);
+    color: var(--text-heading);
+    font-weight: 600;
+  }
+
+  /* Empty cells still need to take up space so the grid reads as a table. */
+  :global(.tiptap-editor th p),
+  :global(.tiptap-editor td p) {
+    margin: 0;
+  }
+
+  :global(.tiptap-editor .selectedCell::after) {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--accent);
+    opacity: 0.12;
+    pointer-events: none;
+  }
+
+  :global(.tiptap-editor th),
+  :global(.tiptap-editor td) {
+    position: relative;
+  }
+
   :global(.tiptap-editor .ProseMirror-selectednode) {
     outline: 2px solid var(--accent);
     border-radius: var(--radius-sm);

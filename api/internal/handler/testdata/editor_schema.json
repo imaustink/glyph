@@ -23,6 +23,20 @@
 			"type"
 		],
 		"paragraph": [],
+		"table": [],
+		"tableCell": [
+			"align",
+			"colspan",
+			"colwidth",
+			"rowspan"
+		],
+		"tableHeader": [
+			"align",
+			"colspan",
+			"colwidth",
+			"rowspan"
+		],
+		"tableRow": [],
 		"text": []
 	},
 	"marks": {

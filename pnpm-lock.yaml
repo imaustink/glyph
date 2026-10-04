@@ -30,6 +30,9 @@ importers:
       '@tiptap/extension-placeholder':
         specifier: ^3.31.3
         version: 3.31.3(@tiptap/extensions@3.31.3(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3))
+      '@tiptap/extension-table':
+        specifier: 3.31.3
+        version: 3.31.3(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3)
       '@tiptap/markdown':
         specifier: ^3.31.3
         version: 3.31.3(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3)
@@ -105,7 +108,7 @@ importers:
         version: 8.0.8(@types/node@26.6.2)(esbuild@0.28.2)
       vitest:
         specifier: ^4.1.4
-        version: 4.1.4(@types/node@26.6.2)(@vitest/coverage-v8@4.1.5(vitest@4.1.4))(jsdom@29.0.2)(vite@8.0.8(@types/node@26.6.2)(esbuild@0.28.2))
+        version: 4.1.4(@types/node@26.6.2)(@vitest/coverage-v8@4.1.5)(jsdom@29.0.2)(vite@8.0.8(@types/node@26.6.2)(esbuild@0.28.2))
 
   collab:
     dependencies:
@@ -151,7 +154,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: ^4.1.4
-        version: 4.1.4(@types/node@26.6.2)(@vitest/coverage-v8@4.1.5(vitest@4.1.4))(jsdom@29.0.2)(vite@8.0.8(@types/node@26.6.2)(esbuild@0.28.2))
+        version: 4.1.4(@types/node@26.6.2)(@vitest/coverage-v8@4.1.5)(jsdom@29.0.2)(vite@8.0.8(@types/node@26.6.2)(esbuild@0.28.2))
       ws:
         specifier: ^8.21.3
         version: 8.21.3
@@ -1003,6 +1006,12 @@ packages:
     resolution: {integrity: sha512-G29bhKttYwcKHT+BI6emWVFol3RO/gUXxQVcmr/iT8LXXy7j8J6HFUnsKM+Kg5YlP1rxMRgsa65dbrQVahZi0A==}
     peerDependencies:
       '@tiptap/core': 3.31.3
+
+  '@tiptap/extension-table@3.31.3':
+    resolution: {integrity: sha512-7cnVPHhdiGGeauYqca6JVyPLTqZbqFEEk9nn2e2E8+fBo6zVtV07AktJBqth/XEzjZxcUmGxjoeuWYAisWjUHg==}
+    peerDependencies:
+      '@tiptap/core': 3.31.3
+      '@tiptap/pm': 3.31.3
 
   '@tiptap/extension-text@3.31.3':
     resolution: {integrity: sha512-gdsWtF+taeaCu6V+5Ct10fGo0ACUy1GnYtbb+mcathBt8OqbT+Ws60p/yEmKesBDz2Hn+B5IcWy6+2BBZl5ZTg==}
@@ -2484,6 +2493,11 @@ snapshots:
     dependencies:
       '@tiptap/core': 3.31.3(@tiptap/pm@3.31.3)
 
+  '@tiptap/extension-table@3.31.3(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3)':
+    dependencies:
+      '@tiptap/core': 3.31.3(@tiptap/pm@3.31.3)
+      '@tiptap/pm': 3.31.3
+
   '@tiptap/extension-text@3.31.3(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))':
     dependencies:
       '@tiptap/core': 3.31.3(@tiptap/pm@3.31.3)
@@ -2599,7 +2613,7 @@ snapshots:
       obug: 2.1.1
       std-env: 4.1.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.4(@types/node@26.6.2)(@vitest/coverage-v8@4.1.5(vitest@4.1.4))(jsdom@29.0.2)(vite@8.0.8(@types/node@26.6.2)(esbuild@0.28.2))
+      vitest: 4.1.4(@types/node@26.6.2)(@vitest/coverage-v8@4.1.5)(jsdom@29.0.2)(vite@8.0.8(@types/node@26.6.2)(esbuild@0.28.2))
 
   '@vitest/expect@4.1.4':
     dependencies:
@@ -3283,7 +3297,7 @@ snapshots:
     optionalDependencies:
       vite: 8.0.8(@types/node@26.6.2)(esbuild@0.28.2)
 
-  vitest@4.1.4(@types/node@26.6.2)(@vitest/coverage-v8@4.1.5(vitest@4.1.4))(jsdom@29.0.2)(vite@8.0.8(@types/node@26.6.2)(esbuild@0.28.2)):
+  vitest@4.1.4(@types/node@26.6.2)(@vitest/coverage-v8@4.1.5)(jsdom@29.0.2)(vite@8.0.8(@types/node@26.6.2)(esbuild@0.28.2)):
     dependencies:
       '@vitest/expect': 4.1.4
       '@vitest/mocker': 4.1.4(vite@8.0.8(@types/node@26.6.2)(esbuild@0.28.2))

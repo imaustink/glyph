@@ -16,6 +16,7 @@
 import { getSchema, type AnyExtension } from '@tiptap/core';
 import type { Schema } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
+import { Table, TableRow, TableHeader, TableCell } from '@tiptap/extension-table';
 import { TaskLinkExtension, type TaskLinkOptions } from '$lib/editor/extensions/TaskLinkExtension';
 
 export { CURRENT_SCHEMA_VERSION } from '$lib/editor/migrations';
@@ -46,6 +47,14 @@ export function documentExtensions(options: DocumentExtensionOptions = {}): AnyE
 			listItem: false,
 			...(options.undoRedo === false ? { undoRedo: false as const } : {})
 		}),
+		// GFM tables (issue #75). Column resizing is disabled: the resize handles
+		// write cell `colwidth` attributes, and the schema-equal collab/validator
+		// machinery already accepts the attribute, but resizing is a desktop-only
+		// interaction we deliberately leave out of the shared schema's behaviour.
+		Table.configure({ resizable: false }),
+		TableRow,
+		TableHeader,
+		TableCell,
 		options.taskLink ? TaskLinkExtension.configure(options.taskLink) : TaskLinkExtension
 	];
 }
