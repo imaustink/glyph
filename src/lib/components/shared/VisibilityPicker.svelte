@@ -1,5 +1,6 @@
 <script lang="ts">
   import { orgsStore } from '$lib/stores/orgs.svelte';
+  import { clampPopoverToViewport } from '$lib/utils/popoverPosition';
 
   interface Props {
     orgId: string | null | undefined;
@@ -47,21 +48,21 @@
   }
 
   function updateDropdownPosition() {
-    if (buttonRef) {
-      const rect = buttonRef.getBoundingClientRect();
-      const dropdownWidth = 220;
-      // Position dropdown below button
-      // Prefer aligning left edge, but if that would go off-screen right, align right edge instead
-      let left = rect.left;
-      if (left + dropdownWidth > window.innerWidth) {
-        left = rect.right - dropdownWidth;
-      }
-      // Ensure it doesn't go off the left edge
-      if (left < 0) {
-        left = 0;
-      }
-      dropdownStyle = `top: ${rect.bottom + 6}px; left: ${left}px;`;
-    }
+    if (!buttonRef) return;
+    const rect = buttonRef.getBoundingClientRect();
+    // Clamp to the viewport on both axes: align/flip horizontally and flip
+    // above (or cap the height so it scrolls) when it would run off the bottom.
+    const width = dropdownRef?.offsetWidth ?? 220;
+    // Measure the natural content height (scrollHeight), not offsetHeight: once a
+    // max-height has been applied, offsetHeight reports the clamped box, which
+    // would make the flip/placement decision re-run against a capped value.
+    const height = dropdownRef?.scrollHeight ?? 320;
+    const { top, left, maxHeight } = clampPopoverToViewport(
+      rect,
+      { width, height },
+      { width: window.innerWidth, height: window.innerHeight }
+    );
+    dropdownStyle = `top: ${top}px; left: ${left}px; max-height: ${maxHeight}px;`;
   }
 
   $effect(() => {
@@ -220,6 +221,7 @@
     border-radius: var(--radius-md);
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
     padding: 4px;
+    overflow-y: auto;
   }
 
   .option {
