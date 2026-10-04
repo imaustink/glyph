@@ -255,6 +255,20 @@ func TestFromMarkdownStructure(t *testing.T) {
 				`{"type":"tableCell","content":[`+p(txt("1"))+`]},`+
 				`{"type":"tableCell","content":[`+p(txt("2"))+`]}]}]}`,
 				p(txt("after")))},
+		// The header fixes the column count: a body row with MORE cells than
+		// the header has the extras dropped, and one with FEWER is padded with
+		// empty cells, matching GFM (parse_block.go buildRow).
+		{"ragged rows truncated and padded", "| a | b |\n|---|---|\n| 1 | 2 | 3 |\n| 4 |",
+			doc(`{"type":"table","content":[`+
+				`{"type":"tableRow","content":[`+
+				`{"type":"tableHeader","content":[`+p(txt("a"))+`]},`+
+				`{"type":"tableHeader","content":[`+p(txt("b"))+`]}]},`+
+				`{"type":"tableRow","content":[`+
+				`{"type":"tableCell","content":[`+p(txt("1"))+`]},`+
+				`{"type":"tableCell","content":[`+p(txt("2"))+`]}]},`+
+				`{"type":"tableRow","content":[`+
+				`{"type":"tableCell","content":[`+p(txt("4"))+`]},`+
+				`{"type":"tableCell","content":[`+p()+`]}]}]}`)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
