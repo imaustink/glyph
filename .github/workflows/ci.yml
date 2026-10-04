@@ -301,59 +301,22 @@ jobs:
           path: test-results/
           retention-days: 7
 
+  # Multi-arch build + push, on GitHub-hosted runners (build-images.yml owns the
+  # matrix, tag scheme and registry login — shared with cd.yml and
+  # publish-images.yml). Default checkout, so on a pull_request the tree hash is
+  # the merge ref's, matching what cd.yml computes after merge.
   build-and-push:
     needs: [frontend, collab, api, helm, e2e-local, e2e-api]
     # Fork PRs get no secrets on `pull_request` (public repo — the approval
     # gate controls whether a run starts, not what it can read), so the
-    # registry login below would fail with empty credentials. Skip the job
-    # for them; cd.yml builds the image after merge when it finds the tag
-    # missing. `github.repository` is the BASE repo on a fork PR, so the
-    # head repo is what distinguishes a fork.
+    # registry login would run with empty credentials. Skip for them; cd.yml
+    # builds the image after merge when it finds the tag missing.
+    # `github.repository` is the BASE repo on a fork PR, so the head repo is
+    # what distinguishes a fork.
     if: >-
       github.repository == 'imaustink/glyph' &&
       github.event.pull_request.head.repo.full_name == github.repository
-    # Self-hosted, arm64 — matches the production cluster's nodes. Building on
-    # ubuntu-latest (amd64) produces images that fail with "exec format error"
-    # when the kubelet tries to run them.
-    runs-on: arc-runner-set
-    # One job per image so the three builds run in parallel on separate
-    # runners. Each image has its own public Docker Hub repo. cd.yml's
-    # build-missing job carries the same matrix — keep the two in sync.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: frontend
-            dockerfile: Dockerfile
-            context: .
-            build-args: --build-arg VITE_STORAGE_MODE=api --build-arg VITE_API_URL=
-          - image: api
-            dockerfile: api/Dockerfile
-            context: api/
-          - image: collab
-            dockerfile: collab/Dockerfile
-            context: .
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Docker login
-        run: |
-          echo "$REGISTRY_PASSWORD" | docker login docker.io \
-            -u "$REGISTRY_USERNAME" --password-stdin
-        env:
-          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
-          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
-
-      # Tagged by the git tree hash (content), not the commit SHA — the PR
-      # branch's commit SHA and the eventual merge commit SHA on main differ
-      # (unless every merge is a fast-forward), but the tree hash is the same
-      # on both as long as the file contents are unchanged. That lets cd.yml
-      # compute this exact tag after merging and deploy the image built here
-      # without rebuilding it.
-      - name: Build & push ${{ matrix.image }}
-        run: |
-          ref="docker.io/blackmarket/glyph-${{ matrix.image }}:$(git rev-parse HEAD^{tree})"
-          docker build ${{ matrix.build-args }} \
-            -t "$ref" \
-            -f ${{ matrix.dockerfile }} ${{ matrix.context }}
-          docker push "$ref"
+    uses: ./.github/workflows/build-images.yml
+    secrets:
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}

@@ -246,8 +246,29 @@ func TestFromMarkdownStructure(t *testing.T) {
 		{"setext h1", "Title\n=====", doc(h(1, txt("Title")))},
 		{"setext h2", "Sub\n---\nbody", doc(h(2, txt("Sub")), p(txt("body")))},
 		{"multi-line setext", "a\nb\n===", doc(h(1, txt("a b")))},
-		{"table keeps one line per row", "| a | **b** |\n|---|---|\n| 1 | 2 |\n\nafter",
-			doc(p(txt("| a | "), txt("b", mk("bold")), txt(" |"), mk("hardBreak"), txt("|---|---|"), mk("hardBreak"), txt("| 1 | 2 |")), p(txt("after")))},
+		{"table becomes a table node", "| a | **b** |\n|---|---|\n| 1 | 2 |\n\nafter",
+			doc(`{"type":"table","content":[`+
+				`{"type":"tableRow","content":[`+
+				`{"type":"tableHeader","content":[`+p(txt("a"))+`]},`+
+				`{"type":"tableHeader","content":[`+p(txt("b", mk("bold")))+`]}]},`+
+				`{"type":"tableRow","content":[`+
+				`{"type":"tableCell","content":[`+p(txt("1"))+`]},`+
+				`{"type":"tableCell","content":[`+p(txt("2"))+`]}]}]}`,
+				p(txt("after")))},
+		// The header fixes the column count: a body row with MORE cells than
+		// the header has the extras dropped, and one with FEWER is padded with
+		// empty cells, matching GFM (parse_block.go buildRow).
+		{"ragged rows truncated and padded", "| a | b |\n|---|---|\n| 1 | 2 | 3 |\n| 4 |",
+			doc(`{"type":"table","content":[`+
+				`{"type":"tableRow","content":[`+
+				`{"type":"tableHeader","content":[`+p(txt("a"))+`]},`+
+				`{"type":"tableHeader","content":[`+p(txt("b"))+`]}]},`+
+				`{"type":"tableRow","content":[`+
+				`{"type":"tableCell","content":[`+p(txt("1"))+`]},`+
+				`{"type":"tableCell","content":[`+p(txt("2"))+`]}]},`+
+				`{"type":"tableRow","content":[`+
+				`{"type":"tableCell","content":[`+p(txt("4"))+`]},`+
+				`{"type":"tableCell","content":[`+p()+`]}]}]}`)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -425,7 +446,7 @@ func TestToMarkdown(t *testing.T) {
 		)),
 			"- [x] done\n- [ ] todo\n"},
 		{"empty task item", doc(ul(task(taskA, "todo", false, p()))), "- [ ] <!-- task:" + taskA + " -->\n"},
-		{"unknown nodes", doc(`{"type":"table","content":[{"type":"tableRow","content":[{"type":"tableCell","content":[`+p(txt("c1"))+`]},{"type":"tableCell","content":[`+p(txt("c2"))+`]}]}]}`,
+		{"unknown nodes", doc(`{"type":"callout","content":[`+p(txt("c1"))+`,`+p(txt("c2"))+`]}`,
 			p(txt("a"), `{"type":"mention","attrs":{"id":"x"},"content":[{"type":"text","text":"@bob"}]}`)),
 			"c1 c2\n\na@bob\n"},
 	}
@@ -474,6 +495,10 @@ func TestMarkdownRoundTripStable(t *testing.T) {
 		"- item\n\n  ```go\n  fmt.Println(\"x\")\n\n  // blank above\n  ```\n",
 		"3. three\n4. four\n",
 		"a\n\n&nbsp;\n\nb\n",
+		// GFM tables (issue #75): plain, and with per-column alignment.
+		"| a | b |\n| --- | --- |\n| 1 | 2 |\n",
+		"| L | C | R |\n| :--- | :---: | ---: |\n| x | y | z |\n",
+		"| a \\| b | c |\n| --- | --- |\n| 1 | 2 |\n",
 	}
 	for _, md := range cases {
 		t.Run(md, func(t *testing.T) {

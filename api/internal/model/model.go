@@ -378,6 +378,19 @@ type ShareUser struct {
 	Name  *string   `json:"name,omitempty"`
 }
 
+// SharedItem is a resource shared *with* the current user, projected with the
+// resource's own title/type so it can be listed (e.g. in the sidebar's "Shared
+// with me" section) without a second lookup. ResourceType is the kind of share
+// ('page' or 'folder'); SharedBy is the owner who granted the share.
+type SharedItem struct {
+	ResourceType ShareResourceType `json:"resourceType"`
+	ResourceID   uuid.UUID         `json:"resourceId"`
+	Title        string            `json:"title"`
+	Permission   SharePermission   `json:"permission"`
+	SharedBy     ShareUser         `json:"sharedBy"`
+	SharedAt     time.Time         `json:"sharedAt"`
+}
+
 // UserSearchResult is returned by the user search endpoint.
 type UserSearchResult struct {
 	ID    uuid.UUID `json:"id"`

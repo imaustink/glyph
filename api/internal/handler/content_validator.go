@@ -33,6 +33,10 @@ var allowedNodeTypes = map[string]bool{
 	"blockquote":     true,
 	"codeBlock":      true,
 	"horizontalRule": true,
+	"table":          true,
+	"tableRow":       true,
+	"tableHeader":    true,
+	"tableCell":      true,
 }
 
 // Allowed attributes per node type. Attributes not in this map are stripped.
@@ -41,6 +45,8 @@ var allowedAttrs = map[string]map[string]bool{
 	"orderedList": {"start": true, "type": true},
 	"listItem":    {"nodeId": true, "taskId": true, "checked": true, "taskStatus": true, "checkbox": true},
 	"codeBlock":   {"language": true},
+	"tableHeader": {"colspan": true, "rowspan": true, "colwidth": true, "align": true},
+	"tableCell":   {"colspan": true, "rowspan": true, "colwidth": true, "align": true},
 }
 
 // Allowed mark types.

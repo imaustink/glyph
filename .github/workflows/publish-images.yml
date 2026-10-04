@@ -17,8 +17,8 @@ name: Publish images
 # newer push in the cd-deploy concurrency group), or when an image otherwise
 # needs to be rebuilt.
 #
-# The matrix, runner, tag scheme and registry login are kept in sync with
-# ci.yml's build-and-push and cd.yml's build-missing.
+# The matrix, tag scheme and registry login live in the shared build-images.yml
+# workflow, which this calls with `force: true`.
 
 on:
   workflow_dispatch:
@@ -32,58 +32,18 @@ permissions:
   contents: read
 
 jobs:
+  # Force a fresh multi-arch build + push via the shared workflow. `force: true`
+  # builds with --pull --no-cache and overwrites the tag even when it already
+  # exists, so this also fixes an image whose *contents* (not just the pushed
+  # tag) went bad — e.g. a base image that moved under a floating tag — which a
+  # cache-reusing rebuild would otherwise reproduce byte-for-byte.
   publish:
     if: github.repository == 'imaustink/glyph'
-    # Self-hosted, arm64 — matches the production cluster's nodes. Building on
-    # ubuntu-latest (amd64) produces images that fail with "exec format error"
-    # when the kubelet tries to run them.
-    runs-on: arc-runner-set
-    # One job per image so the three builds run in parallel on separate
-    # runners. Keep in sync with ci.yml's build-and-push and cd.yml's
-    # build-missing.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: frontend
-            dockerfile: Dockerfile
-            context: .
-            build-args: --build-arg VITE_STORAGE_MODE=api --build-arg VITE_API_URL=
-          - image: api
-            dockerfile: api/Dockerfile
-            context: api/
-          - image: collab
-            dockerfile: collab/Dockerfile
-            context: .
-    steps:
-      # An empty `ref` input falls back to the ref this workflow was dispatched
-      # on (the default branch, i.e. the tip of main, unless another is picked).
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref }}
-
-      - name: Docker login
-        run: |
-          echo "$REGISTRY_PASSWORD" | docker login docker.io \
-            -u "$REGISTRY_USERNAME" --password-stdin
-        env:
-          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
-          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
-
-      # Tagged by git tree hash (content) so the tag matches exactly what
-      # cd.yml resolves and deploys. Unconditional build + push (unlike
-      # cd.yml's build-missing, which skips when the tag already exists): this
-      # is a *force* publish, so it also overwrites a bad or stale image under
-      # the same tag. `--pull --no-cache` guarantees a genuinely fresh build so
-      # the force path also fixes an image whose contents (not just the pushed
-      # tag) went bad — a base image that moved under a floating tag, or a
-      # poisoned local layer cache on a reused arc-runner-set runner — which a
-      # cache-reusing rebuild would otherwise reproduce byte-for-byte.
-      - name: Build & push ${{ matrix.image }} (forced)
-        run: |
-          ref="docker.io/blackmarket/glyph-${{ matrix.image }}:$(git rev-parse HEAD^{tree})"
-          echo "Force-publishing $ref"
-          docker build --pull --no-cache ${{ matrix.build-args }} \
-            -t "$ref" \
-            -f ${{ matrix.dockerfile }} ${{ matrix.context }}
-          docker push "$ref"
+    uses: ./.github/workflows/build-images.yml
+    with:
+      # Empty falls back to the ref this workflow was dispatched on (tip of main).
+      ref: ${{ inputs.ref }}
+      force: true
+    secrets:
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}

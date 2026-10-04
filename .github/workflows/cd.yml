@@ -56,51 +56,20 @@ jobs:
   # the file contents are unchanged. So deploy just references that tag.
   #
   # ...but not always: a PR from a fork gets no secrets on `pull_request`,
-  # so ci.yml skips build-and-push there and the tag is missing. Build it
-  # here instead, one job per image so they run in parallel. Fork code only
-  # ever reaches a registry credential after a maintainer has reviewed and
-  # merged it. The matrix must stay in sync with ci.yml's build-and-push so
-  # both paths produce the same image.
+  # so ci.yml skips build-and-push there and the tag is missing. Back it
+  # fill here via the shared build-images.yml workflow — `skip-existing` makes
+  # every image whose tree-hash manifest already exists a no-op, so this only
+  # builds what's actually missing. Fork code only ever reaches a registry
+  # credential after a maintainer has reviewed and merged it. The build runs on
+  # GitHub-hosted runners; only the deploy job below needs self-hosted.
   build-missing:
     if: github.repository == 'imaustink/glyph'
-    runs-on: arc-runner-set
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: frontend
-            dockerfile: Dockerfile
-            context: .
-            build-args: --build-arg VITE_STORAGE_MODE=api --build-arg VITE_API_URL=
-          - image: api
-            dockerfile: api/Dockerfile
-            context: api/
-          - image: collab
-            dockerfile: collab/Dockerfile
-            context: .
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Docker login
-        run: |
-          echo "$REGISTRY_PASSWORD" | docker login docker.io \
-            -u "$REGISTRY_USERNAME" --password-stdin
-        env:
-          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
-          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
-
-      - name: Build & push ${{ matrix.image }} if missing
-        run: |
-          ref="docker.io/blackmarket/glyph-${{ matrix.image }}:$(git rev-parse HEAD^{tree})"
-          if docker manifest inspect "$ref" >/dev/null 2>&1; then
-            echo "$ref already in registry"
-          else
-            echo "$ref missing — building"
-            docker build ${{ matrix.build-args }} \
-              -t "$ref" \
-              -f ${{ matrix.dockerfile }} ${{ matrix.context }}
-            docker push "$ref"
-          fi
+    uses: ./.github/workflows/build-images.yml
+    with:
+      skip-existing: true
+    secrets:
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
 
   deploy:
     needs: build-missing

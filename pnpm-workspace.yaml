@@ -11,9 +11,11 @@ allowBuilds:
   esbuild: true
 
 overrides:
-  # Svelte devalue: DoS via sparse array deserialization
-  # (GHSA-r593-y4mm-cwwr) — pulled in transitively via @sveltejs/kit.
-  "devalue@>=5.6.3 <=5.8.0": ">=5.8.1"
+  # Svelte devalue advisories (DoS via sparse-array deserialization and
+  # related uneval/CPU amplification, __proto__ bypass) — pulled in
+  # transitively via svelte/@sveltejs/kit. Patched in 5.9.3; cap below 6 so
+  # engine-strict doesn't trip on 6.x's Node >=22.17 requirement.
+  "devalue@<5.9.3": ">=5.9.3 <6"
   # Pin yjs (and every y-* peer resolves against it) to 13.6.32. 13.6.33 was
   # published within the CI minimum-release-age (supply-chain) window, which
   # fails `pnpm install --frozen-lockfile`. Bump once 13.6.33+ clears the gate.

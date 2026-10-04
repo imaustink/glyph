@@ -94,6 +94,28 @@ func TestValidatorKeepsEditorAttrs(t *testing.T) {
 	}
 }
 
+// TestValidatorKeepsTableContent: a GFM table (issue #75) is representable in
+// the editor schema, so its nodes and attributes — including a cell's `align`
+// and array-valued `colwidth` — must survive a save unchanged (DI-24).
+func TestValidatorKeepsTableContent(t *testing.T) {
+	in := `{"type":"doc","content":[{"type":"table","content":[` +
+		`{"type":"tableRow","content":[` +
+		`{"type":"tableHeader","attrs":{"align":"center","colwidth":[120]},"content":[{"type":"paragraph","content":[{"type":"text","text":"H"}]}]},` +
+		`{"type":"tableHeader","content":[{"type":"paragraph","content":[{"type":"text","text":"H2"}]}]}]},` +
+		`{"type":"tableRow","content":[` +
+		`{"type":"tableCell","attrs":{"colspan":2},"content":[{"type":"paragraph","content":[{"type":"text","text":"c"}]}]}]}]}]}`
+	out, err := ValidateProseMirrorContent([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want, got any
+	_ = json.Unmarshal([]byte(in), &want)
+	_ = json.Unmarshal(out, &got)
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("validator altered table content\nin:  %s\nout: %s", in, out)
+	}
+}
+
 // TestValidatorDowngradesNodesTheEditorLacks: stored or submitted content
 // with a node the editor can't represent must not be dropped silently (it
 // used to be kept, which blanked the editor — DI-01). It's downgraded to

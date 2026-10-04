@@ -318,6 +318,20 @@ export interface Share {
   createdAt: string;
 }
 
+/**
+ * A note or folder shared *with* the current user, as returned by
+ * `GET /shares/shared-with-me`. Projected with the resource's own title/type so
+ * the sidebar's "Shared with me" section can list it without a second lookup.
+ */
+export interface SharedItem {
+  resourceType: ShareResourceType;
+  resourceId: string;
+  title: string;
+  permission: SharePermission;
+  sharedBy: ShareUser;
+  sharedAt: string;
+}
+
 // ─── OAuth Clients ────────────────────────────────────────────────────────────
 
 export type OAuthScope =
