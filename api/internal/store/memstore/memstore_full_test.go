@@ -1080,6 +1080,50 @@ func TestShareStore_ListForResource(t *testing.T) {
 	}
 }
 
+func TestShareStore_ListSharedWithUser(t *testing.T) {
+	r := NewRegistry()
+	s := &shareStore{r: r}
+	userID := uuid.New()
+	ownerID := uuid.New()
+	ownerName := "Owner"
+	r.usersByID[ownerID] = &model.User{ID: ownerID, Name: &ownerName}
+
+	noteID := uuid.New()
+	folderID := uuid.New()
+	taskID := uuid.New()
+	r.pages[noteID] = &model.Page{ID: noteID, Type: model.NodeTypePage, Title: "Shared Note"}
+	r.pages[folderID] = &model.Page{ID: folderID, Type: model.NodeTypeFolder, Title: "Shared Folder"}
+
+	mk := func(rt model.ShareResourceType, rid uuid.UUID, who uuid.UUID) {
+		//nolint:errcheck
+		s.Create(ctx, &model.Share{ResourceType: rt, ResourceID: rid, SharedByID: ownerID, SharedWith: model.ShareUser{ID: who}, Permission: model.SharePermissionViewer})
+	}
+	mk(model.ShareResourcePage, noteID, userID)
+	mk(model.ShareResourceFolder, folderID, userID)
+	// Not for this user, a task share, and a share whose resource is gone: all excluded.
+	mk(model.ShareResourcePage, noteID, uuid.New())
+	mk(model.ShareResourceTask, taskID, userID)
+	mk(model.ShareResourcePage, uuid.New(), userID)
+
+	items, err := s.ListSharedWithUser(ctx, userID)
+	if err != nil {
+		t.Fatalf("ListSharedWithUser: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d: %+v", len(items), items)
+	}
+	titles := map[string]model.ShareResourceType{}
+	for _, it := range items {
+		titles[it.Title] = it.ResourceType
+		if it.SharedBy.ID != ownerID || it.SharedBy.Name == nil || *it.SharedBy.Name != ownerName {
+			t.Errorf("sharer not hydrated: %+v", it.SharedBy)
+		}
+	}
+	if titles["Shared Note"] != model.ShareResourcePage || titles["Shared Folder"] != model.ShareResourceFolder {
+		t.Errorf("unexpected items: %+v", titles)
+	}
+}
+
 func TestShareStore_GetForUserAndResource_Found(t *testing.T) {
 	s := &shareStore{r: NewRegistry()}
 	userID := uuid.New()

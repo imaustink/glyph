@@ -288,3 +288,106 @@ if err != nil || len(got) != 1 {
 t.Fatalf("ListForResource_Success: err=%v", err)
 }
 }
+
+// ─── ListSharedWithUser ───────────────────────────────────────────────────────
+
+// makeScanSharedItemFn scans the column set of ListSharedWithUser:
+// resource_type, resource_id, title, permission, sharedBy id/email/name, sharedAt.
+func makeScanSharedItemFn() func(dest ...any) error {
+return func(dest ...any) error {
+name := "Owner"
+vals := []any{
+model.ShareResourceFolder,   // ResourceType
+uuid.New(),                  // ResourceID
+"Shared Folder",             // Title
+model.SharePermissionViewer, // Permission
+uuid.New(),                  // SharedBy.ID
+(*string)(nil),              // SharedBy.Email
+&name,                       // SharedBy.Name
+time.Now(),                  // SharedAt
+}
+for i, d := range dest {
+switch p := d.(type) {
+case *uuid.UUID:
+if v, ok := vals[i].(uuid.UUID); ok {
+*p = v
+}
+case *string:
+if v, ok := vals[i].(string); ok {
+*p = v
+}
+case *model.ShareResourceType:
+if v, ok := vals[i].(model.ShareResourceType); ok {
+*p = v
+}
+case *model.SharePermission:
+if v, ok := vals[i].(model.SharePermission); ok {
+*p = v
+}
+case **string:
+if v, ok := vals[i].(*string); ok {
+*p = v
+}
+case *time.Time:
+if v, ok := vals[i].(time.Time); ok {
+*p = v
+}
+}
+}
+return nil
+}
+}
+
+func TestShareStore_ListSharedWithUser_QueryError(t *testing.T) {
+pool := &mockPool{
+queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+return nil, errors.New("db error")
+},
+}
+s := NewShareStore(pool)
+if _, err := s.ListSharedWithUser(context.Background(), uuid.New()); err == nil {
+t.Error("expected error")
+}
+}
+
+func TestShareStore_ListSharedWithUser_ScanError(t *testing.T) {
+pool := &mockPool{
+queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+return &mockRows{rows: []func(...any) error{
+func(dest ...any) error { return errors.New("scan error") },
+}}, nil
+},
+}
+s := NewShareStore(pool)
+if _, err := s.ListSharedWithUser(context.Background(), uuid.New()); err == nil {
+t.Error("expected error")
+}
+}
+
+func TestShareStore_ListSharedWithUser_RowsErr(t *testing.T) {
+pool := &mockPool{
+queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+return &mockRows{err: errors.New("rows err")}, nil
+},
+}
+s := NewShareStore(pool)
+if _, err := s.ListSharedWithUser(context.Background(), uuid.New()); err == nil {
+t.Error("expected error")
+}
+}
+
+func TestShareStore_ListSharedWithUser_Success(t *testing.T) {
+pool := &mockPool{
+queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+return &mockRows{rows: []func(...any) error{makeScanSharedItemFn()}}, nil
+},
+}
+s := NewShareStore(pool)
+got, err := s.ListSharedWithUser(context.Background(), uuid.New())
+if err != nil || len(got) != 1 {
+t.Fatalf("ListSharedWithUser_Success: err=%v len=%d", err, len(got))
+}
+if got[0].Title != "Shared Folder" || got[0].ResourceType != model.ShareResourceFolder {
+t.Errorf("unexpected item: %+v", got[0])
+}
+}

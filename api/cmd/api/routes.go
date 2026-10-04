@@ -123,6 +123,7 @@ func registerRoutes(apiGroup *gin.RouterGroup, h *handlers) {
 	apiGroup.DELETE("/orgs/:orgId/members/:userId", h.orgs.RemoveOrgMember)
 
 	// Shares
+	apiGroup.GET("/shares/shared-with-me", h.shares.SharedWithMe)
 	apiGroup.GET("/shares", h.shares.ListShares)
 	apiGroup.POST("/shares", h.shares.CreateShare)
 	apiGroup.PATCH("/shares/:shareId", h.shares.UpdateSharePermission)

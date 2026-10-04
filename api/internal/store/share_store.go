@@ -113,6 +113,39 @@ func (s *pgShareStore) GetForUserAndResource(
 	return sh, nil
 }
 
+func (s *pgShareStore) ListSharedWithUser(ctx context.Context, userID uuid.UUID) ([]*model.SharedItem, error) {
+	// Join to pages for the resource's title/type and to users for the sharer.
+	// The inner join to pages naturally drops shares whose resource was deleted
+	// (shares.resource_id carries no FK, so orphan rows can linger).
+	const q = `
+		SELECT s.resource_type, s.resource_id, p.title, s.permission,
+		       u.id, u.email, u.name, s.created_at
+		FROM shares s
+		JOIN pages p ON p.id = s.resource_id
+		JOIN users u ON u.id = s.shared_by_id
+		WHERE s.shared_with_id = $1
+		  AND s.resource_type IN ('page', 'folder')
+		ORDER BY s.created_at DESC`
+	rows, err := s.pool.Query(ctx, q, userID)
+	if err != nil {
+		return nil, fmt.Errorf("shared with user list: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]*model.SharedItem, 0)
+	for rows.Next() {
+		it := &model.SharedItem{}
+		if err := rows.Scan(
+			&it.ResourceType, &it.ResourceID, &it.Title, &it.Permission,
+			&it.SharedBy.ID, &it.SharedBy.Email, &it.SharedBy.Name, &it.SharedAt,
+		); err != nil {
+			return nil, fmt.Errorf("shared with user scan: %w", err)
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
 func (s *pgShareStore) UpdatePermission(ctx context.Context, id uuid.UUID, permission model.SharePermission) (*model.Share, error) {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE shares SET permission=$1 WHERE id=$2`, permission, id)
