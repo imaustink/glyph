@@ -78,7 +78,7 @@ CI publishes images to public Docker Hub repositories for pull requests from thi
 
 Images are built for **linux/arm64** and tagged with the git tree hash of the commit they were built from (`git rev-parse HEAD^{tree}`); there is no `latest` tag. These are the default repositories in the Helm chart (`helm/glyph/values.yaml`).
 
-Because the tag is the tree hash, merging a PR whose branch is **behind `main`** produces a merge commit whose tree differs from the PR-head tree CI built — so the tip-of-main image can be missing. CD's build-missing job normally backfills it on the push to `main`; the **Publish images** workflow (`.github/workflows/publish-images.yml`, `workflow_dispatch`) is the on-demand escape hatch to force-(re)build and push all three images for a chosen ref (default: tip of `main`) without deploying.
+Because the tag is the tree hash, merging a PR whose branch is **behind `main`** produces a merge commit whose tree differs from the PR-head tree CI built — so the tip-of-main image can be missing. CD's build-missing job normally backfills it on the push to `main`; the **Publish images** workflow (`.github/workflows/publish-images.yml`, `workflow_dispatch`) is the on-demand escape hatch to force-(re)build and push all three images for a chosen ref (default: tip of `main`) without deploying. The durable fix is to require branches to be up to date before merging so the mismatch can't be merged in the first place — see [docs/runbooks/branch-protection.md](docs/runbooks/branch-protection.md).
 
 ## Desktop app
 
