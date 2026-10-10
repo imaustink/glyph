@@ -11,6 +11,7 @@ A notes-taking and task-tracking app with a WYSIWYG markdown editor and kanban-s
 - **Kanban board** — Configurable lanes with filters and sorting (auto, field, or manual).
 - **Page tree** — Hierarchical pages and folders, unlimited depth.
 - **Search** — Full-text search via `⌘K` modal or dedicated search page (Fuse.js).
+- **URL previews** — Opt-in Open Graph preview cards under bare links in notes (**Settings → Preferences**; requires the API backend).
 - **Two storage backends** — LocalStorage (offline, no setup) or Go REST API + PostgreSQL.
 - **Realtime collaboration** — With the API backend, several people can edit a note at once, with live cursors (Yjs + Hocuspocus; see [collab/README.md](collab/README.md)).
 - **MCP server** — AI agents (Claude, Cursor, …) can read and write your notes and tasks. See [MCP server](#mcp-server).
