@@ -139,8 +139,11 @@ test.describe('Quick page switching (#53)', () => {
 		await expect(page).not.toHaveURL(firstUrl, { timeout: 2_000 });
 		await expect(page.locator('.page-title')).toHaveText('Second Page');
 
-		await page.clock.resume();
+		// Check persistence while the clock is still paused, so the old page's
+		// armed debounce timer can't be what saved the edit: only the Editor's
+		// flush on pageId change can have written it.
 		await navigateToPage(page, 'Getting Started');
 		await expect(editor).toContainText('quick-switch');
+		await page.clock.resume();
 	});
 });
