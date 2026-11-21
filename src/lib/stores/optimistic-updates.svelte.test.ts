@@ -151,6 +151,7 @@ function pageRepo(overrides: Partial<IPageRepository> = {}): IPageRepository {
     getContent: vi.fn().mockResolvedValue(null),
     saveContent: vi.fn().mockResolvedValue(undefined),
     deleteContent: vi.fn().mockResolvedValue(undefined),
+    searchContent: vi.fn().mockResolvedValue([]),
     deleteWithContent: vi.fn().mockResolvedValue(true),
     deleteSubtree: vi.fn().mockResolvedValue(undefined),
     getTree: vi.fn().mockReturnValue([]),

@@ -228,3 +228,40 @@ describe('ApiPageRepository', () => {
     });
   });
 });
+
+describe('ApiPageRepository.searchContent', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('asks GET /api/v1/search for content-only page matches', async () => {
+    mockGet.mockResolvedValue([
+      { id: 'p1', type: 'page', title: 'Roadmap', snippet: '…the roadmap for Q3…' },
+      { id: 'p2', type: 'page', title: 'Notes', snippet: '…the roadmap is…' }
+    ]);
+    const repo = new ApiPageRepository();
+    const matches = await repo.searchContent(' the roadmap ', 25);
+    expect(mockGet).toHaveBeenCalledWith(
+      '/api/v1/search?q=the+roadmap&types=page&match=content&limit=25'
+    );
+    expect(matches).toEqual([
+      { pageId: 'p1', snippet: '…the roadmap for Q3…' },
+      { pageId: 'p2', snippet: '…the roadmap is…' }
+    ]);
+  });
+
+  it('drops results without a snippet', async () => {
+    mockGet.mockResolvedValue([
+      { id: 'p1', type: 'page', title: 'Roadmap', snippet: '' },
+      { id: 'p2', type: 'page', title: 'Notes', snippet: '…the roadmap is…' }
+    ]);
+    const repo = new ApiPageRepository();
+    expect(await repo.searchContent('roadmap', 25)).toEqual([
+      { pageId: 'p2', snippet: '…the roadmap is…' }
+    ]);
+  });
+
+  it('does not call the API for a blank query', async () => {
+    const repo = new ApiPageRepository();
+    expect(await repo.searchContent('   ', 10)).toEqual([]);
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+});
