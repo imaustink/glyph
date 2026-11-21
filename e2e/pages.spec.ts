@@ -112,3 +112,35 @@ test.describe('Page management', () => {
 		await page.locator('button:has-text("Done")').click();
 	});
 });
+
+test.describe('Quick page switching (#53)', () => {
+	test('a sidebar click right after typing switches pages at once and keeps the edit', async ({ page }) => {
+		await createNewPage(page);
+		const input = page.locator('input.title-edit');
+		await expect(input).toBeVisible({ timeout: 3_000 });
+		await input.fill('Second Page');
+		await input.press('Enter');
+		await expect(page.locator('.page-title')).toHaveText('Second Page');
+
+		await navigateToPage(page, 'Getting Started');
+		const firstUrl = page.url();
+
+		// Freeze timers so the content-save debounce stays armed: the old guard
+		// held the navigation until that save landed, so the click never took
+		// effect while the clock was paused.
+		await page.clock.install();
+		await page.clock.pauseAt(Date.now() + 1_000);
+		const editor = page.locator('main .tiptap-editor');
+		await editor.click();
+		await page.keyboard.press('ControlOrMeta+End');
+		await page.keyboard.type(' quick-switch');
+
+		await page.locator('.node-label:has-text("Second Page")').click();
+		await expect(page).not.toHaveURL(firstUrl, { timeout: 2_000 });
+		await expect(page.locator('.page-title')).toHaveText('Second Page');
+
+		await page.clock.resume();
+		await navigateToPage(page, 'Getting Started');
+		await expect(editor).toContainText('quick-switch');
+	});
+});
