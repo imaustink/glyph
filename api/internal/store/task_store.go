@@ -22,9 +22,10 @@ const taskColumns = `id, user_id, title, description, status, priority, tags, du
 
 // taskAccessFilter enforces the task read policy and hides soft-deleted tasks
 // from every read. A task is readable by the three tiers of
-// store.ResourceAccessFilter, and — if it comes from a note — by anyone who
-// can read that note: a note's tasks are part of the note.
-var taskAccessFilter = "((" + ResourceAccessFilter(ResourceTask) + " OR " + taskSourcePageReadable + ") AND tasks.deleted_at IS NULL)"
+// store.ResourceAccessFilter, by anyone who can read the note it comes from
+// (a note's tasks are part of the note), and by anyone a folder whose board
+// shows it is shared with (a folder's tasks are part of the folder).
+var taskAccessFilter = "((" + ResourceAccessFilter(ResourceTask) + " OR " + taskSourcePageReadable + " OR " + taskFolderReadable + ") AND tasks.deleted_at IS NULL)"
 
 // taskSourcePageReadable mirrors the page read filter for the task's source
 // page. $1 = userID.
@@ -38,6 +39,52 @@ const taskSourcePageReadable = `(tasks.source_page_id IS NOT NULL AND EXISTS (
 		           WHERE resource_type = 'page' AND resource_id = sp.id AND shared_with_id = $1)
 	)
 ))`
+
+// sharedFoldersSQL selects (id, owner) of the folders shared directly with
+// user $1.
+const sharedFoldersSQL = `SELECT f.id, f.user_id FROM pages f
+	WHERE f.type = 'folder' AND EXISTS (
+		SELECT 1 FROM shares
+		WHERE resource_type = 'folder' AND resource_id = f.id AND shared_with_id = $1
+	)`
+
+// sharedFolderTreeSQL selects (id, owner) for every page under a folder
+// shared directly with user $1, where owner is the shared folder's owner.
+// UNION (not UNION ALL) makes the walk terminate even on a parent_id cycle.
+const sharedFolderTreeSQL = `WITH RECURSIVE shared_tree AS (
+			SELECT f.id, f.user_id AS owner_id FROM (` + sharedFoldersSQL + `) f
+			UNION
+			SELECT p.id, st.owner_id FROM pages p JOIN shared_tree st ON p.parent_id = st.id
+		)
+		SELECT id, owner_id FROM shared_tree`
+
+// taskFolderReadable makes a folder's tasks readable by everyone the folder
+// is shared with: sharing a folder shares its board, and the board's tasks
+// with it. It mirrors PageStore.GetDescendantIDs + TaskStore.ListByFolder: a
+// task is on a folder's board when it is assigned to the folder (folder_id)
+// or comes from a note anywhere under it (source_page_id). Without this, an
+// invitee could see a shared folder's board but every task on it 404'd when
+// opened (GET /tasks/:id).
+//
+// A share can only pass on what its owner can read: a private task is
+// reached through a folder share only when it belongs to the shared folder's
+// owner. Otherwise another org member's private note under the folder would
+// leak its tasks to the invitee, who'd see more than the folder's owner can.
+//
+// Only direct folder shares count here; the owner and org tiers already
+// reach these tasks through the tasks' own (inherited) owner/org/privacy.
+// All subqueries are uncorrelated, so Postgres evaluates each once per
+// statement rather than per row.
+const taskFolderReadable = `(
+	(tasks.is_private = false AND (
+		tasks.folder_id IN (SELECT id FROM (` + sharedFoldersSQL + `) sf)
+		OR tasks.source_page_id IN (SELECT id FROM (` + sharedFolderTreeSQL + `) st)
+	))
+	OR (tasks.is_private = true AND (
+		(tasks.folder_id, tasks.user_id) IN (SELECT id, user_id FROM (` + sharedFoldersSQL + `) sf)
+		OR (tasks.source_page_id, tasks.user_id) IN (SELECT id, owner_id FROM (` + sharedFolderTreeSQL + `) st)
+	))
+)`
 
 func scanTask(row interface{ Scan(...interface{}) error }) (*model.Task, error) {
 	t := &model.Task{}
