@@ -363,6 +363,10 @@
     flex-direction: column;
     overflow: hidden;
     height: 100vh;
+    /* On mobile, 100vh includes the area behind the browser's URL bar /
+       toolbar, which pushed the bottom sidebar items off-screen (#84).
+       dvh tracks the actually visible viewport. */
+    height: 100dvh;
   }
 
   .sidebar-header {

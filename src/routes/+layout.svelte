@@ -286,6 +286,7 @@
     display: flex;
     flex-direction: column;
     height: 100vh;
+    height: 100dvh; /* visible viewport on mobile (#84) */
     overflow: hidden;
     position: relative;
   }
