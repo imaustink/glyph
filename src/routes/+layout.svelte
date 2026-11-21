@@ -441,6 +441,26 @@
       z-index: 50;
       transform: translateX(-100%);
       transition: transform 200ms ease;
+      /* Keep the drawer's contents clear of the notch / home indicator
+         (#78). The padding area takes the sidebar's colour. */
+      height: 100vh;
+      height: 100dvh;
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+      padding-left: env(safe-area-inset-left);
+      background: var(--bg-secondary);
+    }
+
+    .sidebar-container :global(.sidebar) {
+      height: 100%;
+    }
+
+    /* Keep page content clear of the notch in standalone / landscape (#78).
+       env() is 0 where there is no inset, so this is a no-op elsewhere. */
+    .main-content {
+      padding-top: env(safe-area-inset-top);
+      padding-left: env(safe-area-inset-left);
+      padding-right: env(safe-area-inset-right);
     }
 
     .sidebar-container.open {
@@ -460,11 +480,12 @@
       align-items: center;
       justify-content: center;
       position: fixed;
-      top: 10px;
-      left: 10px;
+      top: calc(10px + env(safe-area-inset-top));
+      left: calc(10px + env(safe-area-inset-left));
       z-index: 30;
-      width: 36px;
-      height: 36px;
+      /* 44×44: the iOS minimum touch target (#78). */
+      width: 44px;
+      height: 44px;
       padding: 0;
       border-radius: var(--radius-md);
       background: var(--bg-secondary);

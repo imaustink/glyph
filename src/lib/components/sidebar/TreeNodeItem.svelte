@@ -441,6 +441,20 @@
 
   .icon-btn:hover { color: var(--text-primary); }
 
+  @media (pointer: coarse) {
+    /* Touch has no hover, so the row actions would otherwise stay hidden. */
+    .node-actions { opacity: 1; display: flex; }
+    /* The 44px icon buttons set the row height; drop the extra padding. */
+    .node-row { padding-top: 0; padding-bottom: 0; min-height: 44px; }
+    /* Taller tap area for the expand chevron without widening it (#78). */
+    .toggle-btn { position: relative; }
+    .toggle-btn::after {
+      content: '';
+      position: absolute;
+      inset: -14px -4px;
+    }
+  }
+
   .children {
     padding-left: 14px;
   }

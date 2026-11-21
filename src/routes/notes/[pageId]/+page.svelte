@@ -321,7 +321,7 @@
   /* ─── Mobile responsive ─────────────────────────────────────────────────── */
   @media (max-width: 768px) {
     .page-header {
-      /* Clear the fixed hamburger button (top:10 + height:36 = 46px) */
+      /* Clear the fixed hamburger button (top:10 + height:44 = 54px) */
       padding: 56px 16px 0;
       max-width: 100%;
     }

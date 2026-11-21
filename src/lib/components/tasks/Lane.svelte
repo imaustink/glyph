@@ -303,7 +303,18 @@
     display: flex;
     flex-direction: column;
     max-height: calc(100vh - 120px);
+    max-height: calc(100dvh - 120px); /* visible viewport on mobile (#78) */
     flex-shrink: 0;
+  }
+
+  /* On phones a fixed 280px lane leaves an awkward sliver of the next one;
+     size lanes to the screen and snap them into view (#78). */
+  @media (max-width: 768px) {
+    .lane {
+      width: min(85vw, 300px);
+      min-width: min(85vw, 300px);
+      scroll-snap-align: start;
+    }
   }
 
   .lane-header {

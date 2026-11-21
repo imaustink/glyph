@@ -254,6 +254,16 @@
   }
   .board-search-clear:hover { color: var(--text-primary); background: var(--bg-hover); }
 
+  /* 44×44 hit area on touch without growing the search box (#78). */
+  @media (pointer: coarse) {
+    .board-search-clear { position: relative; }
+    .board-search-clear::after {
+      content: '';
+      position: absolute;
+      inset: -14px;
+    }
+  }
+
   .board-container {
     flex: 1;
     overflow: hidden;
@@ -303,7 +313,7 @@
   /* ─── Mobile responsive ─────────────────────────────────────────────────── */
   @media (max-width: 768px) {
     .board-header {
-      /* Clear the fixed hamburger button (top:10 + height:36 = 46px) */
+      /* Clear the fixed hamburger button (top:10 + height:44 = 54px) */
       padding: 56px 16px 12px;
       flex-wrap: wrap;
       row-gap: 10px;
@@ -317,6 +327,24 @@
     .board-search {
       width: auto;
       flex: 1;
+      /* Let the search box shrink so the 16px input below doesn't push
+         "New task" off the edge. */
+      min-width: 0;
+    }
+
+    /* Snap lanes into view when swiping the board (#78). */
+    .lanes-scroll {
+      scroll-snap-type: x mandatory;
+      scroll-padding-inline: 16px;
+    }
+
+    .add-lane-col {
+      scroll-snap-align: start;
+    }
+
+    /* iOS Safari zooms the page when focusing an input under 16px (#78). */
+    .board-search-input {
+      font-size: 16px;
     }
 
     .lanes-scroll {

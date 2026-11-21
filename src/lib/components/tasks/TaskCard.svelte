@@ -130,6 +130,17 @@
     line-height: 0;
   }
 
+  /* Expand the tiny status dot to a ~44px hit area on touch without changing
+     the card layout (#78). */
+  @media (pointer: coarse) {
+    .status-dot { position: relative; }
+    .status-dot::after {
+      content: '';
+      position: absolute;
+      inset: -16px;
+    }
+  }
+
   .dot {
     display: block;
     width: 10px;
