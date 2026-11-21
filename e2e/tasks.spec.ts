@@ -753,6 +753,28 @@ test.describe('Tasks', () => {
 		).toBeVisible({ timeout: 15_000 });
 	});
 
+	test('pressing Enter in the lane config modal saves, closes, and shows a success notification (#49)', async ({ page }) => {
+		await navigateToTaskBoard(page);
+
+		// Locate the lane by position — the rename below changes its title text.
+		const laneTitles = await page.locator('.lane-title').allTextContents();
+		const laneIndex = laneTitles.findIndex((title) => title.trim() === 'All Tasks');
+		const allTasksLane = page.locator('.lane').nth(laneIndex);
+		await expect(allTasksLane).toBeVisible({ timeout: 15_000 });
+
+		await allTasksLane.locator('.icon-btn[title="Configure lane"]').click();
+		const modal = page.locator('[role="dialog"][aria-label="Configure lane"]');
+		await expect(modal).toBeVisible({ timeout: 15_000 });
+
+		const nameInput = modal.locator('#lane-title');
+		await nameInput.fill('Everything');
+		await nameInput.press('Enter');
+
+		await expect(modal).not.toBeVisible();
+		await expect(allTasksLane.locator('.lane-title')).toHaveText('Everything');
+		await expect(page.locator('.toast.toast-success')).toContainText('Lane saved.');
+	});
+
 	test('All Tasks lane shows all tasks via empty filter rules', async ({ page }) => {
 		// Create tasks with different statuses.
 		const editor = page.locator('main .tiptap-editor');
