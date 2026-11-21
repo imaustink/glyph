@@ -255,6 +255,7 @@ func NewHarness(t *testing.T, b Backend) *Harness {
 
 		api.GET("/folders/:id", folderH.GetFolder)
 		api.GET("/folders/:id/lanes", folderH.ListFolderLanes)
+		api.GET("/folders/:id/tasks", folderH.ListFolderTasks)
 		api.POST("/folders/:id/lanes", folderH.CreateFolderLane)
 		api.PUT("/folders/:id/lanes/:laneId", folderH.UpdateFolderLane)
 		api.DELETE("/folders/:id/lanes/:laneId", folderH.DeleteFolderLane)
