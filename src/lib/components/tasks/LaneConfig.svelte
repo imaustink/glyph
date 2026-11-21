@@ -104,7 +104,13 @@
     rules = rules.filter((r) => r.id !== id);
   }
 
-  async function save() {
+  let saving = $state(false);
+
+  async function save(e?: SubmitEvent) {
+    e?.preventDefault();
+    // Guard against a double submit (e.g. Enter pressed twice) while a save is in flight.
+    if (saving) return;
+    saving = true;
     const filterSet: FilterSet = { conjunction, rules };
     // Carry the manual taskOrder over from the lane as it is now (it may have
     // been reordered since this modal opened); this form has no UI for it.
@@ -118,8 +124,10 @@
     } catch {
       // Keep the modal open so the user's edits aren't thrown away.
       notificationsStore.error('Failed to save lane configuration.');
+      saving = false;
       return;
     }
+    notificationsStore.success('Lane saved.');
     onclose();
   }
 
@@ -205,10 +213,11 @@
 </script>
 
 <div class="modal-backdrop" onclick={handleBackdropClick} onkeydown={(e) => e.key === 'Escape' && onclose()} role="dialog" aria-modal="true" aria-label="Configure lane" tabindex="-1">
-  <div class="modal-panel config-modal">
+  <!-- A <form> so pressing Enter in a text field submits (saves and closes). -->
+  <form class="modal-panel config-modal" onsubmit={save}>
     <div class="modal-header">
       <h2>Configure Lane</h2>
-      <button class="btn-ghost icon-btn" onclick={onclose} aria-label="Close">
+      <button type="button" class="btn-ghost icon-btn" onclick={onclose} aria-label="Close">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="18" y1="6" x2="6" y2="18"/>
           <line x1="6" y1="6" x2="18" y2="18"/>
@@ -228,8 +237,8 @@
         <span class="section-label">Filters</span>
         {#if rules.length > 1}
           <div class="conjunction-toggle">
-            <button class:active={conjunction === 'and'} onclick={() => conjunction = 'and'}>AND</button>
-            <button class:active={conjunction === 'or'} onclick={() => conjunction = 'or'}>OR</button>
+            <button type="button" class:active={conjunction === 'and'} onclick={() => conjunction = 'and'}>AND</button>
+            <button type="button" class:active={conjunction === 'or'} onclick={() => conjunction = 'or'}>OR</button>
           </div>
         {/if}
       </div>
@@ -314,7 +323,7 @@
                 />
               {/if}
             {/if}
-            <button class="btn-ghost icon-btn remove-rule" onclick={() => removeRule(rule.id)} aria-label="Remove rule">
+            <button type="button" class="btn-ghost icon-btn remove-rule" onclick={() => removeRule(rule.id)} aria-label="Remove rule">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <line x1="18" y1="6" x2="6" y2="18"/>
                 <line x1="6" y1="6" x2="18" y2="18"/>
@@ -330,7 +339,7 @@
         {/each}
       </datalist>
 
-      <button class="btn-ghost add-rule-btn" onclick={addRule}>+ Add filter</button>
+      <button type="button" class="btn-ghost add-rule-btn" onclick={addRule}>+ Add filter</button>
     </div>
 
     <!-- Sort -->
@@ -367,13 +376,13 @@
     </div>
 
     <div class="modal-footer">
-      <button class="btn-danger" onclick={deleteLane}>Delete lane</button>
+      <button type="button" class="btn-danger" onclick={deleteLane}>Delete lane</button>
       <div class="footer-right">
-        <button class="btn-ghost" onclick={onclose}>Cancel</button>
-        <button class="btn-primary" onclick={save}>Save</button>
+        <button type="button" class="btn-ghost" onclick={onclose}>Cancel</button>
+        <button type="submit" class="btn-primary" disabled={saving}>Save</button>
       </div>
     </div>
-  </div>
+  </form>
 </div>
 
 <style>
