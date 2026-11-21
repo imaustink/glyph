@@ -30,17 +30,52 @@ type collabDoc struct {
 }
 
 // canReadTask mirrors the Postgres taskAccessFilter: the task's own
-// owner/org/share tiers, or read access to the note it comes from. Must be
-// called with the lock held.
+// owner/org/share tiers, read access to the note it comes from, or a direct
+// share of a folder whose board shows it. Must be called with the lock held.
 func (r *Registry) canReadTask(userID uuid.UUID, t *model.Task) bool {
 	if r.canRead(userID, t.UserID, t.OrgID, t.IsPrivate, model.ShareResourceTask, t.ID) {
+		return true
+	}
+	if t.FolderID != nil && r.folderSharedWith(userID, *t.FolderID) {
 		return true
 	}
 	if t.SourcePageID == nil {
 		return false
 	}
 	p, ok := r.pages[*t.SourcePageID]
-	return ok && r.canRead(userID, p.UserID, p.OrgID, p.IsPrivate, model.ShareResourcePage, p.ID)
+	if !ok {
+		return false
+	}
+	if r.canRead(userID, p.UserID, p.OrgID, p.IsPrivate, model.ShareResourcePage, p.ID) {
+		return true
+	}
+	// A note's tasks are on the board of every folder above it.
+	seen := map[uuid.UUID]bool{p.ID: true} // terminates on a cycle
+	for p.ParentID != nil && !seen[*p.ParentID] {
+		seen[*p.ParentID] = true
+		if r.folderSharedWith(userID, *p.ParentID) {
+			return true
+		}
+		if p, ok = r.pages[*p.ParentID]; !ok {
+			return false
+		}
+	}
+	return false
+}
+
+// folderSharedWith mirrors the Postgres sharedFolderIDsSQL: id names a folder
+// shared directly with userID. Must be called with the lock held.
+func (r *Registry) folderSharedWith(userID, id uuid.UUID) bool {
+	f, ok := r.pages[id]
+	if !ok || f.Type != model.NodeTypeFolder {
+		return false
+	}
+	for _, s := range r.shares {
+		if s.ResourceType == model.ShareResourceFolder && s.ResourceID == id && s.SharedWith.ID == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // taskIDTaken reports whether id is used by a live or soft-deleted task.
