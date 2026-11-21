@@ -402,6 +402,14 @@
       scroll-padding-inline: 16px;
     }
 
+    /* svelte-dnd-action auto-scrolls in small steps while a card or lane is
+       dragged near the edge; mandatory snapping would pull each step back to
+       the current lane. The library mounts the drag clone on <body> as
+       #dnd-action-dragged-el for the whole drag, so turn snapping off then. */
+    :global(body:has(#dnd-action-dragged-el)) .lanes-scroll {
+      scroll-snap-type: none;
+    }
+
     .add-lane-col {
       scroll-snap-align: start;
     }

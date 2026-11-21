@@ -130,14 +130,15 @@
     line-height: 0;
   }
 
-  /* Expand the tiny status dot to a ~44px hit area on touch without changing
-     the card layout (#78). */
+  /* Enlarge the tiny status dot's hit area on touch without changing the card
+     layout (#78). Kept inside the card's 10px/12px padding and off most of the
+     title, so a stray tap opens the card rather than changing its status. */
   @media (pointer: coarse) {
     .status-dot { position: relative; }
     .status-dot::after {
       content: '';
       position: absolute;
-      inset: -16px;
+      inset: -10px -6px -8px -12px;
     }
   }
 
