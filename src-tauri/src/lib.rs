@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
 #[derive(Serialize, Deserialize, Default)]
@@ -38,6 +40,10 @@ fn initial_webview_url(app: &AppHandle) -> WebviewUrl {
         },
         None => WebviewUrl::App("index.html".into()),
     }
+}
+
+fn is_external_scheme(url: &url::Url) -> bool {
+    matches!(url.scheme(), "http" | "https" | "mailto" | "tel")
 }
 
 #[tauri::command]
@@ -94,6 +100,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![set_server_url])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -106,10 +113,26 @@ pub fn run() {
 
             let handle = app.handle().clone();
             let url = initial_webview_url(&handle);
+            let opener_handle = app.handle().clone();
             WebviewWindowBuilder::new(app, "main", url)
                 .title("Glyph")
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(600.0, 400.0)
+                // Tauri's native file-drop handler swallows HTML5 drag events,
+                // which breaks drag-to-reorder in the sidebar.
+                .disable_drag_drop_handler()
+                // Links rendered with target="_blank" (and window.open calls)
+                // ask for a new window, which the webview silently drops.
+                // Hand them to the system browser instead.
+                .on_new_window(move |url, _features| {
+                    if is_external_scheme(&url) {
+                        if let Err(e) = opener_handle.opener().open_url(url.as_str(), None::<&str>)
+                        {
+                            log::error!("failed to open {url} externally: {e}");
+                        }
+                    }
+                    NewWindowResponse::Deny
+                })
                 .build()?;
 
             let change_server =
