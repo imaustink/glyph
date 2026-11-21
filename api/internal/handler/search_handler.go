@@ -37,11 +37,16 @@ const (
 	snippetRadius      = 80
 )
 
-// GET /search?q=…&types=page,task&limit=20
+// GET /search?q=…&types=page,task&limit=20&match=content
 //
 // Case-insensitive substring match on page titles and content, and on task
 // titles and descriptions. Results are title matches first, then content
 // matches, each in the store's recency order.
+//
+// match=content skips title matching: every page (and task) is checked by
+// its content (description) alone, so each result carries a snippet and
+// limit applies to content hits only. The web app uses it because it matches
+// titles itself; without it, title hits can crowd content hits out of limit.
 func (h *SearchHandler) Search(c *gin.Context) {
 	user := auth.CurrentUser(c)
 	query := strings.TrimSpace(c.Query("q"))
@@ -61,6 +66,15 @@ func (h *SearchHandler) Search(c *gin.Context) {
 			return
 		}
 		limit = min(n, maxSearchLimit)
+	}
+	contentOnly := false
+	switch c.Query("match") {
+	case "", "all":
+	case "content":
+		contentOnly = true
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "match must be all or content"})
+		return
 	}
 	wantPages, wantTasks := true, true
 	if raw := c.Query("types"); raw != "" {
@@ -101,7 +115,7 @@ func (h *SearchHandler) Search(c *gin.Context) {
 		var contentCandidates []uuid.UUID
 		for _, p := range pages {
 			byID[p.ID] = p
-			if strings.Contains(strings.ToLower(p.Title), lq) {
+			if !contentOnly && strings.Contains(strings.ToLower(p.Title), lq) {
 				titleHits = append(titleHits, searchResult{ID: p.ID, Type: string(p.Type), Title: p.Title, ParentID: p.ParentID})
 			} else if p.Type == model.NodeTypePage {
 				contentCandidates = append(contentCandidates, p.ID)
@@ -131,7 +145,7 @@ func (h *SearchHandler) Search(c *gin.Context) {
 		for _, t := range tasks {
 			r := searchResult{ID: t.ID, Type: "task", Title: t.Title, Status: string(t.Status)}
 			switch {
-			case strings.Contains(strings.ToLower(t.Title), lq):
+			case !contentOnly && strings.Contains(strings.ToLower(t.Title), lq):
 				titleHits = append(titleHits, r)
 			case strings.Contains(strings.ToLower(t.Description), lq):
 				r.Snippet = snippet(t.Description, query)

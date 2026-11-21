@@ -54,13 +54,20 @@ export class ApiPageRepository {
 
 	/**
 	 * Server-side search (GET /search, pages only), so the client doesn't
-	 * have to download every page's content. The server also returns title
-	 * matches (with no snippet); only content matches are kept here.
+	 * have to download every page's content. `match=content` makes the server
+	 * skip title matching (Fuse handles titles), so title hits can't crowd
+	 * content hits out of `limit` and a page whose title also matches still
+	 * gets a snippet. Results without a snippet are dropped defensively.
 	 */
 	async searchContent(query: string, limit: number): Promise<PageContentMatch[]> {
 		const q = query.trim();
 		if (!q || limit < 1) return [];
-		const params = new URLSearchParams({ q, types: 'page', limit: String(limit) });
+		const params = new URLSearchParams({
+			q,
+			types: 'page',
+			match: 'content',
+			limit: String(limit)
+		});
 		const results = (await api.get<ApiSearchResult[]>(`/api/v1/search?${params}`)) ?? [];
 		return results
 			.filter((r) => r.type === 'page' && r.snippet)
