@@ -25,15 +25,9 @@ interface GlyphFixtures {
 }
 
 export const test = base.extend<GlyphFixtures>({
-	storageMode: [
-		async ({}, use, testInfo) => {
-			const mode = (testInfo.project.use as Record<string, unknown>).storageMode as
-				| StorageMode
-				| undefined;
-			await use(mode ?? 'local');
-		},
-		{ scope: 'test' }
-	],
+	// Option fixture: each project sets it in its `use` block
+	// (playwright.config.ts); defaults to 'local'.
+	storageMode: ['local', { option: true }],
 
 	// Seed users populated from /test/reset in api mode.
 	seedUsers: [
