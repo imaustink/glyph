@@ -541,7 +541,7 @@
 
   .icon-btn { line-height: 0; }
 
-  /* Clear the fixed hamburger button (top:10 + height:36 = 46px), shown at <=768px */
+  /* Clear the fixed hamburger button (top:10 + height:44 = 54px), shown at <=768px */
   @media (max-width: 768px) {
     .orgs-page { padding: 56px 40px 32px; }
   }

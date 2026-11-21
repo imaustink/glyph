@@ -677,7 +677,7 @@
       prevented so tapping a button doesn't blur the editor before the command
       runs. It stays pinned above the on-screen keyboard via keyboardInset.
     -->
-    <div class="list-toolbar" style="bottom: {keyboardInset}px" role="toolbar" aria-label="List indentation">
+    <div class="list-toolbar" class:at-screen-bottom={keyboardInset === 0} style="bottom: {keyboardInset}px" role="toolbar" aria-label="List indentation">
       <button
         type="button"
         class="list-toolbar-btn"
@@ -738,6 +738,14 @@
     padding: 6px 12px;
     background: var(--bg-secondary);
     border-top: 1px solid var(--border-subtle);
+  }
+
+  /* With no keyboard up the bar sits on the screen edge: keep its buttons
+     clear of the home indicator and landscape notch (#78). */
+  .list-toolbar.at-screen-bottom {
+    padding-bottom: calc(6px + env(safe-area-inset-bottom));
+    padding-left: calc(12px + env(safe-area-inset-left));
+    padding-right: calc(12px + env(safe-area-inset-right));
   }
 
   .list-toolbar-btn {

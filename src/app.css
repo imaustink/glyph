@@ -277,7 +277,24 @@ button {
     max-width: 100%;
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     padding: 20px 16px;
+    /* Clear the home indicator on notched phones (#78). */
+    padding-bottom: calc(20px + env(safe-area-inset-bottom));
     max-height: 85vh;
+    max-height: 85dvh;
     overflow-y: auto;
+  }
+}
+
+/* ─── Touch targets ──────────────────────────────────────────────────────────── */
+/* On touch-first devices give icon buttons a 44×44 hit area (the iOS minimum;
+   #78). Gated on a coarse pointer so the dense desktop layout is unchanged.
+   Components set padding/colour on .icon-btn; this only adds a minimum size. */
+@media (pointer: coarse) {
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
   }
 }

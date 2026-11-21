@@ -367,39 +367,41 @@
 
           <section class="section">
             <h3>Scopes</h3>
-            <table class="scope-grid">
-              <thead>
-                <tr>
-                  <th></th>
-                  <th>Viewer</th>
-                  <th>Editor</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each RESOURCE_ROWS as row (row.key)}
+            <div class="table-scroll">
+              <table class="scope-grid">
+                <thead>
                   <tr>
-                    <td>{row.label}</td>
-                    <td>
-                      <input
-                        type="checkbox"
-                        checked={isChecked(row.key, 'read')}
-                        disabled={isReadDisabled(row.key)}
-                        onchange={() => toggleScope(row.key, 'read')}
-                      />
-                    </td>
-                    <td>
-                      {#if row.writable}
+                    <th></th>
+                    <th>Viewer</th>
+                    <th>Editor</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each RESOURCE_ROWS as row (row.key)}
+                    <tr>
+                      <td>{row.label}</td>
+                      <td>
                         <input
                           type="checkbox"
-                          checked={isChecked(row.key, 'write')}
-                          onchange={() => toggleScope(row.key, 'write')}
+                          checked={isChecked(row.key, 'read')}
+                          disabled={isReadDisabled(row.key)}
+                          onchange={() => toggleScope(row.key, 'read')}
                         />
-                      {/if}
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
+                      </td>
+                      <td>
+                        {#if row.writable}
+                          <input
+                            type="checkbox"
+                            checked={isChecked(row.key, 'write')}
+                            onchange={() => toggleScope(row.key, 'write')}
+                          />
+                        {/if}
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
           </section>
 
           <section class="section">
@@ -705,6 +707,12 @@
     color: var(--text-muted);
     font-size: var(--font-size-xs);
     margin: -4px 0 8px;
+  }
+
+  /* Let the table scroll on its own instead of widening the page (#78). */
+  .table-scroll {
+    max-width: 100%;
+    overflow-x: auto;
   }
 
   .scope-grid {
