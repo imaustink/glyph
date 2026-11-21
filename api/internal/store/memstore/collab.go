@@ -36,7 +36,7 @@ func (r *Registry) canReadTask(userID uuid.UUID, t *model.Task) bool {
 	if r.canRead(userID, t.UserID, t.OrgID, t.IsPrivate, model.ShareResourceTask, t.ID) {
 		return true
 	}
-	if t.FolderID != nil && r.folderSharedWith(userID, *t.FolderID) {
+	if t.FolderID != nil && r.folderSharesTask(userID, *t.FolderID, t) {
 		return true
 	}
 	if t.SourcePageID == nil {
@@ -53,7 +53,7 @@ func (r *Registry) canReadTask(userID uuid.UUID, t *model.Task) bool {
 	seen := map[uuid.UUID]bool{p.ID: true} // terminates on a cycle
 	for p.ParentID != nil && !seen[*p.ParentID] {
 		seen[*p.ParentID] = true
-		if r.folderSharedWith(userID, *p.ParentID) {
+		if r.folderSharesTask(userID, *p.ParentID, t) {
 			return true
 		}
 		if p, ok = r.pages[*p.ParentID]; !ok {
@@ -63,11 +63,16 @@ func (r *Registry) canReadTask(userID uuid.UUID, t *model.Task) bool {
 	return false
 }
 
-// folderSharedWith mirrors the Postgres sharedFolderIDsSQL: id names a folder
-// shared directly with userID. Must be called with the lock held.
-func (r *Registry) folderSharedWith(userID, id uuid.UUID) bool {
+// folderSharesTask mirrors the Postgres taskFolderReadable for one folder on
+// t's board: id names a folder shared directly with userID, and t is either
+// not private or belongs to the folder's owner (a share can only pass on
+// what its owner can read). Must be called with the lock held.
+func (r *Registry) folderSharesTask(userID, id uuid.UUID, t *model.Task) bool {
 	f, ok := r.pages[id]
 	if !ok || f.Type != model.NodeTypeFolder {
+		return false
+	}
+	if t.IsPrivate && f.UserID != t.UserID {
 		return false
 	}
 	for _, s := range r.shares {
