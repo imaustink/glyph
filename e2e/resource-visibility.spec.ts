@@ -10,7 +10,7 @@
  * - Template list shows VisibilityPicker per template for the owner
  */
 
-import { test, expect, switchUser, navigateToTaskBoard } from './fixtures';
+import { test, expect, switchUser, navigateToTaskBoard, getAllTasksLane } from './fixtures';
 
 /** Create a task via TODO bullet in the active note editor. */
 async function createTaskViaEditor(page: import('@playwright/test').Page, taskTitle: string) {
@@ -35,7 +35,7 @@ test.describe('Task visibility (api)', () => {
 		await createTaskViaEditor(page, 'Visibility Task');
 		await navigateToTaskBoard(page);
 
-		await page.locator('.task-card:has-text("Visibility Task")').click({ timeout: 10_000 });
+		await getAllTasksLane(page).locator('.task-card', { hasText: 'Visibility Task' }).click({ timeout: 10_000 });
 		await page.waitForSelector('.task-detail-page', { timeout: 10_000 });
 
 		await expect(page.locator('.visibility-btn')).toBeVisible({ timeout: 10_000 });
@@ -47,7 +47,7 @@ test.describe('Task visibility (api)', () => {
 		await createTaskViaEditor(page, 'Dropdown Task');
 		await navigateToTaskBoard(page);
 
-		await page.locator('.task-card:has-text("Dropdown Task")').click({ timeout: 10_000 });
+		await getAllTasksLane(page).locator('.task-card', { hasText: 'Dropdown Task' }).click({ timeout: 10_000 });
 		await page.waitForSelector('.task-detail-page', { timeout: 10_000 });
 
 		await page.locator('.visibility-btn').click();
@@ -74,7 +74,7 @@ test.describe('Task visibility (api)', () => {
 		await createTaskViaEditor(page, 'Org Task');
 
 		await navigateToTaskBoard(page);
-		await page.locator('.task-card:has-text("Org Task")').click({ timeout: 10_000 });
+		await getAllTasksLane(page).locator('.task-card', { hasText: 'Org Task' }).click({ timeout: 10_000 });
 		await page.waitForSelector('.task-detail-page', { timeout: 10_000 });
 
 		// Change visibility to the org

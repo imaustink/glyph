@@ -165,6 +165,15 @@ export async function navigateToTaskBoard(page: import('@playwright/test').Page)
 	await page.waitForSelector('.board-page', { timeout: 15_000 });
 }
 
+/**
+ * The "All Tasks" lane on the task board. A new task (no priority, no due date)
+ * renders in both "All Tasks" and "Unprioritized", so card lookups that expect
+ * a single match must be scoped to one lane.
+ */
+export function getAllTasksLane(page: import('@playwright/test').Page) {
+	return page.locator('.lane').filter({ has: page.locator('.lane-title', { hasText: 'All Tasks' }) });
+}
+
 /** Navigate to search page. */
 export async function navigateToSearch(page: import('@playwright/test').Page) {
 	await page.locator('a.nav-item:has-text("Search")').click();

@@ -3,6 +3,7 @@ import {
 	expect,
 	typeInEditor,
 	navigateToTaskBoard,
+	getAllTasksLane,
 	openSearchModal
 } from './fixtures';
 
@@ -25,7 +26,7 @@ test.describe('Task detail page bugs', () => {
 		await expect(popover).not.toBeVisible();
 
 		await navigateToTaskBoard(page);
-		await page.locator(`.card-title:has-text("${title}")`).click({ timeout: 15_000 });
+		await getAllTasksLane(page).locator('.card-title', { hasText: title }).click({ timeout: 15_000 });
 		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 15_000 });
 	}
 
@@ -96,7 +97,7 @@ test.describe('Task detail page bugs', () => {
 
 		// Navigate away and back
 		await page.locator('.back-btn').click();
-		await page.locator(`.card-title:has-text("Tags test task")`).click({ timeout: 15_000 });
+		await getAllTasksLane(page).locator('.card-title', { hasText: 'Tags test task' }).click({ timeout: 15_000 });
 		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 15_000 });
 
 		// Tags should still be there

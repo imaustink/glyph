@@ -3,6 +3,7 @@ import {
 	expect,
 	typeInEditor,
 	navigateToTaskBoard,
+	getAllTasksLane,
 	createNewPage,
 	navigateToPage,
 	waitForEditorReady,
@@ -50,7 +51,7 @@ test.describe('Tasks', () => {
 		await expect(popover).not.toBeVisible();
 
 		await navigateToTaskBoard(page);
-		await expect(page.locator('.task-card:has-text("Empty bullet task")')).toBeVisible({
+		await expect(getAllTasksLane(page).locator('.task-card', { hasText: 'Empty bullet task' })).toBeVisible({
 			timeout: 15_000
 		});
 	});
@@ -78,7 +79,7 @@ test.describe('Tasks', () => {
 
 		// Navigate to the task board — the task should be there.
 		await navigateToTaskBoard(page);
-		await expect(page.locator('.task-card:has-text("Buy groceries")')).toBeVisible({
+		await expect(getAllTasksLane(page).locator('.task-card', { hasText: 'Buy groceries' })).toBeVisible({
 			timeout: 15_000
 		});
 	});
@@ -125,7 +126,7 @@ test.describe('Tasks', () => {
 
 		// Go to task board and click the task title to navigate to detail.
 		await navigateToTaskBoard(page);
-		const titleLink = page.locator('.card-title:has-text("Detail test task")');
+		const titleLink = getAllTasksLane(page).locator('.card-title', { hasText: 'Detail test task' });
 		await expect(titleLink).toBeVisible({ timeout: 15_000 });
 		await titleLink.click();
 
@@ -148,7 +149,7 @@ test.describe('Tasks', () => {
 
 		// Navigate to task board → task detail.
 		await navigateToTaskBoard(page);
-		await page.locator('.card-title:has-text("Editable task")').click({ timeout: 15_000 });
+		await getAllTasksLane(page).locator('.card-title', { hasText: 'Editable task' }).click({ timeout: 15_000 });
 		await expect(page.locator('.task-detail-page')).toBeVisible();
 
 		// Change priority.
@@ -165,7 +166,7 @@ test.describe('Tasks', () => {
 
 		// Navigate away and back — changes should persist.
 		await page.locator('.back-btn').click();
-		await page.locator('.card-title:has-text("Editable task")').click({ timeout: 15_000 });
+		await getAllTasksLane(page).locator('.card-title', { hasText: 'Editable task' }).click({ timeout: 15_000 });
 
 		await expect(
 			page.locator('.meta-row:has(.meta-label:has-text("Priority")) select')
@@ -187,7 +188,7 @@ test.describe('Tasks', () => {
 
 		// Navigate to task board → task detail.
 		await navigateToTaskBoard(page);
-		await page.locator('.card-title:has-text("Markdown desc task")').click({ timeout: 15_000 });
+		await getAllTasksLane(page).locator('.card-title', { hasText: 'Markdown desc task' }).click({ timeout: 15_000 });
 		await expect(page.locator('.task-detail-page')).toBeVisible();
 
 		// Type markdown shortcuts — they should convert to formatted nodes live.
@@ -572,7 +573,7 @@ test.describe('Tasks', () => {
 
 		// Navigate to task board → task detail.
 		await navigateToTaskBoard(page);
-		await page.locator('.card-title:has-text("Delete me task")').click({ timeout: 15_000 });
+		await getAllTasksLane(page).locator('.card-title', { hasText: 'Delete me task' }).click({ timeout: 15_000 });
 		await expect(page.locator('.task-detail-page')).toBeVisible();
 
 		// Click the delete button.
@@ -591,7 +592,7 @@ test.describe('Tasks', () => {
 		await expect(page.locator('.board-page')).toBeVisible({ timeout: 15_000 });
 
 		// Task should no longer exist on the board.
-		await expect(page.locator('.task-card:has-text("Delete me task")')).not.toBeVisible();
+		await expect(getAllTasksLane(page).locator('.task-card', { hasText: 'Delete me task' })).not.toBeVisible();
 	});
 
 	test('delete task removes linked bullet from note', async ({ page }) => {
@@ -611,7 +612,7 @@ test.describe('Tasks', () => {
 
 		// Navigate to task board → task detail → delete.
 		await navigateToTaskBoard(page);
-		await page.locator('.card-title:has-text("Linked bullet task")').click({ timeout: 15_000 });
+		await getAllTasksLane(page).locator('.card-title', { hasText: 'Linked bullet task' }).click({ timeout: 15_000 });
 		await page.locator('.delete-btn').click();
 		const modal = page.locator('.delete-modal');
 		await expect(modal).toBeVisible({ timeout: 3_000 });
@@ -641,7 +642,7 @@ test.describe('Tasks', () => {
 
 		// Navigate to task detail and click delete.
 		await navigateToTaskBoard(page);
-		await page.locator('.card-title:has-text("Keep me task")').click({ timeout: 15_000 });
+		await getAllTasksLane(page).locator('.card-title', { hasText: 'Keep me task' }).click({ timeout: 15_000 });
 		await page.locator('.delete-btn').click();
 
 		// Cancel the deletion.
@@ -655,7 +656,7 @@ test.describe('Tasks', () => {
 
 		// And on the board.
 		await navigateToTaskBoard(page);
-		await expect(page.locator('.task-card:has-text("Keep me task")')).toBeVisible({ timeout: 15_000 });
+		await expect(getAllTasksLane(page).locator('.task-card', { hasText: 'Keep me task' })).toBeVisible({ timeout: 15_000 });
 	});
 
 	test('removing a TODO bullet in the editor deletes the task', async ({ page }) => {
@@ -672,7 +673,7 @@ test.describe('Tasks', () => {
 
 		// Verify task exists on the board.
 		await navigateToTaskBoard(page);
-		await expect(page.locator('.task-card:has-text("Auto delete task")')).toBeVisible({
+		await expect(getAllTasksLane(page).locator('.task-card', { hasText: 'Auto delete task' })).toBeVisible({
 			timeout: 15_000
 		});
 
@@ -707,7 +708,7 @@ test.describe('Tasks', () => {
 
 		// Navigate to the task board — the task should be gone.
 		await navigateToTaskBoard(page);
-		await expect(page.locator('.task-card:has-text("Auto delete task")')).not.toBeVisible({
+		await expect(getAllTasksLane(page).locator('.task-card', { hasText: 'Auto delete task' })).not.toBeVisible({
 			timeout: 15_000
 		});
 	});
@@ -833,7 +834,7 @@ test.describe('Tasks', () => {
 
 		await navigateToTaskBoard(page);
 
-		const taskCard = page.locator('.task-card:has-text("Tagged task")');
+		const taskCard = getAllTasksLane(page).locator('.task-card', { hasText: 'Tagged task' });
 		await expect(taskCard).toBeVisible({ timeout: 15_000 });
 		await taskCard.click();
 
@@ -845,7 +846,7 @@ test.describe('Tasks', () => {
 		await navigateToTaskBoard(page);
 
 		await page.locator('.board-search-input').fill('backend');
-		await expect(page.locator('.task-card:has-text("Tagged task")')).toBeVisible({ timeout: 15_000 });
+		await expect(getAllTasksLane(page).locator('.task-card', { hasText: 'Tagged task' })).toBeVisible({ timeout: 15_000 });
 	});
 
 	// ── Source-note filtering tests ────────────────────────────────────
@@ -994,7 +995,7 @@ test.describe('Tasks', () => {
 		await expect(allTasksLane.locator('.task-card:has-text("Done sort task")')).toBeVisible({ timeout: 15_000 });
 
 		// Navigate to the "Done sort task" detail page and mark it done.
-		await page.locator('.card-title:has-text("Done sort task")').click({ timeout: 15_000 });
+		await getAllTasksLane(page).locator('.card-title', { hasText: 'Done sort task' }).click({ timeout: 15_000 });
 		await expect(page.locator('.task-detail-page')).toBeVisible();
 		const statusSelect = page.locator('.meta-row:has(.meta-label:has-text("Status")) select');
 		await statusSelect.selectOption('done');
@@ -1052,7 +1053,7 @@ test.describe('Tasks', () => {
 		await expect(modal).not.toBeVisible();
 
 		// Navigate to the "Cancelled sort task" detail page and mark it cancelled.
-		await page.locator('.card-title').filter({ hasText: /^Cancelled sort task$/ }).click({ timeout: 15_000 });
+		await getAllTasksLane(page).locator('.card-title').filter({ hasText: /^Cancelled sort task$/ }).click({ timeout: 15_000 });
 		await expect(page.locator('.task-detail-page')).toBeVisible();
 		const statusSelect = page.locator('.meta-row:has(.meta-label:has-text("Status")) select');
 		await statusSelect.selectOption('cancelled');
