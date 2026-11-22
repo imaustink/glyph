@@ -12,6 +12,13 @@ Manage them under **Webhooks** in the sidebar (API mode only).
 
 Only the user who created a webhook can see or manage it.
 
+A note or task that moves out of a webhook's scope (for example an org note made
+private, or moved to another workspace) is reported to that webhook as
+`note.deleted` / `task.deleted`, with its last in-scope state as the payload. One
+that moves into scope (made public again) is reported as `note.created` /
+`task.created`. Webhooks whose scope covers the row both before and after the
+change get `*.updated` as usual.
+
 ## Events
 
 Each webhook subscribes to any of:

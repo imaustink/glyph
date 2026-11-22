@@ -6,6 +6,8 @@ DROP FUNCTION IF EXISTS webhook_page_contents_trigger();
 DROP FUNCTION IF EXISTS webhook_pages_trigger();
 DROP FUNCTION IF EXISTS webhook_task_json(tasks);
 DROP FUNCTION IF EXISTS webhook_page_json(pages);
+DROP FUNCTION IF EXISTS webhook_enqueue_update(TEXT, UUID, UUID, BOOLEAN, JSONB, UUID, UUID, BOOLEAN, JSONB, UUID);
 DROP FUNCTION IF EXISTS webhook_enqueue(TEXT, UUID, UUID, BOOLEAN, UUID, JSONB);
+DROP FUNCTION IF EXISTS webhook_covers(webhooks, UUID, UUID, BOOLEAN);
 DROP TABLE IF EXISTS webhook_events;
 DROP TABLE IF EXISTS webhooks;

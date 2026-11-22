@@ -148,6 +148,61 @@ func TestWebhooks_Postgres(t *testing.T) {
 		assert.Equal(t, []string{"note.created:000000000021", "task.created:000000000024"}, eventLog(t, s, w))
 	})
 
+	t.Run("OrgWebhookFollowsRowsInAndOutOfScope", func(t *testing.T) {
+		pool, s := webhookDB(t)
+		ctx := context.Background()
+		org := uuid.MustParse(whOrg)
+		other := "00000000-0000-0000-0000-0000000000c2"
+		exec(t, pool, `INSERT INTO organizations (id, name, created_by) VALUES ($1, 'Other', $2)`, other, whAlice)
+		exec(t, pool, `INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, 'owner')`, other, whAlice)
+		otherOrg := uuid.MustParse(other)
+		all := []model.WebhookEventType{
+			model.WebhookNoteCreated, model.WebhookNoteUpdated, model.WebhookNoteDeleted,
+			model.WebhookTaskCreated, model.WebhookTaskUpdated, model.WebhookTaskDeleted,
+		}
+		orgHook := createHook(t, s, whAlice, &org, all...)
+		otherHook := createHook(t, s, whAlice, &otherOrg, all...)
+		personal := createHook(t, s, whBob, nil, all...)
+		updatedOnly := createHook(t, s, whAlice, &org, model.WebhookNoteUpdated, model.WebhookTaskUpdated)
+
+		note, task := "00000000-0000-0000-0000-000000000031", "00000000-0000-0000-0000-000000000032"
+		exec(t, pool, `INSERT INTO pages (id, user_id, type, title, org_id) VALUES ($1, $2, 'page', 'N', $3)`, note, whBob, whOrg)
+		exec(t, pool, `INSERT INTO tasks (id, user_id, title, org_id) VALUES ($1, $2, 'T', $3)`, task, whBob, whOrg)
+		exec(t, pool, `UPDATE pages SET is_private = true WHERE id = $1`, note)
+		exec(t, pool, `UPDATE tasks SET is_private = true WHERE id = $1`, task)
+		exec(t, pool, `UPDATE pages SET title = 'N private edit' WHERE id = $1`, note) // out of org scope
+		exec(t, pool, `UPDATE pages SET is_private = false WHERE id = $1`, note)
+		exec(t, pool, `UPDATE tasks SET is_private = false WHERE id = $1`, task)
+		exec(t, pool, `UPDATE pages SET org_id = $2 WHERE id = $1`, note, other)
+
+		assert.Equal(t, []string{
+			"note.created:000000000031", "task.created:000000000032",
+			"note.deleted:000000000031", "task.deleted:000000000032",
+			"note.created:000000000031", "task.created:000000000032",
+			"note.deleted:000000000031",
+		}, eventLog(t, s, orgHook))
+		assert.Equal(t, []string{"note.created:000000000031"}, eventLog(t, s, otherHook))
+		assert.Equal(t, []string{
+			"note.created:000000000031", "task.created:000000000032",
+			"note.updated:000000000031", "task.updated:000000000032",
+			"note.updated:000000000031",
+			"note.updated:000000000031", "task.updated:000000000032",
+			"note.updated:000000000031",
+		}, eventLog(t, s, personal))
+		assert.Empty(t, eventLog(t, s, updatedOnly), "scope transitions are never reported as updates")
+
+		// A row leaving scope is reported with its last in-scope state.
+		events, _, err := s.ListEvents(ctx, orgHook.ID, time.Now().Add(-time.Hour), 1, 0)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		var data map[string]any
+		require.NoError(t, json.Unmarshal(events[0].Data, &data))
+		assert.Equal(t, model.WebhookNoteDeleted, events[0].Type)
+		assert.Equal(t, whOrg, data["orgId"])
+		assert.Equal(t, false, data["isPrivate"])
+		assert.Equal(t, "N private edit", data["title"])
+	})
+
 	t.Run("SequenceFeedLeaseAndPurge", func(t *testing.T) {
 		pool, s := webhookDB(t)
 		ctx := context.Background()

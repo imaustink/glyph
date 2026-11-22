@@ -73,6 +73,16 @@ CREATE INDEX webhook_events_created_at_idx ON webhook_events(created_at);
 
 -- ─── Capture ─────────────────────────────────────────────────────────────────
 
+-- webhook_covers reports whether webhook w's scope covers a row owned by
+-- p_owner in org p_org with the given privacy.
+CREATE FUNCTION webhook_covers(w webhooks, p_owner UUID, p_org UUID, p_private BOOLEAN)
+RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
+    SELECT (w.org_id IS NULL AND w.user_id = p_owner)
+        OR (w.org_id IS NOT NULL AND w.org_id IS NOT DISTINCT FROM p_org AND NOT p_private
+            AND EXISTS (SELECT 1 FROM org_members m
+                        WHERE m.org_id = w.org_id AND m.user_id = w.user_id AND m.role = 'owner'));
+$$;
+
 -- webhook_enqueue records one event for every active webhook subscribed to
 -- p_type whose scope covers a row owned by p_owner in org p_org.
 CREATE FUNCTION webhook_enqueue(p_type TEXT, p_owner UUID, p_org UUID, p_private BOOLEAN,
@@ -83,13 +93,38 @@ RETURNS void LANGUAGE sql AS $$
     FROM webhooks w
     WHERE w.active
       AND p_type = ANY (w.event_types)
-      AND (
-            (w.org_id IS NULL AND w.user_id = p_owner)
-         OR (w.org_id IS NOT NULL AND w.org_id = p_org AND NOT p_private
-             AND EXISTS (SELECT 1 FROM org_members m
-                         WHERE m.org_id = w.org_id AND m.user_id = w.user_id AND m.role = 'owner'))
-      )
+      AND webhook_covers(w, p_owner, p_org, p_private)
     ORDER BY w.id;
+$$;
+
+-- webhook_enqueue_update records the events for an UPDATE of a row of kind
+-- p_kind ('note' or 'task') whose scope tuple may have changed (it became
+-- private or public, moved between orgs, or changed owner). Per webhook:
+--   * covers OLD and NEW  -> <kind>.updated with the NEW payload
+--   * covers NEW only     -> <kind>.created with the NEW payload (it entered scope)
+--   * covers OLD only     -> <kind>.deleted with the OLD payload (it left scope)
+-- so an org webhook never keeps a row that has become private, and never gets
+-- an update for a row it was never told about.
+CREATE FUNCTION webhook_enqueue_update(p_kind TEXT,
+                                       o_owner UUID, o_org UUID, o_private BOOLEAN, o_data JSONB,
+                                       n_owner UUID, n_org UUID, n_private BOOLEAN, n_data JSONB,
+                                       p_resource UUID)
+RETURNS void LANGUAGE sql AS $$
+    INSERT INTO webhook_events (webhook_id, event_type, resource_id, payload)
+    SELECT e.id, e.typ, p_resource, e.payload
+    FROM (
+        SELECT w.id, w.event_types,
+               CASE WHEN c.o AND c.n THEN p_kind || '.updated'
+                    WHEN c.n         THEN p_kind || '.created'
+                    ELSE                  p_kind || '.deleted' END AS typ,
+               CASE WHEN c.o AND NOT c.n THEN o_data ELSE n_data END AS payload
+        FROM webhooks w
+        CROSS JOIN LATERAL (SELECT webhook_covers(w, o_owner, o_org, o_private) AS o,
+                                   webhook_covers(w, n_owner, n_org, n_private) AS n) c
+        WHERE w.active AND (c.o OR c.n)
+    ) e
+    WHERE e.typ = ANY (e.event_types)
+    ORDER BY e.id;
 $$;
 
 -- The event payloads mirror the REST API's JSON for a page and a task.
@@ -152,7 +187,9 @@ BEGIN
     IF TG_OP = 'INSERT' THEN
         PERFORM webhook_enqueue('note.created', NEW.user_id, NEW.org_id, NEW.is_private, NEW.id, n);
     ELSIF (webhook_page_json(OLD) - 'updatedAt') IS DISTINCT FROM (n - 'updatedAt') THEN
-        PERFORM webhook_enqueue('note.updated', NEW.user_id, NEW.org_id, NEW.is_private, NEW.id, n);
+        PERFORM webhook_enqueue_update('note',
+                                       OLD.user_id, OLD.org_id, OLD.is_private, webhook_page_json(OLD),
+                                       NEW.user_id, NEW.org_id, NEW.is_private, n, NEW.id);
     END IF;
     RETURN NULL;
 END;
@@ -207,7 +244,9 @@ BEGIN
     ELSIF NEW.deleted_at IS NOT NULL THEN
         PERFORM webhook_enqueue('task.deleted', NEW.user_id, NEW.org_id, NEW.is_private, NEW.id, n);
     ELSIF (webhook_task_json(OLD) - 'updatedAt') IS DISTINCT FROM (n - 'updatedAt') THEN
-        PERFORM webhook_enqueue('task.updated', NEW.user_id, NEW.org_id, NEW.is_private, NEW.id, n);
+        PERFORM webhook_enqueue_update('task',
+                                       OLD.user_id, OLD.org_id, OLD.is_private, webhook_task_json(OLD),
+                                       NEW.user_id, NEW.org_id, NEW.is_private, n, NEW.id);
     END IF;
     RETURN NULL;
 END;
