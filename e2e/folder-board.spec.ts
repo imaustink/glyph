@@ -46,10 +46,16 @@ test.describe('Folder Board (api)', () => {
 
 		// Wait for the API load to complete — button only renders when canEdit is true.
 		await page.locator('.add-lane-btn').waitFor({ state: 'visible', timeout: 10_000 });
-		await page.locator('.add-lane-btn').click();
 
+		// An empty folder board is seeded with the main board's default lanes.
 		// Lane component root element has class="lane".
-		await expect(page.locator('.lane')).toHaveCount(1, { timeout: 8_000 });
+		await expect(page.locator('.lane .lane-title')).toHaveText(
+			['All Tasks', 'In Progress', 'Done', 'Cancelled'],
+			{ timeout: 8_000 }
+		);
+
+		await page.locator('.add-lane-btn').click();
+		await expect(page.locator('.lane')).toHaveCount(5, { timeout: 8_000 });
 	});
 
 	test('viewer cannot add lanes on shared folder board', async ({ page, seedUsers, baseURL }) => {
@@ -125,8 +131,11 @@ test.describe('Folder Board lane integrity [DI-25]', () => {
 		await openFolderBoard(page);
 		await waitForBoardLoad(page);
 
+		// Wait for the default lanes so the added lane is the last one.
+		await expect(page.locator('.lane')).toHaveCount(4, { timeout: 8_000 });
 		await page.locator('.add-lane-btn').click();
-		const lane = page.locator('.lane').first();
+		await expect(page.locator('.lane')).toHaveCount(5, { timeout: 8_000 });
+		const lane = page.locator('.lane').last();
 		await expect(lane).toBeVisible({ timeout: 8_000 });
 
 		await lane.locator('.lane-title').dblclick();
@@ -140,7 +149,7 @@ test.describe('Folder Board lane integrity [DI-25]', () => {
 
 		await page.reload();
 		await waitForBoardLoad(page);
-		await expect(page.locator('.lane .lane-title').first()).toHaveText('Renamed Lane', { timeout: 10_000 });
+		await expect(page.locator('.lane .lane-title').last()).toHaveText('Renamed Lane', { timeout: 10_000 });
 	});
 });
 

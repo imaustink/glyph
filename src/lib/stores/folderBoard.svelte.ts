@@ -4,7 +4,9 @@ import type { ITaskRepository } from '$lib/storage/interfaces';
 import type { Lane, Task, TreeNode } from '$lib/models/types';
 import { now, makeTimestamps } from '$lib/utils/time';
 import { uuid } from '$lib/utils/uuid';
+import { withCrossTabLock } from '$lib/utils/crossTabLock';
 import { createOptimisticWriter } from './optimisticWriter';
+import { DEFAULT_LANES } from './lanes.svelte';
 
 /** The part of the task repository the folder board writes through. */
 type BoardTaskRepo = Pick<ITaskRepository, 'update'>;
@@ -46,6 +48,20 @@ export function createFolderBoardStore(injectedRepo?: FolderBoardRepo, injectedT
       canEdit = meta.canEdit;
       lanes = folderLanes;
       tasks = folderTasks;
+      if (folderLanes.length === 0 && meta.canEdit) {
+        try {
+          const seeded = await seedDefaultLanes(id);
+          if (gen !== generation) return;
+          lanes = seeded;
+        } catch {
+          // Seeding is best effort: a failure must not hide the board. Show
+          // whatever lanes exist now (possibly a partial seed).
+          if (gen !== generation) return;
+          const current = await repo.getLanes(id).catch(() => null);
+          if (gen !== generation) return;
+          if (current) lanes = current;
+        }
+      }
     } catch (e) {
       if (gen !== generation) return;
       error = e instanceof Error ? e.message : 'Failed to load folder board';
@@ -55,6 +71,28 @@ export function createFolderBoardStore(injectedRepo?: FolderBoardRepo, injectedT
         loaded = true;
       }
     }
+  }
+
+  /**
+   * Give an empty folder board the same default lanes as the main board.
+   * Holds a cross-tab lock and re-reads first so two tabs opening the same
+   * folder together adopt one seed instead of both creating lanes. Lanes are
+   * created one at a time so they keep their order.
+   */
+  async function seedDefaultLanes(id: string): Promise<Lane[]> {
+    return withCrossTabLock(`glyph:seed:folder-lanes:${id}`, async () => {
+      const current = await repo.getLanes(id);
+      if (current.length > 0) return current;
+      const created: Lane[] = [];
+      for (const def of DEFAULT_LANES) {
+        created.push(await repo.createLane(id, {
+          ...def,
+          filterSet: { ...def.filterSet, rules: def.filterSet.rules.map((r) => ({ ...r })) },
+          folderId: id
+        }));
+      }
+      return created;
+    });
   }
 
   /** Re-fetch tasks only (used after task create/update/delete on the board). */
