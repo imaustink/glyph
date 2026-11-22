@@ -12,6 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createFolderBoardStore } from './folderBoard.svelte';
+import { DEFAULT_LANES } from './lanes.svelte';
 import type { FolderBoardRepo } from '$lib/storage/config';
 import type { Lane, Task, TreeNode } from '$lib/models/types';
 
@@ -124,7 +125,9 @@ describe('folderBoardStore', () => {
     // re-fetch, producing thousands of API calls per second.
 
     it('does NOT re-fetch when called again after loading with empty lanes and tasks', async () => {
-      // First load: board exists but has no lanes or tasks yet
+      // First load: board exists but has no lanes or tasks yet. Read-only, so
+      // no default lanes are seeded and the board stays empty.
+      vi.mocked(repo.getFolder).mockResolvedValue({ folder: makeFolder(), canEdit: false });
       vi.mocked(repo.getLanes).mockResolvedValue([]);
       vi.mocked(repo.getTasks).mockResolvedValue([]);
 
@@ -157,6 +160,7 @@ describe('folderBoardStore', () => {
     });
 
     it('deduplicates concurrent in-flight calls for the same folder', async () => {
+      vi.mocked(repo.getLanes).mockResolvedValue([makeLane()]);
       // Don't await individually — fire both before either resolves
       await Promise.all([store.load('folder-1'), store.load('folder-1')]);
 
@@ -180,6 +184,68 @@ describe('folderBoardStore', () => {
       vi.mocked(repo.getFolder).mockRejectedValueOnce(new Error('Network error'));
       await store.load('folder-1');
       expect(store.error).toBe('Network error');
+    });
+  });
+
+  // ─── default lanes ───────────────────────────────────────────────────────
+
+  describe('default lanes', () => {
+    it('seeds the main board default lanes, in order, when an editable folder board is empty', async () => {
+      await store.load('folder-1');
+
+      expect(store.lanes.map((l) => l.title)).toEqual(DEFAULT_LANES.map((l) => l.title));
+      expect(repo.createLane).toHaveBeenCalledTimes(DEFAULT_LANES.length);
+      DEFAULT_LANES.forEach((def, i) => {
+        expect(repo.createLane).toHaveBeenNthCalledWith(i + 1, 'folder-1', expect.objectContaining({
+          title: def.title,
+          filterSet: def.filterSet,
+          sortConfig: def.sortConfig,
+          order: def.order,
+          folderId: 'folder-1'
+        }));
+      });
+    });
+
+    it('does not seed when the folder board already has lanes', async () => {
+      vi.mocked(repo.getLanes).mockResolvedValue([makeLane()]);
+      await store.load('folder-1');
+      expect(repo.createLane).not.toHaveBeenCalled();
+      expect(store.lanes).toHaveLength(1);
+    });
+
+    it('does not seed when the user cannot edit the folder', async () => {
+      vi.mocked(repo.getFolder).mockResolvedValue({ folder: makeFolder(), canEdit: false });
+      await store.load('folder-1');
+      expect(repo.createLane).not.toHaveBeenCalled();
+      expect(store.lanes).toHaveLength(0);
+    });
+
+    it('adopts lanes another tab created since the first read instead of seeding again', async () => {
+      const other = makeLane({ id: 'other-tab', folderId: 'folder-1' });
+      vi.mocked(repo.getLanes).mockResolvedValueOnce([]).mockResolvedValueOnce([other]);
+      await store.load('folder-1');
+      expect(repo.createLane).not.toHaveBeenCalled();
+      expect(store.lanes).toEqual([other]);
+    });
+
+    it('keeps the board visible with whatever lanes exist when seeding fails partway', async () => {
+      const task = makeTask();
+      const partial = makeLane({ id: 'seeded-1', title: DEFAULT_LANES[0].title, folderId: 'folder-1' });
+      vi.mocked(repo.getTasks).mockResolvedValue([task]);
+      vi.mocked(repo.getLanes)
+        .mockResolvedValueOnce([]) // initial load
+        .mockResolvedValueOnce([]) // re-read under the lock
+        .mockResolvedValueOnce([partial]); // recovery read after the failure
+      vi.mocked(repo.createLane)
+        .mockResolvedValueOnce(partial)
+        .mockRejectedValueOnce(new Error('Network error'));
+
+      await store.load('folder-1');
+
+      expect(store.error).toBeNull();
+      expect(store.loaded).toBe(true);
+      expect(store.tasks).toEqual([task]);
+      expect(store.lanes).toEqual([partial]);
     });
   });
 
@@ -216,6 +282,7 @@ describe('folderBoardStore', () => {
   describe('createLane', () => {
     it('adds the lane optimistically and replaces with server response', async () => {
       await store.load('folder-1');
+      vi.mocked(repo.createLane).mockClear();
       const lane = await store.createLane('Sprint 1');
       expect(lane).not.toBeNull();
       expect(store.lanes.find((l) => l.title === 'Sprint 1')).toBeDefined();
