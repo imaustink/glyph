@@ -56,6 +56,7 @@ api/
 | `GIN_MODE` | `debug` or `release` (default: `release`) |
 | `FRONTEND_URL` | Public origin of the app (default: `http://localhost:5173`). Also the OAuth issuer and MCP resource base advertised in `/.well-known/` discovery, so it must be the URL agents reach Glyph at |
 | `GLYPH_VERSION` | Version reported to MCP clients in `serverInfo` (default: `dev`) |
+| `WEBHOOKS_ALLOW_PRIVATE_URLS` | `true` lets webhooks target private addresses and non-standard ports (development only; default `false`). See [docs/webhooks.md](../docs/webhooks.md) |
 
 Copy `.env.example` to `.env` and fill in the values for local development.
 

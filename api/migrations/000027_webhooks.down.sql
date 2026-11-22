@@ -1,0 +1,11 @@
+DROP TRIGGER IF EXISTS tasks_webhook_events ON tasks;
+DROP TRIGGER IF EXISTS page_contents_webhook_events ON page_contents;
+DROP TRIGGER IF EXISTS pages_webhook_events ON pages;
+DROP FUNCTION IF EXISTS webhook_tasks_trigger();
+DROP FUNCTION IF EXISTS webhook_page_contents_trigger();
+DROP FUNCTION IF EXISTS webhook_pages_trigger();
+DROP FUNCTION IF EXISTS webhook_task_json(tasks);
+DROP FUNCTION IF EXISTS webhook_page_json(pages);
+DROP FUNCTION IF EXISTS webhook_enqueue(TEXT, UUID, UUID, BOOLEAN, UUID, JSONB);
+DROP TABLE IF EXISTS webhook_events;
+DROP TABLE IF EXISTS webhooks;

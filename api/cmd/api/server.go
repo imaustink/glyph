@@ -32,8 +32,12 @@ func newServer(ctx context.Context, pool *pgxpool.Pool, s *stores, sessionSecret
 
 	apiGroup := setupAuth(ctx, r, pool, s, sessionSecret)
 
-	h := newHandlers(s, loadCollabConfig())
+	hooks := loadWebhookConfig(s)
+	go hooks.dispatcher.Run(ctx)
+
+	h := newHandlers(s, loadCollabConfig(), hooks)
 	registerRoutes(apiGroup, h)
+	registerWebhookFeedRoute(r, h)
 	registerInternalRoutes(r, h)
 
 	port := os.Getenv("PORT")

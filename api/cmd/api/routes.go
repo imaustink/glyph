@@ -19,10 +19,11 @@ type handlers struct {
 	oauthClients *handler.OAuthClientHandler
 	collab       *handler.CollabHandler
 	search       *handler.SearchHandler
+	webhooks     *handler.WebhookHandler
 }
 
 // newHandlers creates all handler instances from their stores.
-func newHandlers(stores *stores, collab collabConfig) *handlers {
+func newHandlers(stores *stores, collab collabConfig, hooks webhookConfig) *handlers {
 	perms := &handler.PermissionChecker{Orgs: stores.orgs, Shares: stores.shares}
 
 	return &handlers{
@@ -57,6 +58,12 @@ func newHandlers(stores *stores, collab collabConfig) *handlers {
 			Orgs:    stores.orgs,
 		},
 		search: &handler.SearchHandler{Pages: stores.pages, Tasks: stores.tasks},
+		webhooks: &handler.WebhookHandler{
+			Webhooks:         stores.webhooks,
+			Orgs:             stores.orgs,
+			Replayer:         hooks.dispatcher,
+			AllowPrivateURLs: hooks.allowPrivateURLs,
+		},
 	}
 }
 
@@ -152,6 +159,25 @@ func registerRoutes(apiGroup *gin.RouterGroup, h *handlers) {
 	apiGroup.GET("/orgs/:orgId/oauth-clients/:clientId/tokens", h.oauthClients.ListClientTokens)
 	apiGroup.DELETE("/orgs/:orgId/oauth-clients/:clientId/tokens/:tokenId", h.oauthClients.RevokeToken)
 	apiGroup.POST("/orgs/:orgId/oauth-clients/:clientId/tokens/revoke-all", h.oauthClients.RevokeAllTokens)
+
+	// Webhooks (session-auth only)
+	apiGroup.GET("/webhooks", h.webhooks.ListWebhooks)
+	apiGroup.POST("/webhooks", h.webhooks.CreateWebhook)
+	apiGroup.GET("/webhooks/event-types", h.webhooks.ListEventTypes)
+	apiGroup.GET("/webhooks/:id", h.webhooks.GetWebhook)
+	apiGroup.PATCH("/webhooks/:id", h.webhooks.UpdateWebhook)
+	apiGroup.DELETE("/webhooks/:id", h.webhooks.DeleteWebhook)
+	apiGroup.POST("/webhooks/:id/rotate-secret", h.webhooks.RotateSecret)
+	apiGroup.GET("/webhooks/:id/events", h.webhooks.ListEvents)
+	apiGroup.POST("/webhooks/:id/events/:eventId/replay", h.webhooks.ReplayEvent)
+}
+
+// registerWebhookFeedRoute adds the webhook consumer's missed-events feed. It
+// sits outside the session/bearer-authenticated group: the consumer
+// authenticates by signing the request with the webhook's secret.
+func registerWebhookFeedRoute(r *gin.Engine, h *handlers) {
+	limiter := handler.NewRateLimiter(120, time.Minute)
+	r.GET("/api/v1/webhooks/:id/feed", handler.WebhookFeedRateLimit(limiter), h.webhooks.Feed)
 }
 
 // registerInternalRoutes adds service-to-service routes. They live outside
