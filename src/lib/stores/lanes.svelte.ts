@@ -6,7 +6,8 @@ import { uuid } from '$lib/utils/uuid';
 import { withCrossTabLock } from '$lib/utils/crossTabLock';
 import { createOptimisticWriter } from './optimisticWriter';
 
-const DEFAULT_LANES: Omit<Lane, 'id' | 'createdAt' | 'updatedAt'>[] = [
+/** Lanes a new board starts with (the main board and each folder board). */
+export const DEFAULT_LANES: Omit<Lane, 'id' | 'createdAt' | 'updatedAt'>[] = [
   {
     title: 'All Tasks',
     filterSet: { conjunction: 'and', rules: [] },

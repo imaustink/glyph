@@ -34,7 +34,11 @@
   let showDeleteConfirm = $state(false);
   let associatedTaskCount = $state(0);
   let pendingDeleteTasks = $state<Task[]>([]);
-  let dragOver = $state(false);
+  /**
+   * Where a drop on this row would land: as a sibling before/after it (shown
+   * as an insertion line), or inside it (folders only, shown as a highlight).
+   */
+  let dropPosition = $state<'before' | 'after' | 'inside' | null>(null);
   let showShareDialog = $state(false);
   let showVisibilityModal = $state(false);
 
@@ -177,7 +181,23 @@
     const draggedId = e.dataTransfer?.types.includes('text/plain') ? true : false;
     if (!draggedId) return;
     e.dataTransfer!.dropEffect = 'move';
-    dragOver = true;
+    dropPosition = computeDropPosition(e);
+  }
+
+  /**
+   * Pages split at the vertical midpoint: the top half drops before the row,
+   * the bottom half after it. Folders reserve the middle for "drop inside",
+   * with thin bands at the top and bottom for reordering around the folder.
+   * An expanded folder with children has its contents directly below, so its
+   * bottom band also means "inside" to avoid an ambiguous line.
+   */
+  function computeDropPosition(e: DragEvent): 'before' | 'after' | 'inside' {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const ratio = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5;
+    if (node.type !== 'folder') return ratio < 0.5 ? 'before' : 'after';
+    if (ratio < 0.25) return 'before';
+    if (ratio > 0.75 && !(expanded && hasChildren)) return 'after';
+    return 'inside';
   }
 
   function handleDragLeave(e: DragEvent) {
@@ -185,14 +205,15 @@
     const related = e.relatedTarget as HTMLElement | null;
     const currentTarget = e.currentTarget as HTMLElement;
     if (!related || !currentTarget.contains(related)) {
-      dragOver = false;
+      dropPosition = null;
     }
   }
 
   async function handleDrop(e: DragEvent) {
     e.preventDefault();
     e.stopPropagation();
-    dragOver = false;
+    const position = dropPosition ?? computeDropPosition(e);
+    dropPosition = null;
 
     const draggedId = e.dataTransfer?.getData('text/plain');
     if (!draggedId || draggedId === node.id) return;
@@ -209,15 +230,16 @@
     if (node.type === 'folder' && isDescendant(draggedId, node.id)) return;
 
     try {
-      if (node.type === 'folder') {
+      if (position === 'inside') {
         // Drop into folder — place at end
         const siblings = pagesStore.getChildren(node.id);
         const maxOrder = siblings.reduce((m, n) => Math.max(m, n.order), -1);
         await pagesStore.moveNode(draggedId, node.id, orderAfter(maxOrder));
         expanded = true;
+      } else if (position === 'before') {
+        // Reorder as sibling. These only ever write integer orders (the API's order is an int).
+        await pagesStore.placeBefore(draggedId, node.id);
       } else {
-        // Drop on a page/item — reorder as sibling (place after this node).
-        // placeAfter only ever writes integer orders (the API's order is an int).
         await pagesStore.placeAfter(draggedId, node.id);
       }
     } catch {
@@ -231,7 +253,9 @@
     class="node-row"
     class:active={isActive}
     class:folder={node.type === 'folder'}
-    class:drag-over={dragOver}
+    class:drag-over={dropPosition === 'inside'}
+    class:drop-before={dropPosition === 'before'}
+    class:drop-after={dropPosition === 'after'}
     oncontextmenu={openContextMenu}
     draggable="true"
     ondragstart={handleDragStart}
@@ -377,6 +401,20 @@
   .node-row:hover .node-actions { opacity: 1; }
   .node-row.drag-over { background: var(--accent-bg); outline: 1px solid var(--accent-muted); outline-offset: -1px; }
   .node-row.drag-over.folder { outline-style: dashed; }
+  /* Insertion line showing where a reordered item will land (#85). */
+  .node-row.drop-before::before,
+  .node-row.drop-after::after {
+    content: '';
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    height: 2px;
+    background: var(--accent);
+    border-radius: 1px;
+    pointer-events: none;
+  }
+  .node-row.drop-before::before { top: -1px; }
+  .node-row.drop-after::after { bottom: -1px; }
 
   .toggle-btn {
     background: none;
