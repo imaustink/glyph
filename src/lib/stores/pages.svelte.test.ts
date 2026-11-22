@@ -675,4 +675,65 @@ describe('pagesStore', () => {
       await expect(store.placeAfter('a', 'b')).rejects.toThrow('network');
     });
   });
+
+  // ─── placeBefore (sidebar sibling reorder, top half of a row) ──────────
+
+  describe('placeBefore', () => {
+    function childIds(parentId: string | null) {
+      return store.getChildren(parentId).map((n) => n.id);
+    }
+
+    it('places the dragged node directly before the target', async () => {
+      const a = makeNode({ id: 'a', order: 1000 });
+      const b = makeNode({ id: 'b', order: 3000 });
+      const c = makeNode({ id: 'c', order: 5000 });
+      vi.mocked(repo.getAll).mockResolvedValueOnce([a, b, c]);
+      await store.load();
+
+      await store.placeBefore('c', 'b');
+
+      expect(childIds(null)).toEqual(['a', 'c', 'b']);
+      expect(repo.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('can move a node to the very top of its siblings', async () => {
+      const a = makeNode({ id: 'a', order: 1000 });
+      const b = makeNode({ id: 'b', order: 3000 });
+      vi.mocked(repo.getAll).mockResolvedValueOnce([a, b]);
+      await store.load();
+
+      await store.placeBefore('b', 'a');
+
+      expect(childIds(null)).toEqual(['b', 'a']);
+    });
+
+    it('renumbers with integer orders when there is no gap before the target', async () => {
+      const a = makeNode({ id: 'a', order: 0 });
+      const b = makeNode({ id: 'b', order: 1 });
+      const c = makeNode({ id: 'c', order: 2 });
+      vi.mocked(repo.getAll).mockResolvedValueOnce([a, b, c]);
+      await store.load();
+
+      await store.placeBefore('c', 'a');
+
+      expect(childIds(null)).toEqual(['c', 'a', 'b']);
+      for (const [, patch] of vi.mocked(repo.update).mock.calls) {
+        if (patch.order !== undefined) expect(Number.isInteger(patch.order)).toBe(true);
+      }
+    });
+
+    it('moves a node from another parent in before the target', async () => {
+      const folder = makeNode({ id: 'f', type: 'folder', order: 0 });
+      const x = makeNode({ id: 'x', parentId: 'f', order: 0 });
+      const a = makeNode({ id: 'a', order: 1 });
+      const b = makeNode({ id: 'b', order: 2 });
+      vi.mocked(repo.getAll).mockResolvedValueOnce([folder, x, a, b]);
+      await store.load();
+
+      await store.placeBefore('x', 'b');
+
+      expect(childIds(null)).toEqual(['f', 'a', 'x', 'b']);
+      expect(childIds('f')).toEqual([]);
+    });
+  });
 });
