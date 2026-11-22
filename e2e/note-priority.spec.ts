@@ -1,4 +1,4 @@
-import { test, expect, createNewPage, navigateToTaskBoard } from './fixtures';
+import { test, expect, createNewPage, navigateToTaskBoard, getAllTasksLane } from './fixtures';
 
 /**
  * Creates a task from a TODO bullet on the currently-open note.
@@ -59,7 +59,7 @@ test.describe('Note priority', () => {
 
 		// Raise Alpha task's own priority to urgent via the task detail page.
 		await navigateToTaskBoard(page);
-		await page.locator('.task-card:has-text("Alpha task")').click();
+		await getAllTasksLane(page).locator('.task-card', { hasText: 'Alpha task' }).click();
 		await page.waitForURL(/\/tasks\/[^/]+$/, { timeout: 15_000 });
 		const priorityMeta = page.locator(
 			'.meta-row:has(.meta-label:has-text("Priority")) .meta-select'

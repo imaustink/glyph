@@ -265,7 +265,7 @@ describe('first-run seeding in two tabs [Low]', () => {
       await Promise.all([tabA.seedDefaults(), tabB.seedDefaults()]);
 
       const stored = JSON.parse(localStorage.getItem('glyph:lanes')!) as Lane[];
-      expect(stored).toHaveLength(4);
+      expect(stored).toHaveLength(5);
       expect(tabB.lanes.map((l) => l.id).sort()).toEqual(tabA.lanes.map((l) => l.id).sort());
     } finally {
       restore();

@@ -15,22 +15,35 @@ export const DEFAULT_LANES: Omit<Lane, 'id' | 'createdAt' | 'updatedAt'>[] = [
     order: 0
   },
   {
+    // Tasks still awaiting triage: no priority and no due date.
+    title: 'Unprioritized',
+    filterSet: {
+      conjunction: 'and',
+      rules: [
+        { id: 'default-4', field: 'priority', operator: 'eq', value: 'none' },
+        { id: 'default-5', field: 'dueDate', operator: 'not_exists', value: null }
+      ]
+    },
+    sortConfig: { mode: 'auto' },
+    order: 1
+  },
+  {
     title: 'In Progress',
     filterSet: { conjunction: 'and', rules: [{ id: 'default-1', field: 'status', operator: 'eq', value: 'in-progress' }] },
     sortConfig: { mode: 'auto' },
-    order: 1
+    order: 2
   },
   {
     title: 'Done',
     filterSet: { conjunction: 'and', rules: [{ id: 'default-2', field: 'status', operator: 'eq', value: 'done' }] },
     sortConfig: { mode: 'field', field: 'updatedAt', direction: 'desc' },
-    order: 2
+    order: 3
   },
   {
     title: 'Cancelled',
     filterSet: { conjunction: 'and', rules: [{ id: 'default-3', field: 'status', operator: 'eq', value: 'cancelled' }] },
     sortConfig: { mode: 'auto' },
-    order: 3
+    order: 4
   }
 ];
 
