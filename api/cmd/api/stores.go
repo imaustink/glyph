@@ -17,6 +17,7 @@ type stores struct {
 	oauthClients store.OAuthClientStore
 	oauthCodes   store.OAuthCodeStore
 	oauthTokens  store.OAuthTokenStore
+	webhooks     store.WebhookStore
 	// collab notifies the collab service of out-of-editor changes (nil = off).
 	collab store.CollabNotifier
 }
@@ -35,5 +36,6 @@ func newStores(pool *pgxpool.Pool) *stores {
 		oauthClients: store.NewOAuthClientStore(pool),
 		oauthCodes:   store.NewOAuthCodeStore(pool),
 		oauthTokens:  store.NewOAuthTokenStore(pool),
+		webhooks:     store.NewWebhookStore(pool),
 	}
 }

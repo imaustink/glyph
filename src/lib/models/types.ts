@@ -419,6 +419,81 @@ export interface OAuthConnection {
   lastUsedAt: string | null;
 }
 
+// ─── Webhooks ─────────────────────────────────────────────────────────────────
+
+export type WebhookEventType =
+  | 'note.created'
+  | 'note.updated'
+  | 'note.deleted'
+  | 'task.created'
+  | 'task.updated'
+  | 'task.deleted';
+
+export const WEBHOOK_EVENT_TYPES: WebhookEventType[] = [
+  'note.created',
+  'note.updated',
+  'note.deleted',
+  'task.created',
+  'task.updated',
+  'task.deleted'
+];
+
+/**
+ * A user-configured endpoint that receives signed event deliveries.
+ * orgId null = personal (changes to the user's own notes/tasks); set = the
+ * org's non-private notes/tasks (org owners only).
+ */
+export interface Webhook {
+  id: string;
+  userId: string;
+  orgId: string | null;
+  name: string;
+  url: string;
+  eventTypes: WebhookEventType[];
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Returned once, on create and on secret rotation. */
+export interface WebhookWithSecret extends Webhook {
+  secret: string;
+}
+
+export type WebhookEventStatus = 'pending' | 'delivered' | 'failed';
+
+export interface WebhookEvent {
+  id: string;
+  webhookId: string;
+  /** Per-webhook sequence number; null for a moment after the change commits. */
+  sequence: number | null;
+  type: WebhookEventType;
+  resourceId: string;
+  data: Record<string, unknown>;
+  status: WebhookEventStatus;
+  attempts: number;
+  lastStatusCode: number | null;
+  lastError: string | null;
+  lastAttemptAt: string | null;
+  nextAttemptAt: string;
+  deliveredAt: string | null;
+  createdAt: string;
+}
+
+export interface WebhookEventsPage {
+  events: WebhookEvent[];
+  total: number;
+  retentionDays: number;
+}
+
+export interface WebhookInput {
+  name: string;
+  url: string;
+  eventTypes: WebhookEventType[];
+  orgId?: string | null;
+  active?: boolean;
+}
+
 export interface UserSearchResult {
   id: string;
   email: string | null;

@@ -81,7 +81,7 @@ func newMCPEnvWith(t *testing.T, collab collabConfig) *mcpEnv {
 	glyphoauth.RegisterOAuthRoutes(r, oauthCfg, nil)
 	apiGroup := r.Group("/api/v1", glyphoauth.DualAuthMiddleware(sessionMw, bearerMw), handler.CSRFMiddleware())
 	glyphoauth.RegisterConsentRoutes(apiGroup, oauthCfg)
-	registerRoutes(apiGroup, newHandlers(s, collab))
+	registerRoutes(apiGroup, newHandlers(s, collab, webhookConfig{}))
 	registerMCP(r, s, oauthCfg, bearerMw)
 
 	ctx := context.Background()
