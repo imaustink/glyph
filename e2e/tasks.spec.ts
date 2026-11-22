@@ -17,10 +17,10 @@ test.describe('Tasks', () => {
 	test('task board shows default lanes', async ({ page }) => {
 		await navigateToTaskBoard(page);
 
-		// The lanes store seeds four default lanes when empty.
+		// The lanes store seeds five default lanes when empty.
 		const laneTitles = page.locator('.lane-title');
 		const count = await laneTitles.count();
-		expect(count).toBeGreaterThanOrEqual(4);
+		expect(count).toBeGreaterThanOrEqual(5);
 	});
 
 	test('empty bullet immediately becomes a smart bullet', async ({ page }) => {
@@ -714,10 +714,10 @@ test.describe('Tasks', () => {
 
 	// ── Lane Default Tests ──────────────────────────────────────────────
 
-	test('default lanes include All Tasks, In Progress, Done, and Cancelled', async ({ page }) => {
+	test('default lanes include All Tasks, Unprioritized, In Progress, Done, and Cancelled', async ({ page }) => {
 		await navigateToTaskBoard(page);
 
-		const expectedTitles = ['All Tasks', 'In Progress', 'Done', 'Cancelled'];
+		const expectedTitles = ['All Tasks', 'Unprioritized', 'In Progress', 'Done', 'Cancelled'];
 		for (const title of expectedTitles) {
 			await expect(
 				page.locator('.lane-title', { hasText: title })

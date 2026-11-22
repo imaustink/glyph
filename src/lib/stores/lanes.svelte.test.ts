@@ -9,7 +9,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createLanesStore } from './lanes.svelte';
 import type { ILaneRepository } from '$lib/storage/interfaces';
-import type { Lane } from '$lib/models/types';
+import type { Lane, Task } from '$lib/models/types';
+import { applyFilter } from '$lib/storage/filterUtils';
 
 function makeLane(overrides: Partial<Lane> = {}): Lane {
   return {
@@ -82,10 +83,10 @@ describe('lanesStore', () => {
   // ─── seedDefaults ────────────────────────────────────────────────────────
 
   describe('seedDefaults', () => {
-    it('seeds 4 default lanes when no lanes exist', async () => {
+    it('seeds 5 default lanes when no lanes exist', async () => {
       await store.load(); // lanes = []
       await store.seedDefaults();
-      expect(store.lanes).toHaveLength(4);
+      expect(store.lanes).toHaveLength(5);
     });
 
     it('seeded lanes have the expected titles', async () => {
@@ -93,9 +94,25 @@ describe('lanesStore', () => {
       await store.seedDefaults();
       const titles = store.lanes.map((l) => l.title);
       expect(titles).toContain('All Tasks');
+      expect(titles).toContain('Unprioritized');
       expect(titles).toContain('In Progress');
       expect(titles).toContain('Done');
       expect(titles).toContain('Cancelled');
+    });
+
+    it('seeds an Unprioritized lane showing only tasks with no priority and no due date', async () => {
+      await store.load();
+      await store.seedDefaults();
+      const lane = store.lanes.find((l) => l.title === 'Unprioritized');
+      expect(lane).toBeDefined();
+      const base = { status: 'todo', tags: [] } as unknown as Task;
+      const tasks = [
+        { ...base, id: 'triage', priority: 'none', dueDate: null },
+        { ...base, id: 'has-priority', priority: 'high', dueDate: null },
+        { ...base, id: 'has-due', priority: 'none', dueDate: '2026-12-01' },
+        { ...base, id: 'has-both', priority: 'low', dueDate: '2026-12-01' }
+      ] as Task[];
+      expect(applyFilter(tasks, lane!.filterSet).map((t) => t.id)).toEqual(['triage']);
     });
 
     it('is idempotent: does not seed when lanes already exist', async () => {
@@ -119,7 +136,7 @@ describe('lanesStore', () => {
       // repo has no createBatch
       await store.load();
       await store.seedDefaults();
-      expect(repo.create).toHaveBeenCalledTimes(4);
+      expect(repo.create).toHaveBeenCalledTimes(5);
     });
   });
 
