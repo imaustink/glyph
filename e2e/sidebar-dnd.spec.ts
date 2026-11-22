@@ -224,6 +224,89 @@ test.describe('Drag and drop in sidebar', () => {
 		await expect(page.locator('.toast')).toHaveCount(0);
 	});
 
+	// #85: folder rows keep the middle for "drop inside", with a top band
+	// (< 25%) for "before" and a bottom band (> 75%) for "after". The bottom
+	// band means "inside" when the folder is expanded and shows children.
+	test.describe('folder drop bands', () => {
+		async function namePage(page: import('@playwright/test').Page, title: string) {
+			const input = page.locator('input.title-edit');
+			if ((await input.count()) === 0) await page.locator('.page-title').click();
+			await input.fill(title);
+			await input.press('Enter');
+			await expect(page.locator('.page-title')).toHaveText(title);
+		}
+
+		const rowFor = (page: import('@playwright/test').Page, title: string) =>
+			page.locator('.node-row', { has: page.locator(`.node-label:text-is("${title}")`) });
+
+		/** Labels at the root level only (excludes anything inside a folder's children). */
+		const rootOrder = (page: import('@playwright/test').Page) => async () => {
+			const labels = await page
+				.locator('.page-tree-container .tree-node:not(.children .tree-node) > .node-row .node-label')
+				.allInnerTexts();
+			return labels.map((l) => l.trim()).filter((l) => ['Alpha', 'Bravo', 'New Folder'].includes(l));
+		};
+
+		/** Alpha and Bravo at the root, then an empty "New Folder" after them. */
+		async function setup(page: import('@playwright/test').Page) {
+			await namePage(page, 'Alpha');
+			await createNewPage(page);
+			await namePage(page, 'Bravo');
+			await createNewFolder(page);
+			await expect(rowFor(page, 'New Folder')).toBeVisible();
+			await expect.poll(rootOrder(page)).toEqual(['Alpha', 'Bravo', 'New Folder']);
+		}
+
+		/** Move Bravo into the folder with a middle drop, leaving the folder expanded. */
+		async function nestBravo(page: import('@playwright/test').Page) {
+			await robustDragTo(page, rowFor(page, 'Bravo'), rowFor(page, 'New Folder'));
+			await expect(page.locator('.children .node-label:text-is("Bravo")')).toBeVisible({
+				timeout: 15_000
+			});
+			await expect.poll(rootOrder(page)).toEqual(['Alpha', 'New Folder']);
+		}
+
+		test('top band of a folder drops before the folder, not inside it', async ({ page }) => {
+			await setup(page);
+
+			await robustDragTo(page, rowFor(page, 'Alpha'), rowFor(page, 'New Folder'), 0.1);
+
+			await expect.poll(rootOrder(page)).toEqual(['Bravo', 'Alpha', 'New Folder']);
+			await expect(page.locator('.children .node-label:text-is("Alpha")')).toHaveCount(0);
+			await expect(page.locator('.toast')).toHaveCount(0);
+		});
+
+		test('bottom band of a collapsed folder drops after the folder', async ({ page }) => {
+			await setup(page);
+			await nestBravo(page);
+
+			await rowFor(page, 'New Folder').locator('.toggle-btn').click();
+			await expect(page.locator('.children .node-label:text-is("Bravo")')).toHaveCount(0);
+
+			await robustDragTo(page, rowFor(page, 'Alpha'), rowFor(page, 'New Folder'), 0.9);
+
+			await expect.poll(rootOrder(page)).toEqual(['New Folder', 'Alpha']);
+			// Alpha stayed at the root: expanding the folder shows only Bravo inside.
+			await rowFor(page, 'New Folder').locator('.toggle-btn').click();
+			await expect(page.locator('.children .node-label:text-is("Bravo")')).toBeVisible();
+			await expect(page.locator('.children .node-label:text-is("Alpha")')).toHaveCount(0);
+			await expect(page.locator('.toast')).toHaveCount(0);
+		});
+
+		test('bottom band of an expanded folder with children drops inside it', async ({ page }) => {
+			await setup(page);
+			await nestBravo(page);
+
+			await robustDragTo(page, rowFor(page, 'Alpha'), rowFor(page, 'New Folder'), 0.9);
+
+			await expect(page.locator('.children .node-label:text-is("Alpha")')).toBeVisible({
+				timeout: 15_000
+			});
+			await expect.poll(rootOrder(page)).toEqual(['New Folder']);
+			await expect(page.locator('.toast')).toHaveCount(0);
+		});
+	});
+
 	test('pages are draggable (draggable attribute present)', async ({ page }) => {
 		const nodeRow = page.locator('.node-row').first();
 		const draggable = await nodeRow.getAttribute('draggable');
