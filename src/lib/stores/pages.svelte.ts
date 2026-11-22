@@ -231,15 +231,15 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
   const ORDER_STEP = 1024;
 
   /**
-   * Move `draggedId` so it sits directly after `targetId`, under the target's
-   * parent. Orders are always integers: the API's `order` is an int, and a
-   * fractional value is rejected with a 400.
+   * Move `draggedId` so it sits directly before or after `targetId`, under the
+   * target's parent. Orders are always integers: the API's `order` is an int,
+   * and a fractional value is rejected with a 400.
    *
-   * When there is an integer gap after the target only the dragged node is
+   * When there is an integer gap next to the target only the dragged node is
    * written. Otherwise the siblings are renumbered. Throws on failure so the
    * caller can tell the user.
    */
-  async function placeAfter(draggedId: string, targetId: string): Promise<void> {
+  async function placeRelative(draggedId: string, targetId: string, position: 'before' | 'after'): Promise<void> {
     if (draggedId === targetId) return;
     const target = _idIndex.get(targetId);
     const dragged = _idIndex.get(draggedId);
@@ -251,14 +251,19 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
 
     const siblings = getChildren(parentId).filter((n) => n.id !== draggedId);
     const idx = siblings.findIndex((n) => n.id === targetId);
-    const next = siblings[idx + 1];
-    const gapOrder = next ? orderBetween(target.order, next.order) : orderAfter(target.order);
+    // Index in `siblings` the dragged node will be inserted at.
+    const insertAt = position === 'after' ? idx + 1 : idx;
+    const prev = siblings[insertAt - 1];
+    const next = siblings[insertAt];
+    const gapOrder = !next
+      ? orderAfter(prev.order)
+      : orderBetween(prev ? prev.order : null, next.order);
     if (gapOrder !== null) {
       await moveNode(draggedId, parentId, gapOrder);
       return;
     }
 
-    const ordered = [...siblings.slice(0, idx + 1), dragged, ...siblings.slice(idx + 1)];
+    const ordered = [...siblings.slice(0, insertAt), dragged, ...siblings.slice(insertAt)];
     // The dragged node goes first: it may be changing parent, and moveNode
     // runs the cycle check before anything is written.
     await moveNode(draggedId, parentId, (ordered.indexOf(dragged) + 1) * ORDER_STEP);
@@ -268,6 +273,16 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
       if (n.id === draggedId || n.order === order) continue;
       await updateNode(n.id, { order });
     }
+  }
+
+  /** Move `draggedId` so it sits directly after `targetId`. See placeRelative. */
+  function placeAfter(draggedId: string, targetId: string): Promise<void> {
+    return placeRelative(draggedId, targetId, 'after');
+  }
+
+  /** Move `draggedId` so it sits directly before `targetId`. See placeRelative. */
+  function placeBefore(draggedId: string, targetId: string): Promise<void> {
+    return placeRelative(draggedId, targetId, 'before');
   }
 
   /**
@@ -307,6 +322,7 @@ export function createPagesStore(injectedRepo?: IPageRepository) {
     forgetRevision,
     moveNode,
     placeAfter,
+    placeBefore,
     removeBulletByNodeId
   };
 }

@@ -12,14 +12,16 @@ import { test, expect, createNewPage, createNewFolder, navigateToPage } from './
 async function robustDragTo(
 	page: import('@playwright/test').Page,
 	source: import('@playwright/test').Locator,
-	target: import('@playwright/test').Locator
+	target: import('@playwright/test').Locator,
+	/** Vertical drop point as a fraction of the target's height (0 = top). */
+	yFraction = 0.5
 ) {
 	const sBox = await source.boundingBox();
 	const tBox = await target.boundingBox();
 	if (!sBox || !tBox) throw new Error('drag source/target has no bounding box');
 
 	const tx = tBox.x + tBox.width / 2;
-	const ty = tBox.y + tBox.height / 2;
+	const ty = tBox.y + tBox.height * yFraction;
 
 	await page.mouse.move(sBox.x + sBox.width / 2, sBox.y + sBox.height / 2);
 	await page.mouse.down();
@@ -184,14 +186,42 @@ test.describe('Drag and drop in sidebar', () => {
 		const rowFor = (title: string) =>
 			page.locator('.node-row', { has: page.locator(`.node-label:text-is("${title}")`) });
 
-		// Drop Charlie on Alpha → Charlie lands right after Alpha.
-		await robustDragTo(page, rowFor('Charlie'), rowFor('Alpha'));
+		// Drop Charlie on the bottom half of Alpha → Charlie lands right after Alpha.
+		await robustDragTo(page, rowFor('Charlie'), rowFor('Alpha'), 0.75);
 		await expect.poll(rootOrder).toEqual(['Alpha', 'Charlie', 'Bravo']);
 		await expect(page.locator('.toast')).toHaveCount(0);
 
 		await page.reload();
 		await expect(page.locator('.node-label:text-is("Alpha")')).toBeVisible({ timeout: 10_000 });
 		await expect.poll(rootOrder).toEqual(['Alpha', 'Charlie', 'Bravo']);
+	});
+
+	// #85: the top half of a page row drops before it, the bottom half after.
+	test('dropping on the top half of a page places the item before it', async ({ page }) => {
+		async function namePage(title: string) {
+			const input = page.locator('input.title-edit');
+			if ((await input.count()) === 0) await page.locator('.page-title').click();
+			await input.fill(title);
+			await input.press('Enter');
+			await expect(page.locator('.page-title')).toHaveText(title);
+		}
+
+		await namePage('Alpha');
+		await createNewPage(page);
+		await namePage('Bravo');
+
+		const rootOrder = async () => {
+			const labels = await page.locator('.node-label').allInnerTexts();
+			return labels.map((l) => l.trim()).filter((l) => ['Alpha', 'Bravo'].includes(l));
+		};
+		await expect.poll(rootOrder).toEqual(['Alpha', 'Bravo']);
+
+		const rowFor = (title: string) =>
+			page.locator('.node-row', { has: page.locator(`.node-label:text-is("${title}")`) });
+
+		await robustDragTo(page, rowFor('Bravo'), rowFor('Alpha'), 0.2);
+		await expect.poll(rootOrder).toEqual(['Bravo', 'Alpha']);
+		await expect(page.locator('.toast')).toHaveCount(0);
 	});
 
 	test('pages are draggable (draggable attribute present)', async ({ page }) => {
