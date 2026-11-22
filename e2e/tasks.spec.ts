@@ -336,7 +336,10 @@ test.describe('Tasks', () => {
 				{ steps: 2 }
 			);
 		}
-		await page.waitForTimeout(100);
+		// Hover over the target for longer than svelte-dnd-action's 200ms
+		// drop-zone polling interval, so the library registers the target zone
+		// (not a lane crossed on the way) before the drop.
+		await page.waitForTimeout(450);
 		await page.mouse.up();
 		// Allow finalize handler to complete.
 		await page.waitForTimeout(300);
