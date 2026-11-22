@@ -340,6 +340,11 @@ func (h *WebhookHandler) ListEvents(c *gin.Context) {
 }
 
 // POST /webhooks/:id/events/:eventId/replay
+//
+// Only events that are no longer queued (delivered or failed) can be
+// replayed. A pending event is still owned by the dispatcher: sending it here
+// would deliver it out of sequence order and could race the dispatcher's own
+// attempt, so it gets 409 Conflict instead.
 func (h *WebhookHandler) ReplayEvent(c *gin.Context) {
 	w, ok := h.loadOwned(c)
 	if !ok {
@@ -352,6 +357,10 @@ func (h *WebhookHandler) ReplayEvent(c *gin.Context) {
 	e, err := h.Webhooks.GetEvent(c.Request.Context(), w.ID, eventID)
 	if err != nil {
 		notFoundOrError(c, err)
+		return
+	}
+	if e.Status == model.WebhookEventPending {
+		c.JSON(http.StatusConflict, gin.H{"error": "event is still queued for delivery; only delivered or failed events can be replayed"})
 		return
 	}
 	updated, err := h.Replayer.Replay(c.Request.Context(), w, e)

@@ -281,7 +281,10 @@
                     <button
                       class="btn-secondary btn-small"
                       onclick={() => replay(ev)}
-                      disabled={replayingId === ev.id}
+                      disabled={replayingId === ev.id || ev.status === 'pending'}
+                      title={ev.status === 'pending'
+                        ? 'Still queued for delivery; replay is available once it is delivered or failed'
+                        : undefined}
                     >
                       {replayingId === ev.id ? '…' : 'Replay'}
                     </button>

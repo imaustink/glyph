@@ -105,7 +105,9 @@ Check your implementation against this vector: secret `secret`, timestamp
 The webhook's page lists its events from the last **30 days**, with each event's
 delivery status, the HTTP status code of the last attempt, the number of
 attempts and the payload. **Replay** sends an event again immediately (same body,
-fresh timestamp and signature). Events older than 30 days are deleted
+fresh timestamp and signature). Only events that are **delivered** or
+**failed** can be replayed; an event still pending is queued for in-order
+delivery, so replaying it returns `409 Conflict`. Events older than 30 days are deleted
 automatically.
 
 ## Missed-events feed

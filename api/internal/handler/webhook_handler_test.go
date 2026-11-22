@@ -446,10 +446,22 @@ func TestWebhookHandler_EventsAndReplay(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, env.do("alice", "GET", "/api/v1/webhooks/"+created.ID.String()+"/events?limit=0", nil).Code)
 	assert.Equal(t, http.StatusNotFound, env.do("bob", "GET", "/api/v1/webhooks/"+created.ID.String()+"/events", nil).Code)
 
+	// A pending event is still queued for the dispatcher: replaying it would
+	// break sequence order, so it is refused without touching the replayer.
+	w = env.do("alice", "POST", "/api/v1/webhooks/"+created.ID.String()+"/events/"+newer.ID.String()+"/replay", nil)
+	assert.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+	assert.Nil(t, env.replayer.got)
+
+	older.Status = model.WebhookEventFailed
 	w = env.do("alice", "POST", "/api/v1/webhooks/"+created.ID.String()+"/events/"+older.ID.String()+"/replay", nil)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Equal(t, older.ID, env.replayer.got.ID)
 	assert.Equal(t, model.WebhookEventDelivered, decode[model.WebhookEvent](t, w).Status)
+
+	newer.Status = model.WebhookEventDelivered
+	w = env.do("alice", "POST", "/api/v1/webhooks/"+created.ID.String()+"/events/"+newer.ID.String()+"/replay", nil)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, newer.ID, env.replayer.got.ID)
 
 	assert.Equal(t, http.StatusNotFound, env.do("bob", "POST",
 		"/api/v1/webhooks/"+created.ID.String()+"/events/"+older.ID.String()+"/replay", nil).Code)
