@@ -49,9 +49,18 @@ export function createFolderBoardStore(injectedRepo?: FolderBoardRepo, injectedT
       lanes = folderLanes;
       tasks = folderTasks;
       if (folderLanes.length === 0 && meta.canEdit) {
-        const seeded = await seedDefaultLanes(id);
-        if (gen !== generation) return;
-        lanes = seeded;
+        try {
+          const seeded = await seedDefaultLanes(id);
+          if (gen !== generation) return;
+          lanes = seeded;
+        } catch {
+          // Seeding is best effort: a failure must not hide the board. Show
+          // whatever lanes exist now (possibly a partial seed).
+          if (gen !== generation) return;
+          const current = await repo.getLanes(id).catch(() => null);
+          if (gen !== generation) return;
+          if (current) lanes = current;
+        }
       }
     } catch (e) {
       if (gen !== generation) return;

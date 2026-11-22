@@ -227,6 +227,26 @@ describe('folderBoardStore', () => {
       expect(repo.createLane).not.toHaveBeenCalled();
       expect(store.lanes).toEqual([other]);
     });
+
+    it('keeps the board visible with whatever lanes exist when seeding fails partway', async () => {
+      const task = makeTask();
+      const partial = makeLane({ id: 'seeded-1', title: DEFAULT_LANES[0].title, folderId: 'folder-1' });
+      vi.mocked(repo.getTasks).mockResolvedValue([task]);
+      vi.mocked(repo.getLanes)
+        .mockResolvedValueOnce([]) // initial load
+        .mockResolvedValueOnce([]) // re-read under the lock
+        .mockResolvedValueOnce([partial]); // recovery read after the failure
+      vi.mocked(repo.createLane)
+        .mockResolvedValueOnce(partial)
+        .mockRejectedValueOnce(new Error('Network error'));
+
+      await store.load('folder-1');
+
+      expect(store.error).toBeNull();
+      expect(store.loaded).toBe(true);
+      expect(store.tasks).toEqual([task]);
+      expect(store.lanes).toEqual([partial]);
+    });
   });
 
   // ─── reset ───────────────────────────────────────────────────────────────
