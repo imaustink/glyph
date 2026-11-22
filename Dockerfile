@@ -14,8 +14,12 @@ COPY . .
 
 ARG VITE_STORAGE_MODE=local
 ARG VITE_API_URL=
+# SvelteKit version name (see svelte.config.js). build-images.yml passes the
+# git tree hash so rebuilding the same source yields byte-identical assets.
+ARG APP_VERSION=
 ENV VITE_STORAGE_MODE=$VITE_STORAGE_MODE
 ENV VITE_API_URL=$VITE_API_URL
+ENV APP_VERSION=$APP_VERSION
 
 RUN pnpm build
 

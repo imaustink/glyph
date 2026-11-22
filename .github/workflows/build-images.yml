@@ -115,6 +115,15 @@ jobs:
           extra=""
           if [ "${{ inputs.force }}" = "true" ]; then extra="--pull --no-cache"; fi
 
+          # The frontend bakes a version name into its client bundle; pin it to
+          # the tree hash so every build of this tag emits identical chunk
+          # names. Otherwise two builds pushed under one tag (ci.yml and
+          # cd.yml's backfill can race) leave pods serving HTML that points at
+          # chunks only another pod has (#96).
+          if [ "${{ matrix.image }}" = "frontend" ]; then
+            extra="$extra --build-arg APP_VERSION=$tag"
+          fi
+
           # push-by-digest: push the single-platform image addressed only by its
           # content digest (no tag). The merge job references these digests.
           docker buildx build --platform "${{ matrix.platform }}" $extra ${{ matrix.build-args }} \
