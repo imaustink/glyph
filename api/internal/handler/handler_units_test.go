@@ -1137,6 +1137,7 @@ type mockPageStore struct {
 	deleteFn                func(id, userID uuid.UUID) error
 	isAncestorFn            func(candidateAncestorID, nodeID uuid.UUID) (bool, error)
 	upsertFn                func(p *model.Page) (*model.Page, error)
+	searchContentFn         func(pageIDs []uuid.UUID, query string, limit int) ([]store.PageTextMatch, error)
 }
 
 func (m *mockPageStore) ListByUser(ctx context.Context, userID uuid.UUID) ([]*model.Page, error) {
@@ -1202,7 +1203,10 @@ func (m *mockPageStore) UpsertContent(_ context.Context, pc *model.PageContent, 
 	}
 	return pc, nil
 }
-func (m *mockPageStore) SearchContent(_ context.Context, _ uuid.UUID, _ []uuid.UUID, _ string, _ int) ([]store.PageTextMatch, error) {
+func (m *mockPageStore) SearchContent(_ context.Context, _ uuid.UUID, pageIDs []uuid.UUID, query string, limit int) ([]store.PageTextMatch, error) {
+	if m.searchContentFn != nil {
+		return m.searchContentFn(pageIDs, query, limit)
+	}
 	return []store.PageTextMatch{}, nil
 }
 func (m *mockPageStore) ListContentVersions(_ context.Context, pageID, userID uuid.UUID, limit int) ([]model.PageContentVersion, error) {

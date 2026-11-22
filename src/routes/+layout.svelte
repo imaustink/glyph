@@ -16,6 +16,7 @@
   import { API_BASE, handleAuthError, apiErrorMessage } from '$lib/storage/apiClient';
   import { notificationsStore } from '$lib/stores/notifications.svelte';
   import { estimateStorageUsage, downloadExport } from '$lib/utils/export';
+  import { isNoteToNoteNavigation } from '$lib/utils/navigationGuard';
   import Sidebar from '$lib/components/sidebar/Sidebar.svelte';
   import SearchModal from '$lib/components/search/SearchModal.svelte';
   import CreateTaskModal from '$lib/components/tasks/CreateTaskModal.svelte';
@@ -159,6 +160,15 @@
     // If we're already retrying navigation after a save flush, let it through
     if (navRetrying) return;
 
+    // Note-to-note navigation reuses the Editor, which flushes the old page's
+    // writes itself before opening the next one — don't hold it (#53). It is
+    // also the latest navigation, so drop any held one rather than letting its
+    // retry undo this one.
+    if (isNoteToNoteNavigation(navigation.from?.route.id, navigation.to?.route.id)) {
+      retryTarget = null;
+      return;
+    }
+
     if (uiStore.hasPendingWrites && navigation.to) {
       navigation.cancel();
       // A navigation requested while waiting replaces the earlier one rather
@@ -171,8 +181,10 @@
       // passes this guard even if a write is still pending (e.g. timed out) —
       // otherwise the guard would cancel and retry it forever.
       uiStore.waitForSaveComplete(2000).catch(() => {}).finally(() => {
-        const target = retryTarget!;
+        const target = retryTarget;
         retryTarget = null;
+        // Superseded by a navigation that went through while we waited.
+        if (target === null) return;
         navRetrying = true;
         goto(target).finally(() => {
           navRetrying = false;

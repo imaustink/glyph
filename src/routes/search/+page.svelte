@@ -3,6 +3,8 @@
   import { tasksStore } from '$lib/stores/tasks.svelte';
   import { pagesStore } from '$lib/stores/pages.svelte';
   import { searchProvider as search } from '$lib/search/searchProvider';
+  import { mergeContentMatches } from '$lib/search/pageContent';
+  import { repositories } from '$lib/storage/config';
   import type { SearchResult, SearchableItem } from '$lib/models/types';
   import { goto } from '$app/navigation';
   let query = $state('');
@@ -41,7 +43,19 @@
     if (searchTimer) clearTimeout(searchTimer);
     loading = true;
     searchTimer = setTimeout(async () => {
-      results = await search.search(query, { limit: 40 });
+      const q = query;
+      const [titleResults, contentMatches] = await Promise.all([
+        search.search(q, { limit: 40 }),
+        // Page bodies aren't in the Fuse index; search them through the
+        // repository (local scan, or the API's /search). A failure here
+        // just leaves title/tag results.
+        repositories.pages.searchContent(q, 40).catch((err) => {
+          console.error('[search] page content search failed', err);
+          return [];
+        })
+      ]);
+      if (q !== query) return; // superseded by a newer query
+      results = mergeContentMatches(titleResults, contentMatches, pagesStore.nodes);
       loading = false;
     }, 150);
   });
@@ -103,7 +117,12 @@
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                 <polyline points="14 2 14 8 20 8"/>
               </svg>
-              <span class="result-title">{result.title}</span>
+              <div class="result-text">
+                <span class="result-title">{result.title}</span>
+                {#if result.excerpt}
+                  <span class="result-excerpt">{result.excerpt}</span>
+                {/if}
+              </div>
             </button>
           {/each}
         </section>

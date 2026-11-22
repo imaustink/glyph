@@ -46,6 +46,11 @@ export interface IPageRepository extends IRepository<TreeNode> {
    */
   saveContent(content: PageContent, opts?: WriteOptions): Promise<PageContent | void>;
   deleteContent(pageId: string): Promise<void>;
+  /**
+   * Pages whose content contains `query` (case-insensitive phrase match), at
+   * most `limit`, each with a snippet around the match.
+   */
+  searchContent(query: string, limit: number): Promise<PageContentMatch[]>;
   deleteWithContent(id: string): Promise<boolean>;
   /**
    * Delete a node and its descendants. `descendantIds` are the ones the
@@ -59,6 +64,12 @@ export interface IPageRepository extends IRepository<TreeNode> {
   deleteSubtree(id: string, descendantIds: string[], opts?: DeleteSubtreeOptions): Promise<void | string[]>;
   getTree(nodes: TreeNode[]): TreeNode[];
   getChildren(nodes: TreeNode[], parentId: string): TreeNode[];
+}
+
+/** A page whose content matched IPageRepository.searchContent. */
+export interface PageContentMatch {
+  pageId: string;
+  snippet: string;
 }
 
 export interface DeleteSubtreeOptions {

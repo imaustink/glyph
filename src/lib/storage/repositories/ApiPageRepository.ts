@@ -1,6 +1,13 @@
 import { api } from '$lib/storage/apiClient';
 import type { TreeNode, PageContent } from '$lib/models/types';
-import type { DeleteSubtreeOptions, WriteOptions } from '$lib/storage/interfaces';
+import type { DeleteSubtreeOptions, PageContentMatch, WriteOptions } from '$lib/storage/interfaces';
+
+interface ApiSearchResult {
+	id: string;
+	type: string;
+	title: string;
+	snippet: string;
+}
 
 /**
  * API-backed page repository. Mirrors the interface of PageRepository
@@ -43,6 +50,28 @@ export class ApiPageRepository {
 
 	async deleteContent(_pageId: string): Promise<void> {
 		// Content is cascade-deleted with the page on the server
+	}
+
+	/**
+	 * Server-side search (GET /search, pages only), so the client doesn't
+	 * have to download every page's content. `match=content` makes the server
+	 * skip title matching (Fuse handles titles), so title hits can't crowd
+	 * content hits out of `limit` and a page whose title also matches still
+	 * gets a snippet. Results without a snippet are dropped defensively.
+	 */
+	async searchContent(query: string, limit: number): Promise<PageContentMatch[]> {
+		const q = query.trim();
+		if (!q || limit < 1) return [];
+		const params = new URLSearchParams({
+			q,
+			types: 'page',
+			match: 'content',
+			limit: String(limit)
+		});
+		const results = (await api.get<ApiSearchResult[]>(`/api/v1/search?${params}`)) ?? [];
+		return results
+			.filter((r) => r.type === 'page' && r.snippet)
+			.map((r) => ({ pageId: r.id, snippet: r.snippet }));
 	}
 
 	async deleteWithContent(id: string): Promise<boolean> {

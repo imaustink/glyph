@@ -539,3 +539,36 @@ describe('PageRepository', () => {
     });
   });
 });
+
+describe('PageRepository.searchContent', () => {
+  let repo: PageRepository;
+
+  const doc = (text: string) => ({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
+
+  beforeEach(async () => {
+    repo = new PageRepository(createMockAdapter());
+    await repo.create(makeNode({ id: 'old', title: 'Old', updatedAt: '2026-01-01T00:00:00Z' }));
+    await repo.create(makeNode({ id: 'new', title: 'New', updatedAt: '2026-02-01T00:00:00Z' }));
+    await repo.create(makeNode({ id: 'other', title: 'Other' }));
+    await repo.create(makeNode({ id: 'empty', title: 'Empty' }));
+    await repo.saveContent({ pageId: 'old', content: doc('Quarterly roadmap draft'), updatedAt: '2026-01-01T00:00:00Z' });
+    await repo.saveContent({ pageId: 'new', content: doc('Final ROADMAP review'), updatedAt: '2026-02-01T00:00:00Z' });
+    await repo.saveContent({ pageId: 'other', content: doc('Nothing here'), updatedAt: '2026-01-01T00:00:00Z' });
+  });
+
+  it('returns pages whose content matches, most recently updated first, with snippets', async () => {
+    const matches = await repo.searchContent('roadmap', 10);
+    expect(matches).toEqual([
+      { pageId: 'new', snippet: 'Final ROADMAP review' },
+      { pageId: 'old', snippet: 'Quarterly roadmap draft' }
+    ]);
+  });
+
+  it('respects the limit', async () => {
+    expect(await repo.searchContent('roadmap', 1)).toHaveLength(1);
+  });
+
+  it('returns nothing for a blank query', async () => {
+    expect(await repo.searchContent('  ', 10)).toEqual([]);
+  });
+});

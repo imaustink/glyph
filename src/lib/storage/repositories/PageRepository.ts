@@ -2,6 +2,8 @@ import { Repository } from '$lib/storage/Repository';
 import type { StorageAdapter, TreeNode, PageContent, ProseMirrorJSONNode } from '$lib/models/types';
 import { applyMigrations, CURRENT_SCHEMA_VERSION } from '$lib/editor/migrations';
 import { ApiError } from '$lib/storage/apiClient';
+import type { PageContentMatch } from '$lib/storage/interfaces';
+import { docPlainText, contentSnippet } from '$lib/search/pageContent';
 
 /**
  * Atomic content storage format — a single localStorage key per page
@@ -204,6 +206,28 @@ export class PageRepository extends Repository<TreeNode> {
   async deleteContent(pageId: string): Promise<void> {
     await this.contentAdapter.remove(this.contentKey(pageId));
     await this.contentAdapter.remove(this.metaKey(pageId));
+  }
+
+  /**
+   * Scan every page's stored content for `query`. Fine for localStorage,
+   * where all content is already on this device. Most recently updated
+   * pages come first.
+   */
+  async searchContent(query: string, limit: number): Promise<PageContentMatch[]> {
+    if (!query.trim() || limit < 1) return [];
+    const pages = (await this.getAll())
+      .filter((n) => n.type === 'page')
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const out: PageContentMatch[] = [];
+    for (const page of pages) {
+      const content = await this.getContent(page.id);
+      if (!content) continue;
+      const snippet = contentSnippet(docPlainText(content.content), query);
+      if (snippet === null) continue;
+      out.push({ pageId: page.id, snippet });
+      if (out.length >= limit) break;
+    }
+    return out;
   }
 
   async deleteWithContent(id: string): Promise<boolean> {
