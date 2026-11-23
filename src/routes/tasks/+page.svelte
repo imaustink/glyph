@@ -69,11 +69,12 @@
     };
 
     // Expose synchronous results immediately; async lanes keep showing their
-    // previous tasks until the API call resolves, rather than flashing empty
-    // (#101). A newer run supersedes an older one still in flight.
+    // previous (still unchanged) tasks until the API call resolves, rather than
+    // flashing empty (#101). A newer run supersedes an older one still in flight.
     const gen = ++filterGeneration;
     filteredByLane = filterTasksByLane(
       lanes,
+      _tasks,
       (lane) => tasksStore.getFiltered(lane.filterSet, filterCtx),
       untrack(() => filteredByLane),
       (settled) => { if (gen === filterGeneration) filteredByLane = settled; }
