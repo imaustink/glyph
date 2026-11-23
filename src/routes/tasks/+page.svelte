@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { lanesStore } from '$lib/stores/lanes.svelte';
   import { tasksStore } from '$lib/stores/tasks.svelte';
   import { pagesStore } from '$lib/stores/pages.svelte';
@@ -8,6 +9,7 @@
   import LaneConfig from '$lib/components/tasks/LaneConfig.svelte';
   import { dragHandleZone, type DndEvent } from 'svelte-dnd-action';
   import { matchesSearchText } from '$lib/storage/filterUtils';
+  import { filterTasksByLane } from '$lib/utils/laneFilter';
   import type { Lane as LaneType, Task } from '$lib/models/types';
 
   let configuringLane = $state<LaneType | null>(null);
@@ -50,6 +52,7 @@
   // Filtered tasks per lane — sync lanes (empty rules / local mode) update immediately;
   // API-backed async lanes update when their network call resolves.
   let filteredByLane = $state<Map<string, Task[]>>(new Map());
+  let filterGeneration = 0;
 
   $effect(() => {
     // Track reactive dependencies: tasks array ref and lanes array.
@@ -65,25 +68,17 @@
         task.sourcePageId ? (pagesStore.getById(task.sourcePageId)?.tags ?? []) : []
     };
 
-    const newMap = new Map<string, Task[]>();
-    const asyncWork: Promise<void>[] = [];
-
-    for (const lane of lanes) {
-      const result = tasksStore.getFiltered(lane.filterSet, filterCtx);
-      if (result instanceof Promise) {
-        asyncWork.push(result.then((filtered) => { newMap.set(lane.id, filtered); }));
-      } else {
-        newMap.set(lane.id, result);
-      }
-    }
-
-    // Immediately expose synchronous results (local mode + empty-rule lanes in API mode).
-    filteredByLane = new Map(newMap);
-
-    // Then update async lanes when their API calls complete.
-    if (asyncWork.length > 0) {
-      Promise.all(asyncWork).then(() => { filteredByLane = new Map(newMap); });
-    }
+    // Expose synchronous results immediately; async lanes keep showing their
+    // previous (still unchanged) tasks until the API call resolves, rather than
+    // flashing empty (#101). A newer run supersedes an older one still in flight.
+    const gen = ++filterGeneration;
+    filteredByLane = filterTasksByLane(
+      lanes,
+      _tasks,
+      (lane) => tasksStore.getFiltered(lane.filterSet, filterCtx),
+      untrack(() => filteredByLane),
+      (settled) => { if (gen === filterGeneration) filteredByLane = settled; }
+    );
   });
 
   // Layered on top of each lane's own filter — narrows what's already shown
