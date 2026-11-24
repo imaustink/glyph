@@ -212,6 +212,38 @@ test.describe('Tasks', () => {
 		await expect(descAfter.locator('ul li')).toContainText('bullet item');
 	});
 
+	test('task cards show an indicator when the task has a description (#109)', async ({ page }) => {
+		const editor = page.locator('main .tiptap-editor');
+		await editor.click();
+		await editor.pressSequentially('# TODO', { delay: 30 });
+		await editor.press('Enter');
+		await editor.pressSequentially('- Described task', { delay: 30 });
+
+		const popover = page.locator('[role="dialog"][aria-label="Create task"]');
+		await expect(popover).toBeVisible({ timeout: 15_000 });
+		await popover.locator('button.btn-primary').click();
+		await expect(popover).not.toBeVisible();
+
+		// No description yet → no indicator on the card.
+		await navigateToTaskBoard(page);
+		const card = getAllTasksLane(page).locator('.task-card', { hasText: 'Described task' });
+		await expect(card).toBeVisible({ timeout: 15_000 });
+		await expect(card.locator('.has-description')).toHaveCount(0);
+
+		// Add a description on the detail page.
+		await card.locator('.card-title').click();
+		await expect(page.locator('.task-detail-page')).toBeVisible();
+		const desc = page.locator('.md-editor');
+		await desc.click();
+		await desc.pressSequentially('More info here', { delay: 20 });
+		await page.waitForTimeout(1_500);
+
+		// Back on the board, the card now shows the description indicator.
+		await navigateToTaskBoard(page);
+		const cardAfter = getAllTasksLane(page).locator('.task-card', { hasText: 'Described task' });
+		await expect(cardAfter.locator('.has-description')).toBeVisible({ timeout: 15_000 });
+	});
+
 	test('add a new lane to the board', async ({ page }) => {
 		await navigateToTaskBoard(page);
 

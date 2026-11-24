@@ -7,6 +7,7 @@
   import { notificationsStore } from '$lib/stores/notifications.svelte';
   import { format, parseISO, isPast } from 'date-fns';
   import LinkChip from './LinkChip.svelte';
+  import { hasDescription } from '$lib/utils/taskDescription';
 
   let { task }: { task: Task } = $props();
 
@@ -18,6 +19,8 @@
     task.dueDate !== null && task.status !== 'done' && task.status !== 'cancelled' &&
     isPast(parseISO(task.dueDate))
   );
+
+  const showDescription = $derived(hasDescription(task.description));
 
   const formattedDue = $derived(
     task.dueDate ? format(parseISO(task.dueDate), 'MMM d') : null
@@ -48,7 +51,7 @@
     <a href="/tasks/{task.id}" class="card-title">{task.title}</a>
   </div>
 
-  {#if task.priority !== 'none' || task.dueDate || task.tags.length > 0}
+  {#if task.priority !== 'none' || task.dueDate || task.tags.length > 0 || showDescription}
     <div class="card-meta">
       {#if task.priority !== 'none'}
         <span class="badge badge-{task.priority}">{PRIORITY_LABELS[task.priority]}</span>
@@ -62,6 +65,20 @@
             <line x1="3" y1="10" x2="21" y2="10"/>
           </svg>
           {formattedDue}
+        </span>
+      {/if}
+      {#if showDescription}
+        <span
+          class="has-description"
+          title="This task has a description"
+          aria-label="Has description"
+          role="img"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <line x1="4" y1="6" x2="20" y2="6"/>
+            <line x1="4" y1="12" x2="20" y2="12"/>
+            <line x1="4" y1="18" x2="14" y2="18"/>
+          </svg>
         </span>
       {/if}
     </div>
@@ -189,6 +206,12 @@
     color: var(--text-muted);
   }
   .due-date.overdue { color: var(--priority-urgent); }
+
+  .has-description {
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-muted);
+  }
 
   .card-tags {
     display: flex;
