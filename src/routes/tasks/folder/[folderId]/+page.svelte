@@ -11,6 +11,7 @@
   import LaneConfig from '$lib/components/tasks/LaneConfig.svelte';
   import ShareDialog from '$lib/components/shared/ShareDialog.svelte';
   import { dragHandleZone, type DndEvent } from 'svelte-dnd-action';
+  import { TOUCH_DRAG_DELAY_MS } from '$lib/models/constants';
   import { matchesSearchText } from '$lib/storage/filterUtils';
   import type { Lane as LaneType, Task } from '$lib/models/types';
 
@@ -162,7 +163,8 @@
             flipDurationMs: laneFlipDurationMs,
             type: 'lane',
             dropTargetStyle: {},
-            dragDisabled: !folderBoardStore.canEdit
+            dragDisabled: !folderBoardStore.canEdit,
+            delayTouchStart: TOUCH_DRAG_DELAY_MS
           }}
           onconsider={handleLaneConsider}
           onfinalize={handleLaneFinalize}

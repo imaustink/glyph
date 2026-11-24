@@ -7,7 +7,7 @@
   import { notificationsStore } from '$lib/stores/notifications.svelte';
   import { autoSortProvider } from '$lib/sort/AutoSortProvider';
   import { fieldSortProvider } from '$lib/sort/FieldSortProvider';
-  import { isValidTaskStatus } from '$lib/models/constants';
+  import { isValidTaskStatus, TOUCH_DRAG_DELAY_MS } from '$lib/models/constants';
   import { mergeTaskOrder } from '$lib/utils/laneOrder';
 
   import { dndzone, dragHandle, TRIGGERS, type DndEvent } from 'svelte-dnd-action';
@@ -282,7 +282,7 @@
   {:else}
     <div
       class="lane-body"
-      use:dndzone={{items: dndItems, flipDurationMs, type: 'task', dropTargetStyle: {}, dropTargetClasses: ['lane-drop-active'], dragDisabled: readonly}}
+      use:dndzone={{items: dndItems, flipDurationMs, type: 'task', dropTargetStyle: {}, dropTargetClasses: ['lane-drop-active'], dragDisabled: readonly, delayTouchStart: TOUCH_DRAG_DELAY_MS}}
       onconsider={handleConsider}
       onfinalize={handleFinalize}
     >
@@ -347,6 +347,13 @@
   }
   .lane-drag-handle:hover { color: var(--text-primary); background: var(--bg-hover); }
   .lane-drag-handle:active { cursor: grabbing; }
+  @media (pointer: coarse) {
+    .lane-drag-handle {
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+    }
+  }
 
   .lane-title {
     background: none;
