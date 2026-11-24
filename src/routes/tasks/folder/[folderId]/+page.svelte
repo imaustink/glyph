@@ -424,6 +424,16 @@
     .lanes-scroll {
       padding: 12px 16px;
       gap: 12px;
+      /* Lanes are sized to fit below (#107), so only the lanes scroll
+         vertically — never the board around them. */
+      overflow-y: hidden;
+    }
+
+    /* Give the lanes the board's real height so each one can cap itself at
+       the space actually left under the (taller, wrapped) mobile header
+       instead of a viewport guess (#107). */
+    .lanes-dndzone {
+      align-self: stretch;
     }
   }
 </style>

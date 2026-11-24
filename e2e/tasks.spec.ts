@@ -1249,6 +1249,37 @@ test.describe('Tasks', () => {
 			expect(await page.evaluate(() => (window as any).__dragStarted)).toBe(false);
 		});
 
+		// #107: a full lane must fit inside the board on a phone, so only the
+		// lane scrolls vertically — not the board around it.
+		test('a full lane fits the board so only the lane scrolls vertically', async ({ page }) => {
+			const editor = page.locator('main .tiptap-editor');
+			await editor.click();
+			await editor.pressSequentially('# TODO', { delay: 30 });
+			await editor.press('Enter');
+			for (const title of ['Fill one', 'Fill two', 'Fill three', 'Fill four']) {
+				await createTaskViaBullet(page, title);
+			}
+
+			// A short phone screen so a handful of cards fills the lane.
+			await page.waitForTimeout(600); // let the debounced task write settle
+			await page.setViewportSize({ width: 390, height: 420 });
+			await page.goto('/tasks');
+			await page.waitForSelector('.board-page', { timeout: 15_000 });
+
+			const lane = getAllTasksLane(page);
+			await expect(lane.locator('.task-card:has-text("Fill four")')).toBeVisible({ timeout: 15_000 });
+
+			// The lane is capped and scrolls its own cards…
+			const laneBody = lane.locator('.lane-body');
+			expect(await laneBody.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+			// …and the board has nothing left to scroll vertically.
+			const scroller = page.locator('.lanes-scroll');
+			expect(await scroller.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(0);
+			const scrollerBox = await scroller.boundingBox();
+			const laneBox = await lane.boundingBox();
+			expect(laneBox!.y + laneBox!.height).toBeLessThanOrEqual(scrollerBox!.y + scrollerBox!.height);
+		});
+
 		test('press-and-hold then move drags a task card into another lane', async ({ page }) => {
 			const editor = page.locator('main .tiptap-editor');
 			await editor.click();
