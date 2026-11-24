@@ -314,6 +314,10 @@
       width: min(85vw, 300px);
       min-width: min(85vw, 300px);
       scroll-snap-align: start;
+      /* Fit the board's height rather than guessing at the header's from the
+         viewport: the mobile header is taller, so 100dvh - 120px overflowed
+         and let the whole board scroll around the lanes (#107). */
+      max-height: 100%;
     }
   }
 
