@@ -19,7 +19,7 @@
  */
 import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey, type Transaction } from '@tiptap/pm/state';
-import { Decoration, DecorationSet } from '@tiptap/pm/view';
+import { Decoration, DecorationSet, type EditorView } from '@tiptap/pm/view';
 import type { Node as PMNode } from '@tiptap/pm/model';
 import type { LinkMeta } from '$lib/models/types';
 
@@ -58,6 +58,28 @@ export const URL_PREVIEW_RETRY_MS = 60_000;
  * revisiting a note (or the same link on another page) doesn't refetch.
  */
 const cache = new Map<string, CacheEntry>();
+
+/**
+ * Every live EditorView running this plugin. A fetch is shared through the
+ * module-level cache, so when it settles every view that renders that URL —
+ * not just the one that started it, which may since have been destroyed —
+ * must rebuild its cards.
+ */
+const liveViews = new Set<EditorView>();
+
+/** Ask every live view whose document links `href` to rebuild its cards. */
+function refreshViewsFor(href: string): void {
+  for (const view of liveViews) {
+    if (view.isDestroyed) {
+      liveViews.delete(view);
+      continue;
+    }
+    if (!collect(view.state.doc).some((link) => link.href === href)) continue;
+    view.dispatch(
+      view.state.tr.setMeta(urlPreviewPluginKey, { refresh: true } satisfies PluginMeta)
+    );
+  }
+}
 
 /** Exposed for tests — reset the shared cache between cases. */
 export function __clearUrlPreviewCache(): void {
@@ -307,17 +329,18 @@ export const UrlPreviewExtension = Extension.create<UrlPreviewOptions>({
                   // Transient failure: hide the card for now, retry later.
                   cache.set(href, { status: 'failed', retryAt: Date.now() + URL_PREVIEW_RETRY_MS });
                 })
-                .finally(() => {
-                  if (view.isDestroyed) return;
-                  view.dispatch(
-                    view.state.tr.setMeta(urlPreviewPluginKey, { refresh: true } satisfies PluginMeta)
-                  );
-                });
+                .finally(() => refreshViewsFor(href));
             }
           };
 
+          liveViews.add(view);
           maybeFetch();
-          return { update: maybeFetch };
+          return {
+            update: maybeFetch,
+            destroy: () => {
+              liveViews.delete(view);
+            }
+          };
         }
       })
     ];

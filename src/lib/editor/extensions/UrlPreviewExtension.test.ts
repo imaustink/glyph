@@ -265,4 +265,36 @@ describe('UrlPreviewExtension', () => {
 
     expect(editor.view.dom.querySelector('.url-preview-card')).toBe(before);
   });
+
+  it('refreshes a new editor when a fetch started by a destroyed editor settles', async () => {
+    const meta: LinkMeta = {
+      url: 'https://example.com',
+      title: 'Example Domain',
+      description: null,
+      image: null,
+      favicon: null,
+      siteName: null
+    };
+    let resolve!: (value: LinkMeta) => void;
+    const fetchMeta = vi.fn(
+      () => new Promise<LinkMeta | null>((r) => (resolve = r as (value: LinkMeta) => void))
+    );
+
+    // Editor A starts the fetch, then is torn down before it resolves.
+    const a = createEditor(bareLink('https://example.com'), { fetchMeta });
+    expect(fetchMeta).toHaveBeenCalledTimes(1);
+    a.destroy();
+
+    // Editor B opens the same doc while the fetch is still in flight.
+    const b = createEditor(bareLink('https://example.com'), { fetchMeta });
+    expect(fetchMeta).toHaveBeenCalledTimes(1);
+    expect(b.view.dom.querySelector('.url-preview-card.is-loading')).not.toBeNull();
+
+    resolve(meta);
+    await flush();
+
+    // B renders the ready card without any doc change.
+    expect(b.view.dom.querySelector('.url-preview-card.is-loading')).toBeNull();
+    expect(b.view.dom.querySelector('.url-preview-card')?.textContent).toContain('Example Domain');
+  });
 });
