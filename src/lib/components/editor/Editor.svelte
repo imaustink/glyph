@@ -26,7 +26,7 @@
   import { selectionInListItem, indentListItem, outdentListItem } from '$lib/editor/listIndent';
   import Icon from '$lib/components/shared/Icon.svelte';
   import { storageMode } from '$lib/storage/config';
-  import { api } from '$lib/storage/apiClient';
+  import { api, ApiError } from '$lib/storage/apiClient';
   import { preferencesStore } from '$lib/stores/preferences.svelte';
   import type { LinkMeta } from '$lib/models/types';
   import { CollabSession } from '$lib/collab/CollabSession';
@@ -281,7 +281,20 @@
   const urlPreviewFetch =
     storageMode === 'api'
       ? (url: string): Promise<LinkMeta | null> =>
-          api.post<LinkMeta>('/api/v1/unfurl', { url }).catch(() => null)
+          api.post<LinkMeta>('/api/v1/unfurl', { url }).catch((err: unknown) => {
+            // A 4xx (other than 401/408/429) means the server refused this
+            // URL — it will never have a preview, so resolve null. Anything
+            // else (network error, auth lapse, rate limit, 5xx) is
+            // transient: rethrow so the
+            // extension retries after a backoff instead of hiding the card
+            // for the rest of the session.
+            if (err instanceof ApiError && err.status >= 400 &&
+              err.status < 500 &&
+              ![401, 408, 429].includes(err.status)) {
+              return null;
+            }
+            throw err;
+          })
       : null;
 
   // ─── Lifecycle ──────────────────────────────────────────────────────────────

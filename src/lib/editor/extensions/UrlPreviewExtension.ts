@@ -27,19 +27,31 @@ export interface UrlPreviewOptions {
   /** Render preview cards. When false the plugin holds no decorations. */
   enabled: boolean;
   /**
-   * Fetch OG metadata for a URL. Returns null when a preview can't be built
-   * (e.g. no backend available, or the fetch failed). null links render no
-   * card. Provided by Editor.svelte; only wired up when the API backend — the
-   * only place the unfurl endpoint lives — is in use.
+   * Fetch OG metadata for a URL. Resolve null when the URL definitively has no
+   * preview (e.g. the server rejected it); such links render no card for the
+   * session. Reject on a transient failure (network error, 429, 5xx): the card
+   * is hidden for now and the fetch is retried after a backoff. Provided by
+   * Editor.svelte; only wired up when the API backend — the only place the
+   * unfurl endpoint lives — is in use.
    */
   fetchMeta: ((url: string) => Promise<LinkMeta | null>) | null;
 }
 
 interface CacheEntry {
-  status: 'loading' | 'ready';
+  /**
+   * 'failed' means the fetch threw (a transient failure). Like a ready entry
+   * with no metadata it renders nothing, but unlike one it is refetched once
+   * `retryAt` has passed.
+   */
+  status: 'loading' | 'ready' | 'failed';
   /** Present only when status === 'ready' and a preview could be built. */
   meta?: LinkMeta;
+  /** For 'failed' entries: epoch ms after which the fetch may be retried. */
+  retryAt?: number;
 }
+
+/** How long to wait before retrying an unfurl that failed transiently. */
+export const URL_PREVIEW_RETRY_MS = 60_000;
 
 /**
  * URL → metadata cache, shared across editor instances for the session so
@@ -209,17 +221,19 @@ function build(doc: PMNode): DecorationSet {
   const decorations: Decoration[] = [];
   for (const { href, pos } of collect(doc)) {
     const entry = cache.get(href);
-    // A ready entry with no metadata means the preview couldn't be built —
-    // render nothing rather than a stuck placeholder.
-    if (entry?.status === 'ready' && !entry.meta) continue;
+    // A ready entry with no metadata means the preview couldn't be built, and
+    // a failed one means the fetch hasn't succeeded yet — render nothing
+    // rather than a stuck placeholder.
+    if (entry?.status === 'failed' || (entry?.status === 'ready' && !entry.meta)) continue;
     const status = entry?.status ?? 'loading';
     decorations.push(
       Decoration.widget(pos, () => renderCard(href), {
         side: 1,
         // The status is part of the key so a loading → ready transition
-        // replaces the placeholder DOM instead of reusing it; the position
-        // keeps the key unique if the same URL appears on two lines.
-        key: `url-preview:${pos}:${href}:${status}`,
+        // replaces the placeholder DOM instead of reusing it. Position is
+        // deliberately excluded so edits above a card don't rebuild its DOM
+        // (keys are only compared for equality, so they needn't be unique).
+        key: `url-preview:${href}:${status}`,
         ignoreSelection: true
       })
     );
@@ -280,14 +294,18 @@ export const UrlPreviewExtension = Extension.create<UrlPreviewOptions>({
             if (!pluginState?.enabled || !fetchMeta) return;
 
             for (const { href } of collect(view.state.doc)) {
-              if (cache.has(href)) continue;
+              const existing = cache.get(href);
+              if (existing && !(existing.status === 'failed' && Date.now() >= (existing.retryAt ?? 0))) {
+                continue;
+              }
               cache.set(href, { status: 'loading' });
               void fetchMeta(href)
                 .then((meta) => {
                   cache.set(href, { status: 'ready', meta: meta ?? undefined });
                 })
                 .catch(() => {
-                  cache.set(href, { status: 'ready' });
+                  // Transient failure: hide the card for now, retry later.
+                  cache.set(href, { status: 'failed', retryAt: Date.now() + URL_PREVIEW_RETRY_MS });
                 })
                 .finally(() => {
                   if (view.isDestroyed) return;

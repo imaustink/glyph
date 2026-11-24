@@ -13,6 +13,7 @@ import {
   UrlPreviewExtension,
   urlPreviewPluginKey,
   setUrlPreviewEnabled,
+  URL_PREVIEW_RETRY_MS,
   __clearUrlPreviewCache
 } from './UrlPreviewExtension';
 
@@ -180,5 +181,88 @@ describe('UrlPreviewExtension', () => {
     const editor = createEditor(bareLink('https://example.com'), { fetchMeta: null });
     // Still shows a (loading) placeholder decoration, but nothing is fetched.
     expect(decorationCount(editor)).toBe(1);
+  });
+
+  it('retries a rejected fetch after the backoff', async () => {
+    const meta: LinkMeta = {
+      url: 'https://example.com',
+      title: 'Example Domain',
+      description: null,
+      image: null,
+      favicon: null,
+      siteName: null
+    };
+    const fetchMeta = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValue(meta);
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const editor = createEditor(bareLink('https://example.com'), { fetchMeta });
+      await flush();
+      expect(fetchMeta).toHaveBeenCalledTimes(1);
+      expect(decorationCount(editor)).toBe(0);
+
+      // A view update before the backoff elapses does not refetch.
+      editor.view.dispatch(editor.state.tr.setMeta('noop', true));
+      await flush();
+      expect(fetchMeta).toHaveBeenCalledTimes(1);
+
+      // After the backoff, the next view update retries and renders the card.
+      now.mockReturnValue(1_000_000 + URL_PREVIEW_RETRY_MS);
+      editor.view.dispatch(editor.state.tr.setMeta('noop', true));
+      await flush();
+      expect(fetchMeta).toHaveBeenCalledTimes(2);
+      expect(editor.view.dom.querySelector('.url-preview-card')?.textContent).toContain(
+        'Example Domain'
+      );
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('does not refetch a URL whose fetch resolved null', async () => {
+    const fetchMeta = vi.fn().mockResolvedValue(null);
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const editor = createEditor(bareLink('https://example.com'), { fetchMeta });
+      await flush();
+      now.mockReturnValue(1_000_000 + URL_PREVIEW_RETRY_MS * 10);
+      editor.view.dispatch(editor.state.tr.setMeta('noop', true));
+      await flush();
+      expect(fetchMeta).toHaveBeenCalledTimes(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('keeps the same card DOM when text is typed above it', async () => {
+    const meta: LinkMeta = {
+      url: 'https://example.com',
+      title: 'Example Domain',
+      description: null,
+      image: null,
+      favicon: null,
+      siteName: null
+    };
+    const fetchMeta = vi.fn().mockResolvedValue(meta);
+    const editor = createEditor(
+      {
+        type: 'doc',
+        content: [
+          { type: 'paragraph', content: [{ type: 'text', text: 'Intro' }] },
+          ...((bareLink('https://example.com') as { content: unknown[] }).content as object[])
+        ]
+      } as Content,
+      { fetchMeta }
+    );
+    await flush();
+    const before = editor.view.dom.querySelector('.url-preview-card');
+    expect(before).not.toBeNull();
+
+    editor.view.dispatch(editor.state.tr.insertText('abc', 1));
+    await flush();
+
+    expect(editor.view.dom.querySelector('.url-preview-card')).toBe(before);
   });
 });
