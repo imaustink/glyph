@@ -177,3 +177,11 @@ export const FILTER_FIELD_META: Record<TaskFilterField, FilterFieldMeta> = {
 	sourcePageId: { kind: 'note', label: 'Source Note', operators: NOTE_OPERATORS },
 	sourcePageTags: { kind: 'tags', label: 'Source Note Tag', operators: TAGS_OPERATORS }
 };
+
+/**
+ * How long a finger must rest on a task card or lane handle before a touch
+ * becomes a drag (#103). A finger that moves first scrolls the board/lane
+ * instead, so swiping between lanes or through a lane's tasks no longer
+ * picks up cards by accident. Mouse drags are unaffected.
+ */
+export const TOUCH_DRAG_DELAY_MS = 250;

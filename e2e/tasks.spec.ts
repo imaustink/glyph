@@ -1182,4 +1182,93 @@ test.describe('Tasks', () => {
 		await bullet.locator('.task-open-link').click();
 		await expect(page.locator('.task-detail-page')).toBeVisible({ timeout: 15_000 });
 	});
+
+	// #103: on touch screens a swipe must scroll the board / a lane, and only a
+	// press-and-hold should pick a card up — otherwise scrolling drags cards.
+	test.describe('on a touch screen', () => {
+		test.use({ hasTouch: true });
+
+		type Point = { x: number; y: number };
+
+		/** Drive real touch input through CDP so the browser can scroll natively. */
+		async function touchGesture(
+			page: import('@playwright/test').Page,
+			from: Point,
+			to: Point,
+			{ holdMs = 0, steps = 12 }: { holdMs?: number; steps?: number } = {}
+		) {
+			const cdp = await page.context().newCDPSession(page);
+			await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [from] });
+			if (holdMs) await page.waitForTimeout(holdMs);
+			for (let i = 1; i <= steps; i++) {
+				const x = from.x + ((to.x - from.x) * i) / steps;
+				const y = from.y + ((to.y - from.y) * i) / steps;
+				await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+				await page.waitForTimeout(16);
+			}
+			await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+			await cdp.detach();
+		}
+
+		async function centerOf(locator: import('@playwright/test').Locator): Promise<Point> {
+			const box = await locator.boundingBox();
+			if (!box) throw new Error('element has no bounding box');
+			return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+		}
+
+		test('swiping across a task card scrolls the board instead of dragging the card', async ({ page }) => {
+			const editor = page.locator('main .tiptap-editor');
+			await editor.click();
+			await editor.pressSequentially('# TODO', { delay: 30 });
+			await editor.press('Enter');
+			await createTaskViaBullet(page, 'Swipe over me');
+
+			// Load the board fresh at phone size so the sidebar starts collapsed.
+			await page.waitForTimeout(600); // let the debounced task write settle
+			await page.setViewportSize({ width: 390, height: 844 });
+			await page.goto('/tasks');
+			await page.waitForSelector('.board-page', { timeout: 15_000 });
+
+			const card = getAllTasksLane(page).locator('.task-card:has-text("Swipe over me")');
+			await expect(card).toBeVisible({ timeout: 15_000 });
+			const scroller = page.locator('.lanes-scroll');
+			expect(await scroller.evaluate((el) => el.scrollLeft)).toBe(0);
+
+			// Record whether a drag ever starts during the swipe.
+			await page.evaluate(() => {
+				(window as any).__dragStarted = false;
+				new MutationObserver(() => {
+					if (document.getElementById('dnd-action-dragged-el')) (window as any).__dragStarted = true;
+				}).observe(document.body, { childList: true });
+			});
+
+			const start = await centerOf(card);
+			await touchGesture(page, start, { x: start.x - 250, y: start.y });
+
+			await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
+			expect(await page.evaluate(() => (window as any).__dragStarted)).toBe(false);
+		});
+
+		test('press-and-hold then move drags a task card into another lane', async ({ page }) => {
+			const editor = page.locator('main .tiptap-editor');
+			await editor.click();
+			await editor.pressSequentially('# TODO', { delay: 30 });
+			await editor.press('Enter');
+			await createTaskViaBullet(page, 'Hold and move me');
+
+			await navigateToTaskBoard(page);
+
+			const inProgressLane = page.locator('.lane').filter({ has: page.locator('.lane-title:has-text("In Progress")') });
+			const card = getAllTasksLane(page).locator('.task-card:has-text("Hold and move me")');
+			await expect(card).toBeVisible({ timeout: 15_000 });
+
+			await touchGesture(page, await centerOf(card), await centerOf(inProgressLane.locator('.lane-body')), {
+				holdMs: 400
+			});
+
+			await expect(
+				inProgressLane.locator('.task-card:has-text("Hold and move me") .dot.dot-in-progress')
+			).toBeVisible({ timeout: 15_000 });
+		});
+	});
 });

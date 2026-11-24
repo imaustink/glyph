@@ -134,6 +134,13 @@
      layout (#78). Kept inside the card's 10px/12px padding and off most of the
      title, so a stray tap opens the card rather than changing its status. */
   @media (pointer: coarse) {
+    /* Cards are dragged by press-and-hold on touch (#103); stop the hold from
+       selecting text or opening the OS callout menu instead. */
+    .task-card {
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+    }
     .status-dot { position: relative; }
     .status-dot::after {
       content: '';

@@ -8,6 +8,7 @@
   import Lane from '$lib/components/tasks/Lane.svelte';
   import LaneConfig from '$lib/components/tasks/LaneConfig.svelte';
   import { dragHandleZone, type DndEvent } from 'svelte-dnd-action';
+  import { TOUCH_DRAG_DELAY_MS } from '$lib/models/constants';
   import { matchesSearchText } from '$lib/storage/filterUtils';
   import { filterTasksByLane } from '$lib/utils/laneFilter';
   import type { Lane as LaneType, Task } from '$lib/models/types';
@@ -134,7 +135,7 @@
     <div class="lanes-scroll">
       <div
         class="lanes-dndzone"
-        use:dragHandleZone={{ items: laneItems, flipDurationMs: laneFlipDurationMs, type: 'lane', dropTargetStyle: {} }}
+        use:dragHandleZone={{ items: laneItems, flipDurationMs: laneFlipDurationMs, type: 'lane', dropTargetStyle: {}, delayTouchStart: TOUCH_DRAG_DELAY_MS }}
         onconsider={handleLaneConsider}
         onfinalize={handleLaneFinalize}
       >
