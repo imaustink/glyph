@@ -266,7 +266,7 @@
         <Sidebar />
       </div>
 
-      <main class="main-content">
+      <main class="main-content" class:sidebar-collapsed={!uiStore.sidebarOpen}>
         <!-- Mobile header with hamburger menu -->
         <button class="mobile-menu-btn" onclick={() => uiStore.toggleSidebar()} aria-label="Toggle sidebar">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -404,8 +404,29 @@
     display: none;
   }
 
+  /* Hidden by default; shown by the media queries below (always on phones,
+     and on wider viewports while the sidebar is collapsed). */
   .mobile-menu-btn {
     display: none;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    z-index: 30;
+    /* 44×44: the iOS minimum touch target (#78). */
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .mobile-menu-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
   }
 
   .loading-screen {
@@ -442,6 +463,26 @@
   @keyframes pulse {
     0%, 100% { transform: scale(0.8); opacity: 0.5; }
     50% { transform: scale(1.1); opacity: 1; }
+  }
+
+  /* ─── Wide viewports: collapsible persistent sidebar ───────────────────── */
+  /* Above the drawer breakpoint (e.g. a phone in landscape, tablets, desktop)
+     the sidebar is a persistent panel. Collapsing it hides the panel and
+     shows the menu button so it can be reopened (#104). */
+  @media (min-width: 769px) {
+    .sidebar-container:not(.open) {
+      display: none;
+    }
+
+    /* Reserve a gutter for the fixed menu button (left:10 + width:44 = 54px)
+       so it never covers page headers. */
+    .main-content.sidebar-collapsed {
+      padding-left: calc(64px + env(safe-area-inset-left));
+    }
+
+    .main-content.sidebar-collapsed .mobile-menu-btn {
+      display: flex;
+    }
   }
 
   /* ─── Mobile responsive ─────────────────────────────────────────────────── */
@@ -489,25 +530,6 @@
 
     .mobile-menu-btn {
       display: flex;
-      align-items: center;
-      justify-content: center;
-      position: fixed;
-      top: calc(10px + env(safe-area-inset-top));
-      left: calc(10px + env(safe-area-inset-left));
-      z-index: 30;
-      /* 44×44: the iOS minimum touch target (#78). */
-      width: 44px;
-      height: 44px;
-      padding: 0;
-      border-radius: var(--radius-md);
-      background: var(--bg-secondary);
-      border: 1px solid var(--border-subtle);
-      color: var(--text-secondary);
-      cursor: pointer;
-    }
-    .mobile-menu-btn:hover {
-      background: var(--bg-hover);
-      color: var(--text-primary);
     }
   }
 </style>
