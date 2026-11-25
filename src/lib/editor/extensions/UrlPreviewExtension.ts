@@ -29,8 +29,10 @@ export interface UrlPreviewOptions {
   /**
    * Fetch OG metadata for a URL. Resolve null when the URL definitively has no
    * preview (e.g. the server rejected it); such links render no card for the
-   * session. Reject on a transient failure (network error, 429, 5xx): the card
-   * is hidden for now and the fetch is retried after a backoff. Provided by
+   * session, as do results with no title, description or image. Reject on a
+   * transient failure (network error, 429, 5xx): the card is hidden for now,
+   * all preview fetches pause for a growing backoff, and the URL is retried
+   * after it. Calls are rate-limited by a shared queue (see below). Provided by
    * Editor.svelte; only wired up when the API backend — the only place the
    * unfurl endpoint lives — is in use.
    */
@@ -81,9 +83,136 @@ function refreshViewsFor(href: string): void {
   }
 }
 
-/** Exposed for tests — reset the shared cache between cases. */
+// ─── Fetch queue ─────────────────────────────────────────────────────────────
+//
+// The unfurl endpoint is rate-limited per user (30 req/min), and that budget is
+// shared with the task-link unfurls a user triggers explicitly. Previews are
+// display-only chrome, so they must never be able to starve that: every preview
+// fetch, from every editor, goes through this one queue, which caps how many
+// run at once and how many start per minute, and pauses entirely after a
+// failure instead of letting each failed URL retry on its own.
+
+/** Most preview unfurls in flight at once, across all editors. */
+export const URL_PREVIEW_MAX_IN_FLIGHT = 2;
+/** Most preview unfurls started per window — well under the server's 30/min. */
+export const URL_PREVIEW_BUDGET = 10;
+/** The window URL_PREVIEW_BUDGET applies to. */
+export const URL_PREVIEW_BUDGET_WINDOW_MS = 60_000;
+/** Ceiling for the queue's growing pause after repeated failures. */
+export const URL_PREVIEW_MAX_PAUSE_MS = 10 * 60_000;
+
+interface QueueItem {
+  href: string;
+  fetchMeta: (url: string) => Promise<LinkMeta | null>;
+}
+
+const queue: QueueItem[] = [];
+let inFlight = 0;
+/** Start times of recent fetches, oldest first, for the per-window budget. */
+const recentStarts: number[] = [];
+/** The whole queue is paused until this epoch ms (after a failure). */
+let pausedUntil = 0;
+/** Failures since the last success; the pause doubles with each one. */
+let consecutiveFailures = 0;
+let drainTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Metadata worth a card. The server answers 200 with only `url` and a hostname
+ * `siteName` when it couldn't read the page (timeout, upstream error, non-HTML
+ * like a PDF); rendering that would just repeat the link, so treat it as no
+ * preview.
+ */
+function usableMeta(meta: LinkMeta | null): LinkMeta | undefined {
+  return meta && (meta.title || meta.description || meta.image) ? meta : undefined;
+}
+
+function viewsLink(href: string): boolean {
+  for (const view of liveViews) {
+    if (!view.isDestroyed && collect(view.state.doc).some((link) => link.href === href)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function scheduleDrain(delay: number): void {
+  if (drainTimer) clearTimeout(drainTimer);
+  drainTimer = setTimeout(() => {
+    drainTimer = null;
+    drain();
+  }, Math.max(0, delay));
+}
+
+/** Queue a URL for fetching. Its card shows the loading placeholder meanwhile. */
+function enqueue(href: string, fetchMeta: QueueItem['fetchMeta']): void {
+  cache.set(href, { status: 'loading' });
+  queue.push({ href, fetchMeta });
+  drain();
+}
+
+/** Start as many queued fetches as the concurrency cap, budget and pause allow. */
+function drain(): void {
+  while (queue.length > 0 && inFlight < URL_PREVIEW_MAX_IN_FLIGHT) {
+    const now = Date.now();
+    if (now < pausedUntil) {
+      scheduleDrain(pausedUntil - now);
+      return;
+    }
+    while (recentStarts.length && now - recentStarts[0] >= URL_PREVIEW_BUDGET_WINDOW_MS) {
+      recentStarts.shift();
+    }
+    if (recentStarts.length >= URL_PREVIEW_BUDGET) {
+      scheduleDrain(recentStarts[0] + URL_PREVIEW_BUDGET_WINDOW_MS - now);
+      return;
+    }
+
+    const { href, fetchMeta } = queue.shift()!;
+    // Every editor showing this link has closed while it waited: don't spend
+    // budget on it. Forget it so it's queued afresh if it's shown again.
+    if (!viewsLink(href)) {
+      cache.delete(href);
+      continue;
+    }
+
+    recentStarts.push(now);
+    inFlight++;
+    void fetchMeta(href)
+      .then(
+        (meta) => {
+          consecutiveFailures = 0;
+          cache.set(href, { status: 'ready', meta: usableMeta(meta) });
+        },
+        () => {
+          // Transient failure (network, rate limit, 5xx): hide the card for
+          // now and pause the whole queue with a growing backoff, so a burst
+          // of failures can't turn into a burst of retries.
+          consecutiveFailures++;
+          const pause = Math.min(
+            URL_PREVIEW_RETRY_MS * 2 ** (consecutiveFailures - 1),
+            URL_PREVIEW_MAX_PAUSE_MS
+          );
+          pausedUntil = Math.max(pausedUntil, Date.now() + pause);
+          cache.set(href, { status: 'failed', retryAt: pausedUntil });
+        }
+      )
+      .finally(() => {
+        inFlight--;
+        refreshViewsFor(href);
+        drain();
+      });
+  }
+}
+
+/** Exposed for tests — reset the shared cache and fetch queue between cases. */
 export function __clearUrlPreviewCache(): void {
   cache.clear();
+  queue.length = 0;
+  inFlight = 0;
+  recentStarts.length = 0;
+  pausedUntil = 0;
+  consecutiveFailures = 0;
+  if (drainTimer) clearTimeout(drainTimer);
+  drainTimer = null;
 }
 
 interface PluginState {
@@ -320,16 +449,7 @@ export const UrlPreviewExtension = Extension.create<UrlPreviewOptions>({
               if (existing && !(existing.status === 'failed' && Date.now() >= (existing.retryAt ?? 0))) {
                 continue;
               }
-              cache.set(href, { status: 'loading' });
-              void fetchMeta(href)
-                .then((meta) => {
-                  cache.set(href, { status: 'ready', meta: meta ?? undefined });
-                })
-                .catch(() => {
-                  // Transient failure: hide the card for now, retry later.
-                  cache.set(href, { status: 'failed', retryAt: Date.now() + URL_PREVIEW_RETRY_MS });
-                })
-                .finally(() => refreshViewsFor(href));
+              enqueue(href, fetchMeta);
             }
           };
 
