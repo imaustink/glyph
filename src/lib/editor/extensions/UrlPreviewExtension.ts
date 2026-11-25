@@ -115,6 +115,25 @@ let pausedUntil = 0;
 /** Failures since the last success; the pause doubles with each one. */
 let consecutiveFailures = 0;
 let drainTimer: ReturnType<typeof setTimeout> | null = null;
+/** Pending wake-ups that refresh views once a failed link may be retried. */
+const retryTimers = new Set<ReturnType<typeof setTimeout>>();
+
+/**
+ * A failed link is only re-enqueued by a view update (maybeFetch), and nothing
+ * else wakes an idle editor — so when the link's backoff ends, refresh the
+ * views showing it. Their view update sees `retryAt` has passed and re-enqueues
+ * it through the queue (which still honours any longer pause in effect).
+ */
+function scheduleRetry(href: string, retryAt: number): void {
+  const timer = setTimeout(
+    () => {
+      retryTimers.delete(timer);
+      refreshViewsFor(href);
+    },
+    Math.max(0, retryAt - Date.now())
+  );
+  retryTimers.add(timer);
+}
 
 /**
  * Metadata worth a card. The server answers 200 with only `url` and a hostname
@@ -193,6 +212,7 @@ function drain(): void {
           );
           pausedUntil = Math.max(pausedUntil, Date.now() + pause);
           cache.set(href, { status: 'failed', retryAt: pausedUntil });
+          scheduleRetry(href, pausedUntil);
         }
       )
       .finally(() => {
@@ -213,6 +233,8 @@ export function __clearUrlPreviewCache(): void {
   consecutiveFailures = 0;
   if (drainTimer) clearTimeout(drainTimer);
   drainTimer = null;
+  for (const timer of retryTimers) clearTimeout(timer);
+  retryTimers.clear();
 }
 
 interface PluginState {

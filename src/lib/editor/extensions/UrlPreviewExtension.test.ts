@@ -239,6 +239,37 @@ describe('UrlPreviewExtension', () => {
     }
   });
 
+  it('retries a rejected fetch in an idle editor once the backoff ends', async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const meta: LinkMeta = {
+        url: 'https://example.com',
+        title: 'Example Domain',
+        description: null,
+        image: null,
+        favicon: null,
+        siteName: null
+      };
+      const fetchMeta = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('rate limited'))
+        .mockResolvedValue(meta);
+      const editor = createEditor(bareLink('https://example.com'), { fetchMeta });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMeta).toHaveBeenCalledTimes(1);
+      expect(decorationCount(editor)).toBe(0);
+
+      // No transaction is dispatched: the editor is open but idle.
+      await vi.advanceTimersByTimeAsync(URL_PREVIEW_RETRY_MS);
+      expect(fetchMeta).toHaveBeenCalledTimes(2);
+      expect(editor.view.dom.querySelector('.url-preview-card')?.textContent).toContain(
+        'Example Domain'
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not refetch a URL whose fetch resolved null', async () => {
     const fetchMeta = vi.fn().mockResolvedValue(null);
     const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
