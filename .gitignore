@@ -32,6 +32,8 @@ vite.config.ts.timestamp-*
 
 # Playwright test results
 test-results/
+# Preview sign-in state from scripts/preview-login.mjs: live session cookies.
+.preview-auth/
 # Coverage reports and profiles
 coverage/
 api/*.out
