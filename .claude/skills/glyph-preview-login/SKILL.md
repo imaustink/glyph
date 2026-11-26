@@ -64,5 +64,6 @@ virtual authenticator it relies on.
 - **Failures:**
   - "not allowed to access this service": glyph-agent isn't in the Pocket ID
     `glyph-preview-users` group.
-  - Stuck at Pocket ID's login page: the passkey was revoked or doesn't match.
+  - Stuck at Pocket ID's login page: the passkey was revoked or rotated. An
+    operator re-enrolls it with `scripts/preview-agent-enroll.mjs`.
   - Report either; don't work around it.
