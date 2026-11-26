@@ -5,10 +5,18 @@ apiVersion: barmancloud.cnpg.io/v1
 kind: ObjectStore
 metadata:
   name: {{ include "glyph.cnpg.objectStoreName" . }}
-  {{- if .Values.argocd.enabled }}
+  {{- if or .Values.cnpg.retainOnDelete .Values.argocd.enabled }}
   annotations:
+    {{- if .Values.cnpg.retainOnDelete }}
+    # Kept with the Cluster (cnpg-cluster.yaml): a retained Cluster whose
+    # ObjectStore was deleted can't archive WAL, and WAL fills the volume.
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Delete=false
+    {{- end }}
+    {{- if .Values.argocd.enabled }}
     # Exists before the Cluster (wave -2) that archives into it.
     argocd.argoproj.io/sync-wave: "-3"
+    {{- end }}
   {{- end }}
   labels:
     {{- include "glyph.labels" . | nindent 4 }}

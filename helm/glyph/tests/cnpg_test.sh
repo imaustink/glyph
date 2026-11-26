@@ -162,3 +162,16 @@ test_cnpg_objectstore_syncs_before_the_cluster_under_argocd() {
   assert_contains "$(doc ObjectStore glyph-db-backups)" 'argocd.argoproj.io/sync-wave: "-3"' \
     "ObjectStore (wave -3) exists before the Cluster (wave -2) that archives into it"
 }
+
+test_cnpg_objectstore_kept_with_the_cluster() {
+  render "${BACKUP_ON[@]}"
+  assert_ok
+  local o; o="$(doc ObjectStore glyph-db-backups)"
+  assert_contains "$o" 'helm.sh/resource-policy: keep' "kept by helm uninstall, like the Cluster that archives into it"
+  assert_contains "$o" 'argocd.argoproj.io/sync-options: Delete=false' "kept by Argo prune / app deletion, like the Cluster"
+  render "${BACKUP_ON[@]}" --set cnpg.retainOnDelete=false
+  assert_ok
+  o="$(doc ObjectStore glyph-db-backups)"
+  assert_not_contains "$o" 'resource-policy' "deleted with a disposable Cluster"
+  assert_not_contains "$o" 'annotations:' "no empty annotations block"
+}
