@@ -317,10 +317,28 @@ jobs:
       github.repository == 'imaustink/glyph' &&
       github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/build-images.yml
+    secrets:
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+
+  # PR previews (Argo CD ApplicationSet, homelab repo) render the chart, and
+  # so the migrations, at the PR's head commit and can only name the image by
+  # it. So the image published as sha-<head commit> is built from that same
+  # head commit, not the merge ref: a PR behind a main with newer migrations
+  # would otherwise run binaries expecting a schema its preview never gets.
+  # It also pushes the head tree's own tree-hash tag, which is
+  # content-addressed and so harmless. Runs after build-and-push with
+  # skip-existing: when the PR is up to date with main the head and merge
+  # trees are identical, and the tag is only aliased, not rebuilt.
+  build-preview-image:
+    needs: build-and-push
+    if: >-
+      github.repository == 'imaustink/glyph' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/build-images.yml
     with:
-      # PR previews (Argo CD ApplicationSet, homelab repo) deploy the PR's
-      # head commit and can only name the image by it. The image itself is
-      # the merge ref's, like the tree-hash tag.
+      ref: ${{ github.event.pull_request.head.sha }}
+      skip-existing: true
       extra-tag: sha-${{ github.event.pull_request.head.sha }}
     secrets:
       REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}

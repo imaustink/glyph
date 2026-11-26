@@ -13,9 +13,10 @@ name: Preview
 # PRs that go quiet. Fork PRs are skipped: their CI gets no registry
 # credentials, so no image is ever built for them to run.
 #
-# The preview runs the image ci.yml's build-and-push publishes as
-# sha-<head commit>, so it comes up once CI has passed for that push; until
-# then the previous push's pods keep serving.
+# The preview runs the image ci.yml's build-preview-image job builds from the
+# PR's head commit (the same commit whose chart and migrations Argo CD
+# renders) and publishes as sha-<head commit>, so it comes up once CI has
+# passed for that push; until then the previous push's pods keep serving.
 
 on:
   pull_request:
