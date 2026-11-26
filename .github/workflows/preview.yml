@@ -68,7 +68,7 @@ jobs:
           body="$marker
           **Preview:** $url
 
-          Deployed by Argo CD once CI passes for the latest push, with demo data you can edit; sign in with Google as usual. It's deleted when this PR closes or after 7 days without activity (add the \`preview\` label, or push, to bring it back). Label the PR \`no-preview\` to opt out."
+          Deployed by Argo CD once CI passes for the latest push, with demo data you can edit; sign in with Pocket ID (previews allow members of its `glyph-preview-users` group). It's deleted when this PR closes or after 7 days without activity (add the \`preview\` label, or push, to bring it back). Label the PR \`no-preview\` to opt out."
 
           existing="$(gh api "repos/$GH_REPO/issues/$PR/comments" --paginate \
             --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n1)"

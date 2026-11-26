@@ -102,10 +102,6 @@ api:
     clientId: ""
     clientSecret: ""
     redirectUrl: ""
-    # Prepended to the OAuth state value. Preview environments set it (e.g.
-    # "pr-123.") so the shared callback bounce registered as redirectUrl can
-    # route the provider's redirect back to the right preview. Empty = none.
-    statePrefix: ""
     # Use an existing secret instead of creating one (key: client-secret)
     existingSecret: ""
 

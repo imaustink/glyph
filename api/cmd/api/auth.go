@@ -132,7 +132,6 @@ func setupOIDCAuth(ctx context.Context, r *gin.Engine, s *stores, issuer, client
 		CookieDomain:  cookieDomain,
 		CookieSecure:  cookieSecure,
 		FrontendURL:   frontendURL,
-		StatePrefix:   os.Getenv("OIDC_STATE_PREFIX"),
 	}
 
 	auth.RegisterAuthRoutes(r, sessionCfg, users)

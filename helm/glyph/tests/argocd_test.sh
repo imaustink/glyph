@@ -71,16 +71,6 @@ test_cnpg_disposable_when_retain_off() {
   assert_not_contains "$(doc Cluster glyph-db)" 'annotations:' "no empty annotations block"
 }
 
-test_oidc_state_prefix_env() {
-  render --set api.oidc.enabled=true --set api.oidc.clientSecret=s --set api.sessionSecret=00 \
-    --set api.oidc.statePrefix=pr-7.
-  assert_ok
-  local d; d="$(doc Deployment glyph-api)"
-  assert_contains "$d" 'name: OIDC_STATE_PREFIX' "prefix passed to the API"
-  assert_contains "$d" 'value: "pr-7\."' "with its value"
-  render --set api.oidc.enabled=true --set api.oidc.clientSecret=s --set api.sessionSecret=00
-  assert_not_contains "$(doc Deployment glyph-api)" 'OIDC_STATE_PREFIX' "unset by default"
-}
 
 test_seed_job_off_by_default() {
   render "${ARGO[@]}"
