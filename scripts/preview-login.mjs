@@ -157,6 +157,14 @@ async function main() {
 
     mkdirSync(dirname(opts.out), { recursive: true });
     const state = await context.storageState();
+    // Keep only the preview's own cookies/storage. The Pocket ID session cookie
+    // would let the holder add a glyph-agent passkey that survives rotation.
+    const host = new URL(opts.origin).hostname;
+    state.cookies = state.cookies.filter(c => {
+      const d = c.domain.replace(/^\./, '');
+      return host === d || host.endsWith(`.${d}`);
+    });
+    state.origins = state.origins.filter(o => o.origin === opts.origin);
     // Create it 0600 (no world-readable window); chmod covers an existing file.
     writeFileSync(opts.out, JSON.stringify(state, null, 2), { mode: 0o600 });
     chmodSync(opts.out, 0o600);
