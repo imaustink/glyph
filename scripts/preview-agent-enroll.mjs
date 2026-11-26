@@ -109,7 +109,9 @@ async function main() {
       },
       stringData: { 'credential.json': JSON.stringify({ ...credentials[0], pocketIdUser: AGENT, enrolledAt: new Date().toISOString() }) },
     };
-    kubectl(['apply', '-f', '-'], JSON.stringify(secret));
+    // Server-side apply: client-side apply would copy the private key into the
+    // last-applied-configuration annotation, which describe/get -o yaml print.
+    kubectl(['apply', '--server-side', '--force-conflicts', '--field-manager=preview-agent-enroll', '-f', '-'], JSON.stringify(secret));
     console.error(`enrolled a passkey for ${AGENT}; stored in ${SECRET_NS}/${SECRET}[credential.json]`);
 
     if (replace) {

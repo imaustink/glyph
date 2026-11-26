@@ -4,8 +4,8 @@
 //
 //   node scripts/preview-login.mjs <pr-number | preview URL> [--out FILE]
 //
-// Writes a Playwright storageState file (default: .preview-auth/pr-<n>.json,
-// gitignored) holding the preview's session cookie. Reuse it with
+// Writes a Playwright storageState file (default: .preview-auth/pr-<n>.json at
+// the repo root, gitignored) holding the preview's session cookie. Reuse it with
 //   browser.newContext({ storageState: FILE })     (Playwright)
 // or pass the cookie to curl / the API (see --print-cookie-header).
 //
@@ -29,13 +29,15 @@
 //   --headed                show the browser (local debugging)
 //
 // Env: GLYPH_AGENT_PASSKEY / GLYPH_AGENT_PASSKEY_FILE (required),
-//      CHROME_BIN (system Chromium; the agent image sets it), PREVIEW_DOMAIN
-//      (glyph-preview.kurpuis.com).
+//      CHROME_BIN (system Chromium; the agent image sets it).
 import { chromium } from '@playwright/test';
 import { mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const DOMAIN = process.env.PREVIEW_DOMAIN || 'glyph-preview.kurpuis.com';
+// Hard-coded on purpose: this is the previews-only guard, so the environment
+// must not be able to widen it.
+const DOMAIN = 'glyph-preview.kurpuis.com';
 const POCKET_ID = 'https://pocket-id.kurpuis.com';
 
 function usage(msg) {
@@ -64,7 +66,8 @@ function parseArgs(argv) {
   const host = new URL(origin).hostname;
   if (!host.endsWith(`.${DOMAIN}`)) usage(`${origin} is not a preview (*.${DOMAIN})`);
   opts.origin = origin;
-  opts.out ??= `.preview-auth/${host.split('.')[0]}.json`;
+  // Anchored to the repo root (gitignored there), not the cwd.
+  opts.out ??= fileURLToPath(new URL(`../.preview-auth/${host.split('.')[0]}.json`, import.meta.url));
   return opts;
 }
 
@@ -75,7 +78,9 @@ function loadPasskey() {
     console.error('preview-login: GLYPH_AGENT_PASSKEY (or GLYPH_AGENT_PASSKEY_FILE) is not set');
     process.exit(2);
   }
-  const c = JSON.parse(raw);
+  // JSON.parse's message quotes part of the input; never let it reach logs.
+  let c;
+  try { c = JSON.parse(raw); } catch { throw new Error('passkey is not valid JSON'); }
   for (const k of ['credentialId', 'privateKey', 'rpId', 'userHandle']) {
     if (!c[k]) throw new Error(`passkey JSON is missing ${k}`);
   }
@@ -152,7 +157,8 @@ async function main() {
 
     mkdirSync(dirname(opts.out), { recursive: true });
     const state = await context.storageState();
-    writeFileSync(opts.out, JSON.stringify(state, null, 2));
+    // Create it 0600 (no world-readable window); chmod covers an existing file.
+    writeFileSync(opts.out, JSON.stringify(state, null, 2), { mode: 0o600 });
     chmodSync(opts.out, 0o600);
     console.error(`preview-login: signed in to ${opts.origin} as ${me.body.name} <${me.body.email}>; state saved to ${opts.out}`);
 
