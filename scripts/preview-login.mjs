@@ -116,19 +116,30 @@ async function main() {
     const back = u => u.origin === opts.origin && !u.pathname.startsWith('/auth/');
     const deadline = Date.now() + 60_000;
     while (!back(new URL(page.url()))) {
-      if (Date.now() > deadline) throw new Error(`stuck at ${new URL(page.url()).origin}${new URL(page.url()).pathname}`);
+      if (Date.now() > deadline) {
+        const where = new URL(page.url());
+        const heading = (await page.locator('h1, h2').allInnerTexts().catch(() => [])).map(s => s.trim()).filter(Boolean);
+        const buttons = (await page.getByRole('button').allInnerTexts().catch(() => [])).map(s => s.trim()).filter(Boolean);
+        throw new Error(`stuck at ${where.origin}${where.pathname} (heading ${JSON.stringify(heading)}, buttons ${JSON.stringify(buttons)})`);
+      }
       const u = new URL(page.url());
       if (u.origin === POCKET_ID) {
         const body = await page.locator('body').innerText().catch(() => '');
         if (/not allowed to access/i.test(body)) {
           throw new Error('Pocket ID refused: glyph-agent is not allowed to use this client (is it in glyph-preview-users?)');
         }
-        const auth = page.getByRole('button', { name: /^Authenticate$/ });
-        if (await auth.isVisible().catch(() => false)) {
-          await auth.click();
-          await page.waitForURL(x => x.pathname !== u.pathname || x.origin !== u.origin, { timeout: 20_000 }).catch(() => {});
-          continue;
+        // "Authenticate" asks for the passkey. "Sign in" is the account
+        // confirmation Pocket ID shows on /interaction, because Glyph's login
+        // sends prompt=select_account.
+        for (const name of [/^Authenticate$/, /^Sign in$/]) {
+          const btn = page.getByRole('button', { name });
+          if (await btn.isVisible().catch(() => false)) {
+            await btn.click();
+            await page.waitForURL(x => x.pathname !== u.pathname || x.origin !== u.origin, { timeout: 20_000 }).catch(() => {});
+            break;
+          }
         }
+        if (new URL(page.url()).pathname !== u.pathname) continue;
       }
       await page.waitForTimeout(500);
     }
