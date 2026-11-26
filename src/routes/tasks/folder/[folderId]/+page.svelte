@@ -380,7 +380,7 @@
   @media (max-width: 768px) {
     .board-header {
       /* Clear the fixed hamburger button (top:10 + height:44 = 54px) */
-      padding: 56px 16px 12px;
+      padding: 16px 16px 12px;
       flex-wrap: wrap;
       row-gap: 10px;
     }

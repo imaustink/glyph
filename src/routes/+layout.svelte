@@ -261,13 +261,54 @@
       <div class="sidebar-backdrop" onclick={() => uiStore.closeSidebar()} onkeydown={() => {}}></div>
     {/if}
 
+    <!-- Mobile top bar (phones only): an in-flow app bar instead of a
+         floating button, so pages don't have to reserve empty space for it
+         (#111). Mirrors the drawer header's brand so opening it feels
+         continuous. -->
+    <header class="mobile-topbar">
+      <button class="topbar-btn" onclick={() => uiStore.toggleSidebar()} aria-label="Open menu" aria-expanded={uiStore.sidebarOpen}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <line x1="4" y1="7" x2="20" y2="7"/>
+          <line x1="4" y1="12" x2="20" y2="12"/>
+          <line x1="4" y1="17" x2="20" y2="17"/>
+        </svg>
+      </button>
+      <span class="topbar-brand">
+        <svg class="topbar-logo" viewBox="0 0 64 64" width="18" height="18" aria-hidden="true">
+          <path
+            d="M9.39 13.76 L35.08 13.76 M9.39 26.09 L27.89 26.09"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="5.75"
+            stroke-linecap="round"
+          />
+          <path
+            d="M9.39 38.42 L20.7 38.42 L30.97 49.73 L54.61 14.79"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="6.78"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+        <span class="topbar-name">Glyph</span>
+      </span>
+      <button class="topbar-btn" onclick={() => uiStore.openSearch()} aria-label="Search">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"/>
+          <line x1="20" y1="20" x2="16" y2="16"/>
+        </svg>
+      </button>
+    </header>
+
     <div class="content-row">
       <div class="sidebar-container" class:open={uiStore.sidebarOpen}>
         <Sidebar />
       </div>
 
       <main class="main-content" class:sidebar-collapsed={!uiStore.sidebarOpen}>
-        <!-- Mobile header with hamburger menu -->
+        <!-- Reopens the collapsed sidebar on wide viewports (#104). Phones use
+             the top bar above instead. -->
         <button class="mobile-menu-btn" onclick={() => uiStore.toggleSidebar()} aria-label="Toggle sidebar">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="3" y1="6" x2="21" y2="6"/>
@@ -404,8 +445,8 @@
     display: none;
   }
 
-  /* Hidden by default; shown by the media queries below (always on phones,
-     and on wider viewports while the sidebar is collapsed). */
+  /* Hidden by default; shown by the wide-viewport media query below while the
+     sidebar is collapsed. */
   .mobile-menu-btn {
     display: none;
     align-items: center;
@@ -427,6 +468,11 @@
   .mobile-menu-btn:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
+  }
+
+  /* Phones only; shown by the mobile media query below. */
+  .mobile-topbar {
+    display: none;
   }
 
   .loading-screen {
@@ -509,9 +555,9 @@
     }
 
     /* Keep page content clear of the notch in standalone / landscape (#78).
-       env() is 0 where there is no inset, so this is a no-op elsewhere. */
+       env() is 0 where there is no inset, so this is a no-op elsewhere. The
+       top inset is taken by the top bar. */
     .main-content {
-      padding-top: env(safe-area-inset-top);
       padding-left: env(safe-area-inset-left);
       padding-right: env(safe-area-inset-right);
     }
@@ -528,8 +574,59 @@
       z-index: 40;
     }
 
-    .mobile-menu-btn {
+    /* Slim app bar in the normal flow: it takes exactly the room it needs
+       and the content starts right below it, rather than every page padding
+       its top to dodge a floating button (#111). */
+    .mobile-topbar {
+      flex-shrink: 0;
       display: flex;
+      align-items: center;
+      gap: 4px;
+      height: calc(48px + env(safe-area-inset-top));
+      padding: env(safe-area-inset-top) calc(4px + env(safe-area-inset-right)) 0
+        calc(4px + env(safe-area-inset-left));
+      background: var(--bg-primary);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    /* Borderless icon buttons with a 44×44 touch target (#78). */
+    .topbar-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: none;
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      border: none;
+      border-radius: var(--radius-md);
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+    .topbar-btn:active {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    .topbar-brand {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .topbar-logo {
+      color: var(--accent);
+      flex: none;
+    }
+
+    .topbar-name {
+      font-size: var(--font-size-md);
+      font-weight: 700;
+      color: var(--text-heading);
+      letter-spacing: -0.02em;
     }
   }
 </style>

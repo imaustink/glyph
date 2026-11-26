@@ -872,11 +872,11 @@
   }
 
   @media (max-width: 768px) {
-    .oauth-clients-page { padding: 56px 40px 32px; }
+    .oauth-clients-page { padding: 16px 40px 32px; }
   }
 
   @media (max-width: 640px) {
-    .oauth-clients-page { padding: 56px 16px 16px; }
+    .oauth-clients-page { padding: 16px 16px 16px; }
     .layout { grid-template-columns: 1fr; }
   }
 </style>
