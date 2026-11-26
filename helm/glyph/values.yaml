@@ -235,6 +235,20 @@ cnpg:
   # protect against losing a node, not against a bug that overwrites data.
   backup:
     enabled: false
+    # How backups are taken:
+    #   plugin            - the Barman Cloud plugin (CNPG-I). Needs the plugin
+    #                       installed next to the CloudNativePG operator and
+    #                       CNPG >= 1.30. Renders an ObjectStore and lists the
+    #                       plugin in the Cluster's spec.plugins.
+    #   barmanObjectStore - CNPG's in-tree Barman Cloud support
+    #                       (spec.backup.barmanObjectStore). Deprecated and
+    #                       removed in CNPG 1.31.
+    # Both write the same layout to the same destinationPath, so switching
+    # keeps the existing backups and WAL history.
+    method: plugin
+    # Where base backups are taken from: prefer-standby (a replica when one is
+    # healthy) or primary.
+    target: prefer-standby
     # -- Guard for production values files: when true, the chart refuses to
     # render unless backups are enabled and configured.
     required: false
@@ -262,6 +276,11 @@ cnpg:
     limits:
       cpu: "1"
       memory: 1Gi
+
+  # How the primary is updated when the Cluster spec changes: switchover
+  # (promote an already-updated replica first, then restart the old primary)
+  # or restart (restart the primary in place: a short outage).
+  primaryUpdateMethod: switchover
 
   monitoring:
     # Scrape the instances (CNPG's enablePodMonitor; needs the Prometheus

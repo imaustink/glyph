@@ -40,29 +40,26 @@ spec:
     storageClass: {{ .Values.cnpg.storage.storageClass }}
     {{- end }}
 
+  {{- with .Values.cnpg.primaryUpdateMethod }}
+  primaryUpdateMethod: {{ . }}
+  {{- end }}
+
   {{- if .Values.cnpg.backup.enabled }}
+  {{- if eq .Values.cnpg.backup.method "plugin" }}
+  # WAL archiving and base backups through the Barman Cloud plugin, to the
+  # ObjectStore in cnpg-objectstore.yaml.
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: {{ include "glyph.cnpg.objectStoreName" . }}
+  {{- else }}
   backup:
+    target: {{ .Values.cnpg.backup.target }}
     barmanObjectStore:
-      destinationPath: {{ .Values.cnpg.backup.destinationPath | quote }}
-      {{- if .Values.cnpg.backup.endpointURL }}
-      endpointURL: {{ .Values.cnpg.backup.endpointURL | quote }}
-      {{- end }}
-      s3Credentials:
-        {{- if .Values.cnpg.backup.s3.secretName }}
-        accessKeyId:
-          name: {{ .Values.cnpg.backup.s3.secretName }}
-          key: ACCESS_KEY_ID
-        secretAccessKey:
-          name: {{ .Values.cnpg.backup.s3.secretName }}
-          key: ACCESS_SECRET_KEY
-        {{- else }}
-        inheritFromIAMRole: true
-        {{- end }}
-      wal:
-        compression: gzip
-      data:
-        compression: gzip
+      {{- include "glyph.cnpg.barmanConfiguration" . | nindent 6 }}
     retentionPolicy: {{ .Values.cnpg.backup.retentionPolicy | quote }}
+  {{- end }}
   {{- end }}
 
   resources:

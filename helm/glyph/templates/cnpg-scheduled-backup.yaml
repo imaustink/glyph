@@ -8,6 +8,14 @@ metadata:
 spec:
   schedule: {{ include "glyph.cnpg.backupSchedule" . | quote }}
   backupOwnerReference: self
+  target: {{ .Values.cnpg.backup.target }}
+  {{- if eq .Values.cnpg.backup.method "plugin" }}
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+  {{- else }}
+  method: barmanObjectStore
+  {{- end }}
   cluster:
     name: {{ include "glyph.cnpg.clusterName" . }}
 {{- end }}
