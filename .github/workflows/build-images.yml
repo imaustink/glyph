@@ -39,6 +39,11 @@ on:
         required: false
         type: boolean
         default: false
+      extra-tag:
+        description: "A second tag for the same manifest list, e.g. sha-<PR head commit> for PR previews (Argo CD's pull-request generator knows the head commit, not the tree hash)."
+        required: false
+        type: string
+        default: ""
     # Only the two Docker Hub credentials are needed. Declared explicitly (not
     # `secrets: inherit`) so an image-build workflow that logs into a public
     # registry can't reach the homelab App key or the Tauri signing keys.
@@ -199,5 +204,20 @@ jobs:
           tag="${{ steps.check.outputs.tag }}"
           refs=""
           for f in digests/*; do refs="$refs $repo@$(cat "$f")"; done
-          docker buildx imagetools create -t "$repo:$tag" $refs
+          extra=""
+          if [ -n "$EXTRA_TAG" ]; then extra="-t $repo:$EXTRA_TAG"; fi
+          docker buildx imagetools create -t "$repo:$tag" $extra $refs
           docker buildx imagetools inspect "$repo:$tag"
+        env:
+          EXTRA_TAG: ${{ inputs.extra-tag }}
+
+      # Nothing was built (the tree-hash tag already existed), but the extra
+      # tag still has to point at it.
+      - name: Alias extra tag
+        if: steps.check.outputs.exists == 'true' && inputs.extra-tag != ''
+        run: |
+          set -euo pipefail
+          repo="${{ steps.check.outputs.repo }}"
+          docker buildx imagetools create -t "$repo:$EXTRA_TAG" "$repo:${{ steps.check.outputs.tag }}"
+        env:
+          EXTRA_TAG: ${{ inputs.extra-tag }}

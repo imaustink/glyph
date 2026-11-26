@@ -23,6 +23,12 @@ type SessionConfig struct {
 	CookieDomain  string // e.g. "localhost"
 	CookieSecure  bool   // true in production (HTTPS)
 	FrontendURL   string // where to redirect after login, e.g. http://localhost:5173
+	// StatePrefix is prepended to the random OAuth state value. Preview
+	// environments set it (e.g. "pr-123.") so a shared callback bounce, the
+	// one redirect URI registered with the provider, can tell which preview
+	// to send the browser back to. It carries no secret: the CSRF check still
+	// compares the whole state against the cookie set at login.
+	StatePrefix string
 }
 
 const (
@@ -122,6 +128,7 @@ func loginHandler(cfg SessionConfig) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state"})
 			return
 		}
+		state = cfg.StatePrefix + state
 		nonce, err := randomString(32)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate nonce"})

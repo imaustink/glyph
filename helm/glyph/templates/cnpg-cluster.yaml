@@ -3,10 +3,21 @@ apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: {{ include "glyph.cnpg.clusterName" . }}
+  {{- if or .Values.cnpg.retainOnDelete .Values.argocd.enabled }}
   annotations:
-    # The database outlives the release: `helm uninstall`, an Argo prune or a
-    # chart refactor must never delete it. Delete it by hand if you mean to.
+    {{- if .Values.cnpg.retainOnDelete }}
+    # The database outlives the release: `helm uninstall`, an Argo prune or
+    # app deletion, or a chart refactor must never delete it. Delete it by
+    # hand if you mean to. (Helm and Argo CD each honour only their own
+    # annotation.)
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Delete=false
+    {{- end }}
+    {{- if .Values.argocd.enabled }}
+    # Exists before the migrate hook Job (wave -1) that waits for it.
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- end }}
+  {{- end }}
   labels:
     {{- include "glyph.labels" . | nindent 4 }}
     app.kubernetes.io/component: database

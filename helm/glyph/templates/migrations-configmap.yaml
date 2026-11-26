@@ -8,6 +8,11 @@ metadata:
   name: {{ include "glyph.fullname" . }}-migrations
   labels:
     {{- include "glyph.labels" . | nindent 4 }}
+  {{- if .Values.argocd.enabled }}
+  annotations:
+    # Before the migrate hook Job (wave -1) that reads it.
+    argocd.argoproj.io/sync-wave: "-2"
+  {{- end }}
 
 data:
   {{- include "glyph.migrations.data" . | trim | nindent 2 }}

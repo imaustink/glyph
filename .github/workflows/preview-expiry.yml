@@ -1,0 +1,43 @@
+name: Preview expiry
+
+# Removes the `preview` label from open PRs with no activity (no push,
+# comment, review or label change — anything that bumps the PR's updatedAt)
+# for PREVIEW_TTL_DAYS. The Argo CD ApplicationSet only generates previews for
+# labeled PRs, so that deletes the environment and its database. A push
+# (preview.yml re-labels) or re-adding the label brings it back, with fresh
+# demo data. See preview.yml.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  PREVIEW_TTL_DAYS: 7
+
+jobs:
+  expire:
+    if: github.repository == 'imaustink/glyph'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Expire idle previews
+        run: |
+          set -euo pipefail
+          cutoff="$(date -u -d "-$PREVIEW_TTL_DAYS days" +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Expiring previews idle since before $cutoff"
+          gh pr list --state open --label preview --limit 200 \
+            --json number,updatedAt \
+            --jq ".[] | select(.updatedAt < \"$cutoff\") | .number" |
+          while read -r pr; do
+            echo "Expiring preview for #$pr"
+            gh pr edit "$pr" --remove-label preview
+            gh pr comment "$pr" --body "Preview environment removed after $PREVIEW_TTL_DAYS days without activity. Push or add the \`preview\` label to bring it back (with fresh demo data)."
+          done

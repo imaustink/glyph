@@ -1,26 +1,38 @@
 # Runbook: database migrations
 
-How schema migrations run in the Helm deployment, what the failure states
+How schema migrations run in the Argo CD deployment, what the failure states
 look like, and how to recover from them.
+
+Production is the Argo CD Application `glyph` (homelab repo,
+`kubernetes/argocd/glyph/`). CD (`scripts/argocd-deploy.sh`) points it at a
+commit of this repo for the chart and at that commit's tree hash for the
+images, then waits for the sync and the rollout. PR previews are separate
+Applications in the `glyph-preview` namespace with their own databases;
+nothing here applies to them except the Job mechanics.
 
 ## How migrations run
 
 - Migrations live in `api/migrations` (golang-migrate, one transaction per
-  file). CD copies them into `helm/glyph/migrations` at deploy time.
-- **One place runs them:** the `glyph-migrate-<revision>` Job, which runs
+  file). The chart reads them through `helm/glyph/migrations`, a symlink.
+- **One place runs them:** the `glyph-migrate` Job, which runs
   `helm/glyph/files/glyph-migrate.sh apply`.
-  - On `helm upgrade` it is a `pre-upgrade` hook. It finishes before any
-    Deployment changes. If it fails, the upgrade fails and nothing else
-    changes (see [No automatic rollback](#no-automatic-rollback)). The Job reads this release's migrations from the
-    `glyph-migrations-hook` ConfigMap.
-  - On first install it is an ordinary Job, because there is no database
-    yet for a pre-install hook to wait on.
+  - Under Argo CD (`argocd.enabled: true`) it is a `Sync` hook in sync wave
+    -1, so it runs on every sync: after the CNPG Cluster and the
+    `glyph-migrations` ConfigMap (wave -2) and before any Deployment changes
+    (wave 0). If it fails, the sync fails and the Deployments are not touched
+    (see [No automatic rollback](#no-automatic-rollback)). It is not
+    `PreSync` because on a first sync the database it waits for is only
+    created during the Sync phase.
+  - With plain Helm (`argocd.enabled: false`, e.g. `scripts/test-e2e-k8s.sh`)
+    it is a `pre-upgrade` hook named `glyph-migrate-<revision>` that reads
+    the `glyph-migrations-hook` ConfigMap, and an ordinary Job on first
+    install.
 - **API pods never migrate.** Their `wait-for-schema` init container
   (`glyph-migrate.sh wait`) only waits until the schema is at least the
   release's latest migration. A pod that is waiting shows `Init:1/2`; it
   does not crash-loop.
-- If the schema is **newer** than the release's files (after a `helm
-  rollback`, or when an older tree is deployed), both modes log a warning and
+- If the schema is **newer** than the release's files (after a rollback,
+  or when an older tree is deployed), both modes log a warning and
   carry on. `migrate up` would otherwise fail with `no migration found for
   version N`.
 
@@ -46,8 +58,8 @@ release that starts writing it.
 **Symptoms**
 - The migrate Job fails, and its log says `schema version N is dirty`, or
   `migrate up` fails with an SQL error.
-- `helm upgrade` fails and the release is marked `failed`. The Deployments
-  were never changed, so the old pods keep serving.
+- The Argo CD sync of the commit ends `Failed` and the CD deploy job fails
+  with it. The Deployments were never changed, so the old pods keep serving.
 - New API pods wait in `Init:1/2`, logging `schema version N is dirty`.
 
 **What it means.** Migration `N` started and did not finish. golang-migrate
@@ -62,7 +74,8 @@ transaction.
 1. Read the failure.
    ```sh
    kubectl -n glyph get jobs -l app.kubernetes.io/component=migrate
-   kubectl -n glyph logs job/glyph-migrate-<revision> -c migrate
+   kubectl -n glyph logs job/glyph-migrate -c migrate
+   kubectl -n argocd get application glyph -o jsonpath='{.status.operationState.message}' 
    ```
 2. Open a psql shell on the primary.
    ```sh
@@ -92,7 +105,8 @@ transaction.
    index. Merge the fix. Don't edit a migration that has already applied
    cleanly anywhere; add a new one.
 6. Redeploy (`gh workflow run cd.yml --ref main`). The hook applies N and
-   anything after it.
+   anything after it. (Argo CD doesn't retry a failed sync of the same
+   commit on its own; the deploy script requests one.)
 
 ## Failure: the schema is ahead of the release
 
@@ -100,7 +114,7 @@ transaction.
 release's latest migration (M)`.
 
 **What it means.** The release is older than the database. This happens
-after a `helm rollback` of an upgrade whose migration had already applied,
+after a rollback past a commit whose migration had already applied,
 or when an older tree is deployed. Nothing is
 migrated. The pods start, which is safe as long as the migrations followed
 expand/contract.
@@ -114,96 +128,70 @@ read them first.
 
 ## No automatic rollback
 
-CD and `scripts/deploy.sh` run `helm upgrade --wait --cleanup-on-fail
---timeout 10m`, deliberately **without `--atomic`** (Helm 4:
-`--rollback-on-failure`). Tests in `helm/glyph/tests/cd_test.sh` and
-`deploy_test.sh` hold this.
+Nothing rolls production back on its own: CD and `scripts/deploy.sh` run
+`scripts/argocd-deploy.sh`, which fails when the sync or the rollout fails
+and does nothing else. Tests in `helm/glyph/tests/cd_test.sh`,
+`argocd_deploy_test.sh` and `deploy_test.sh` hold this.
 
-**Why.** By the time a release can fail its rollout, the pre-upgrade hook has
-already applied the new migrations. Rolling back puts the previous
-revision's API pod template back. Every revision from before PR #46 has a
-`run-migrations` init container that runs a plain `migrate up` with its own,
-older files. Against the newer schema that fails with `no migration found
-for version N`, so every API pod that revision has to create (during the
-rollback, or later on a reschedule, eviction or scale-up) crash-loops.
-Those revisions are already shipped and can't be changed.
+**Why.** By the time a release can fail its rollout, the migrate hook has
+already applied the new migrations. Every chart revision from before PR #46
+has a `run-migrations` init container that runs a plain `migrate up` with its
+own, older files; against the newer schema that fails with `no migration
+found for version N`, so its API pods crash-loop. Those revisions are
+already shipped and can't be changed. Revisions from PR #46 on (every commit
+Argo CD has ever deployed) use `wait-for-schema`, which starts on a schema
+that is ahead of it, so rolling back between those is safe, but only a
+person should decide to.
 
-Revisions from PR #46 on use `wait-for-schema` (`glyph-migrate.sh wait`),
-which starts on a schema that is ahead of it. Rolling back between those is
-safe. Helm can't tell the two kinds apart, so the pipeline never rolls back
-on its own; a person does it, after checking.
-
-**What a failed release looks like.** The deploy job fails and `helm -n glyph
-history glyph` shows the newest revision as `failed`. With no rollback, the
-Deployments keep the new pod template, but a RollingUpdate only retires old
-pods as new ones become ready, so the **old ReplicaSet's pods keep
-serving**. That is the safe state; nothing is urgent. `--cleanup-on-fail`
-only deletes objects this upgrade newly created, which the old pods don't
-use. The next `helm upgrade` works from a `failed` release.
+**What a failed release looks like.** The deploy job fails and the
+Application shows the sync `Failed` or the app `Degraded`. The Deployments
+may have the new pod template, but a RollingUpdate only retires old pods as
+new ones become ready, so the **old ReplicaSet's pods keep serving**. That is
+the safe state; nothing is urgent.
 
 ### Recover from a failed release
 
 1. See what failed.
    ```sh
-   helm -n glyph history glyph
+   kubectl -n argocd get application glyph -o jsonpath='{.status.operationState.phase}: {.status.operationState.message}{"\n"}'
    kubectl -n glyph get pods
    kubectl -n glyph rollout status deploy/glyph-api --timeout 5s
    kubectl -n glyph describe pod <new-pod>     # or: logs <new-pod>
    ```
+   (or the Argo CD UI at https://argoci.kurpuis.com/applications/glyph).
 2. **Roll forward (preferred).** Fix the cause on `main` and redeploy
    (`gh workflow run cd.yml --ref main`). If it was transient (an image pull,
    the timeout), just re-run the deploy.
-3. **Roll back only to a schema-tolerant revision.** First check that the
-   target revision's API Deployment waits for the schema instead of
-   migrating:
+3. **Roll back** by pointing the Application at an earlier commit of `main`
+   that is from PR #46 on (check that its `helm/glyph/templates/
+   api-deployment.yaml` has `wait-for-schema` and no `run-migrations`):
    ```sh
-   helm -n glyph get manifest glyph --revision <N> | grep -c 'name: wait-for-schema'   # must be >= 1
-   helm -n glyph get manifest glyph --revision <N> | grep -c 'name: run-migrations'    # must be 0
-   helm -n glyph rollback glyph <N> --wait --timeout 10m
+   git fetch origin && sha=<commit>
+   scripts/argocd-deploy.sh "$sha" "$(git rev-parse "$sha^{tree}")"
    ```
-   If no deployed revision passes that check (the first deploy after PR #46
-   is the only one with a pre-PR predecessor), **don't roll back**. Leave the
-   old pods serving and roll forward. `kubectl rollout undo` is no
-   different: it puts the same old pod template back.
-4. **If a pre-PR revision was rolled back to anyway** and API pods
-   crash-loop in `run-migrations` with `no migration found for version N`:
-   roll forward to the tip of `main` (step 2); its pods start on the newer
-   schema. Pods of the old revision that were already running keep serving
-   until then. Don't `force` the schema version down to make the old
-   init container happy; that marks applied migrations as not applied.
+   The next CD run moves it forward again. Argo CD's own rollback is
+   disabled while automated sync is on; don't turn sync off to use it.
 
-## Failure: the upgrade is stuck in `pending-upgrade`
+## Failure: a sync is stuck
 
-An interrupted `helm upgrade` can leave the release locked:
+A sync that waits forever (usually the migrate hook waiting on a database
+that never becomes ready) blocks every later deploy. See what it waits on,
+fix that, or end the operation:
 
 ```sh
-helm -n glyph history glyph
+kubectl -n argocd get application glyph -o jsonpath='{.status.operationState.message}'
+kubectl -n glyph get jobs,pods -l app.kubernetes.io/component=migrate
+argocd app terminate-op glyph     # or "Terminate" on the sync in the UI
 ```
 
-If the last `deployed` revision passes the schema-tolerance check in
-[Recover from a failed release](#recover-from-a-failed-release), step 3,
-roll back to it:
-
-```sh
-helm -n glyph rollback glyph <last-deployed-revision>
-```
-
-If it doesn't (it is from before PR #46), rolling back would crash-loop the
-API. Delete the stuck revision's release record instead. That releases the
-lock without changing any workload (Helm reads the release status from the
-record itself, so relabeling it is not enough):
-
-```sh
-kubectl -n glyph get secret -l owner=helm,name=glyph   # find sh.helm.release.v1.glyph.v<pending-revision>
-kubectl -n glyph delete secret sh.helm.release.v1.glyph.v<pending-revision>
-```
-
-Then redeploy through CD.
+Terminating leaves whatever already applied in place, the same as a failed
+sync. Then redeploy through CD.
 
 ## Manual deploys
 
 `scripts/deploy.sh` is the fallback when CD can't run. It deploys only the
-clean tip of `origin/main`, refuses while a CD run is active, uses the same
-tree-hash image tags as CD, and upgrades with `--wait` and no automatic
-rollback, like CD (see [No automatic rollback](#no-automatic-rollback)). Prefer
-`gh workflow run cd.yml --ref main`.
+clean tip of `origin/main`, refuses while a CD run is active, builds any
+missing tree-hash image, and then deploys exactly as CD does, with
+`scripts/argocd-deploy.sh` and no automatic rollback. Prefer
+`gh workflow run cd.yml --ref main`. Never `helm upgrade` production by hand:
+Argo CD owns the release and its self-heal reverts it.

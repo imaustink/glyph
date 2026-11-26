@@ -11,30 +11,30 @@
 #     in CD's concurrency lock, so it checks instead — needs `gh`);
 #   * images are tagged by git tree hash, like CD, so the tag changes with
 #     the content and pullPolicy IfNotPresent can't serve a stale :latest;
-#   * `helm upgrade --wait`: the pre-upgrade migrate hook runs first, and any
-#     failure fails the deploy. There is deliberately no --atomic: the
+#   * it deploys the same way CD does, through Argo CD
+#     (scripts/argocd-deploy.sh): the migrate Sync hook runs first and any
+#     failure fails the deploy. Nothing is rolled back automatically: the
 #     migrations have already applied, and rolling back to a revision from
 #     before PR #46 crash-loops the API (its init container runs `migrate up`
 #     against the newer schema). A failed rollout leaves the old pods
 #     serving; see docs/runbooks/migrations.md to recover.
+#
+# Production values live in the homelab repo and Argo CD reads them from
+# there; this script never needs them. Never `helm upgrade` production by
+# hand: Argo CD owns the release and would revert it.
 set -euo pipefail
 
 REGISTRY="docker.io/blackmarket"
-NAMESPACE="glyph"
-RELEASE="glyph"
-VALUES_FILE="values-production.yaml"
 BUILD_ONLY=false
 
 usage() {
-  echo "Usage: $0 [--values FILE] [--build-only]"
-  echo "  --values FILE   production values file (default: $VALUES_FILE)"
+  echo "Usage: $0 [--build-only]"
   echo "  --build-only    build and push any missing images; don't deploy"
   exit 1
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --values) VALUES_FILE="${2:?}"; shift 2 ;;
     --build-only) BUILD_ONLY=true; shift ;;
     -h|--help) usage ;;
     *) echo "Unknown option: $1"; usage ;;
@@ -95,21 +95,4 @@ build_if_missing collab collab/Dockerfile .
 $BUILD_ONLY && { echo "✓ Images pushed"; exit 0; }
 
 # ── Deploy ─────────────────────────────────────────────────────────────────────
-[[ -f "$VALUES_FILE" ]] || die "values file $VALUES_FILE not found (--values FILE)."
-
-echo "▸ Syncing migrations..."
-rm -rf helm/glyph/migrations
-cp -r api/migrations helm/glyph/migrations
-
-echo "▸ Upgrading Helm release..."
-helm upgrade "$RELEASE" helm/glyph \
-  -f "$VALUES_FILE" \
-  --set frontend.image.repository="$REGISTRY/glyph-frontend" \
-  --set frontend.image.tag="$TAG" \
-  --set api.image.repository="$REGISTRY/glyph-api" \
-  --set api.image.tag="$TAG" \
-  --set collab.image.repository="$REGISTRY/glyph-collab" \
-  --set collab.image.tag="$TAG" \
-  -n "$NAMESPACE" --wait --cleanup-on-fail --timeout 10m
-
-echo "✓ Done"
+REGISTRY="$REGISTRY" scripts/argocd-deploy.sh "$head" "$TAG"
