@@ -132,7 +132,45 @@ Validates the backup settings. Included by the Cluster template.
 {{- if not (or $b.s3.secretName $b.s3.inheritFromIAMRole) }}
 {{- fail "cnpg.backup.enabled is true but cnpg.backup.s3.secretName is empty (and s3.inheritFromIAMRole is false): WAL archiving would fail and WAL would fill the volume." }}
 {{- end }}
+{{- if not (has $b.method (list "plugin" "barmanObjectStore")) }}
+{{- fail (printf "cnpg.backup.method must be \"plugin\" or \"barmanObjectStore\", got %q" $b.method) }}
 {{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Name of the barmancloud.cnpg.io ObjectStore used by the Barman Cloud plugin.
+*/}}
+{{- define "glyph.cnpg.objectStoreName" -}}
+{{- printf "%s-backups" (include "glyph.cnpg.clusterName" .) }}
+{{- end }}
+
+{{/*
+Barman object-store settings, shared by the plugin's ObjectStore
+(.spec.configuration) and the in-tree Cluster .spec.backup.barmanObjectStore,
+so both methods write the same layout to the same place.
+*/}}
+{{- define "glyph.cnpg.barmanConfiguration" -}}
+{{- $b := .Values.cnpg.backup -}}
+destinationPath: {{ $b.destinationPath | quote }}
+{{- if $b.endpointURL }}
+endpointURL: {{ $b.endpointURL | quote }}
+{{- end }}
+s3Credentials:
+  {{- if $b.s3.secretName }}
+  accessKeyId:
+    name: {{ $b.s3.secretName }}
+    key: ACCESS_KEY_ID
+  secretAccessKey:
+    name: {{ $b.s3.secretName }}
+    key: ACCESS_SECRET_KEY
+  {{- else }}
+  inheritFromIAMRole: true
+  {{- end }}
+wal:
+  compression: gzip
+data:
+  compression: gzip
 {{- end }}
 
 {{/*

@@ -5,7 +5,10 @@
 # Alerts on the two ways backups silently stop protecting the database: WAL
 # archiving failing (WAL then piles up until the volume fills and Postgres
 # stops taking writes) and base backups no longer completing. Metric names are
-# from CNPG's default monitoring queries.
+# from CNPG's default monitoring queries; the newest-backup timestamp comes from
+# the Barman Cloud plugin (barman_cloud_cloudnative_pg_io_*) or, with the
+# in-tree method, from cnpg_collector_*. The alert reads either, so it neither
+# goes silent nor fires falsely while switching between them.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -43,7 +46,7 @@ spec:
             summary: "No WAL archived from {{ "{{ $labels.pod }}" }} for over {{ $rule.maxSecondsSinceLastArchival }}s"
         - alert: GlyphPostgresBackupTooOld
           expr: |
-            time() - max by (namespace) (cnpg_collector_last_available_backup_timestamp{ {{- $sel -}} }) > {{ mul $rule.maxBackupAgeHours 3600 }}
+            time() - max by (namespace) ({__name__=~"barman_cloud_cloudnative_pg_io_last_available_backup_timestamp|cnpg_collector_last_available_backup_timestamp", {{ $sel -}} }) > {{ mul $rule.maxBackupAgeHours 3600 }}
           for: 15m
           labels:
             severity: critical
