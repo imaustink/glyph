@@ -288,11 +288,11 @@
 
   /* Clear the fixed hamburger button (top:10 + height:44 = 54px), shown at <=768px */
   @media (max-width: 768px) {
-    .connections-page { padding: 56px 40px 32px; }
+    .connections-page { padding: 16px 40px 32px; }
   }
 
   @media (max-width: 640px) {
-    .connections-page { padding: 56px 16px 16px; }
+    .connections-page { padding: 16px 16px 16px; }
     .connection-details { grid-template-columns: 1fr; gap: 2px; }
     .connection-details dd { margin-bottom: 8px; }
   }
