@@ -9,8 +9,9 @@ name: Preview
 #
 # This workflow opts PRs in: it labels every same-repo PR `preview` when it is
 # opened, reopened or pushed to (so a push revives an expired preview), unless
-# the PR is labeled `no-preview`. preview-expiry.yml removes the label from
-# PRs that go quiet. Fork PRs are skipped: their CI gets no registry
+# the PR is labeled `no-preview`. Adding `no-preview` removes `preview`, which
+# is what takes the PR out of the ApplicationSet. preview-expiry.yml removes
+# the label from PRs that go quiet. Fork PRs are skipped: their CI gets no registry
 # credentials, so no image is ever built for them to run.
 #
 # The preview runs the image ci.yml's build-preview-image job builds from the
@@ -36,7 +37,7 @@ jobs:
     if: >-
       github.repository == 'imaustink/glyph' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      (github.event.action != 'labeled' || github.event.label.name == 'preview')
+      (github.event.action != 'labeled' || github.event.label.name == 'preview' || github.event.label.name == 'no-preview')
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -48,6 +49,10 @@ jobs:
           set -euo pipefail
           labels="$(gh pr view "$PR" --json labels --jq '.labels[].name')"
           if grep -qx 'no-preview' <<<"$labels"; then
+            # The ApplicationSet selects on `preview` alone, so opting out means removing it.
+            if grep -qx 'preview' <<<"$labels"; then
+              gh pr edit "$PR" --remove-label preview
+            fi
             echo "PR is labeled no-preview — skipping"
             exit 0
           fi
