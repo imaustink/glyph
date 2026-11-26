@@ -615,11 +615,11 @@
 
   /* Clear the fixed hamburger button (top:10 + height:44 = 54px), shown at <=768px */
   @media (max-width: 768px) {
-    .webhook-page { padding: 56px 40px 32px; }
+    .webhook-page { padding: 16px 40px 32px; }
   }
 
   @media (max-width: 640px) {
-    .webhook-page { padding: 56px 16px 16px; }
+    .webhook-page { padding: 16px 16px 16px; }
     .field input { font-size: 16px; }
     .event-details { grid-template-columns: 1fr; }
   }
