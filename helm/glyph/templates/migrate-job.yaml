@@ -12,11 +12,20 @@ On first install it is an ordinary Job: pre-install hooks run before the CNPG
 Cluster exists, so a hook would wait for a database that is never created.
 The API pods wait for it to finish.
 
+Under Argo CD (argocd.enabled) there are no Helm hooks: Argo renders the chart
+with `helm template`, so every sync looks like a first install. The Job is
+instead an Argo Sync hook, so it runs on every sync (its spec doesn't change
+between commits, so as a plain resource it would never re-run), in sync wave
+-1: after the CNPG Cluster and the migrations ConfigMap (wave -2) and before
+the Deployments (wave 0). It must not be PreSync: on a first sync the Cluster
+it waits for is only created in the Sync phase.
+
 Migrations run while the previous release's pods are still serving, so they
 must be backwards-compatible (expand/contract). See docs/runbooks/migrations.md.
 */}}
 {{- $cm := printf "%s-migrations" (include "glyph.fullname" .) }}
-{{- if .Release.IsUpgrade }}
+{{- $helmHook := and .Release.IsUpgrade (not .Values.argocd.enabled) }}
+{{- if $helmHook }}
 {{- $cm = printf "%s-migrations-hook" (include "glyph.fullname" .) }}
 apiVersion: v1
 kind: ConfigMap
@@ -36,11 +45,22 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
+  {{- if .Values.argocd.enabled }}
+  name: {{ include "glyph.migrate.name" . }}
+  {{- else }}
   name: {{ include "glyph.migrate.name" . }}-{{ .Release.Revision }}
+  {{- end }}
   labels:
     {{- include "glyph.labels" . | nindent 4 }}
     app.kubernetes.io/component: migrate
-  {{- if .Release.IsUpgrade }}
+  {{- if .Values.argocd.enabled }}
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: "-1"
+    # Kept after it finishes (until ttlSecondsAfterFinished) so its logs can
+    # be read; replaced by the next sync's Job.
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+  {{- else if $helmHook }}
   annotations:
     "helm.sh/hook": pre-upgrade
     "helm.sh/hook-weight": "0"

@@ -27,6 +27,11 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	// One-off subcommands share the image's entrypoint (`/api <command>`).
+	if len(os.Args) > 1 && os.Args[1] == seedDemoCommand {
+		os.Exit(runSeedDemo())
+	}
+
 	ctx := context.Background()
 
 	pool, err := db.Connect(ctx)

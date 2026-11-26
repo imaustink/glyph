@@ -190,10 +190,8 @@ LOCAL_ORIGIN="http://127.0.0.1:$INGRESS_PORT"
 echo "▶ Ingress: api-ui=$API_UI_ORIGIN local-ui=$LOCAL_ORIGIN"
 
 # ── Deploy ────────────────────────────────────────────────────────────────────
-# The chart reads migrations from helm/glyph/migrations (gitignored); keep it in
-# sync with the source of truth, exactly as scripts/deploy.sh does.
-rm -rf helm/glyph/migrations
-cp -r api/migrations helm/glyph/migrations
+# The chart reads migrations through helm/glyph/migrations, a committed symlink
+# to api/migrations, so there is nothing to sync.
 
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 

@@ -151,8 +151,8 @@ Migration job name — includes a hash of the migration config to re-run on chan
 {{- end }}
 
 {{/*
-ConfigMap data for the migrations: every migrations/*.sql file (synced from
-api/migrations at deploy time) plus files/glyph-migrate.sh, which the migrate
+ConfigMap data for the migrations: every migrations/*.sql file (helm/glyph/migrations is a
+symlink to api/migrations) plus files/glyph-migrate.sh, which the migrate
 Job and the API's wait-for-schema init container run.
 */}}
 {{- define "glyph.migrations.data" -}}
@@ -162,4 +162,26 @@ Job and the API's wait-for-schema init container run.
 {{- end }}
 glyph-migrate.sh: |
   {{- .Files.Get "files/glyph-migrate.sh" | nindent 2 }}
+{{- end }}
+
+{{/*
+Under Argo CD every image tag must be set explicitly: CD (or the preview
+ApplicationSet) supplies it. A missing tag means the Application was re-applied
+from git without one, and falling back to a floating tag (or appVersion) would
+quietly roll the release to whatever that is. Fail the render instead; the
+running pods are untouched. Included by the API Deployment template.
+*/}}
+{{- define "glyph.validateImageTags" -}}
+{{- if .Values.argocd.enabled }}
+{{- $images := list (list "frontend" .Values.frontend.image.tag) (list "api" .Values.api.image.tag) }}
+{{- if .Values.collab.enabled }}
+{{- $images = append $images (list "collab" .Values.collab.image.tag) }}
+{{- end }}
+{{- range $images }}
+{{- $tag := index . 1 | toString }}
+{{- if or (not $tag) (eq $tag "latest") }}
+{{- fail (printf "%s.image.tag must be an immutable tag under Argo CD (got %q). Production's is set by CD (scripts/argocd-deploy.sh): re-run it." (index . 0) $tag) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
