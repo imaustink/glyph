@@ -1,0 +1,20 @@
+{{- if and .Values.cnpg.backup.enabled (eq .Values.cnpg.backup.method "plugin") }}
+# Where the Barman Cloud plugin sends this cluster's WAL and base backups.
+# Retention lives here (with the in-tree method it was on the Cluster).
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: {{ include "glyph.cnpg.objectStoreName" . }}
+  {{- if .Values.argocd.enabled }}
+  annotations:
+    # Exists before the Cluster (wave -2) that archives into it.
+    argocd.argoproj.io/sync-wave: "-3"
+  {{- end }}
+  labels:
+    {{- include "glyph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  retentionPolicy: {{ .Values.cnpg.backup.retentionPolicy | quote }}
+  configuration:
+    {{- include "glyph.cnpg.barmanConfiguration" . | nindent 4 }}
+{{- end }}
