@@ -362,4 +362,4 @@ jobs:
           version: v1.31.1
 
       - name: Restart pods stuck pulling the new image
-        run: scripts/preview-restart-stuck-pods.sh "${{ github.event.pull_request.number }}"
+        run: scripts/preview-restart-stuck-pods.sh "${{ github.event.pull_request.number }}" "sha-${{ github.event.pull_request.head.sha }}"
