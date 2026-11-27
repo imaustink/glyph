@@ -17,6 +17,7 @@ import {
   URL_PREVIEW_MAX_IN_FLIGHT,
   URL_PREVIEW_BUDGET,
   URL_PREVIEW_BUDGET_WINDOW_MS,
+  URL_PREVIEW_SHARED_KEY,
   __clearUrlPreviewCache
 } from './UrlPreviewExtension';
 
@@ -448,6 +449,80 @@ describe('UrlPreviewExtension', () => {
       expect(editor.view.dom.querySelectorAll('.url-preview-card:not(.is-loading)')).toHaveLength(
         hrefs.length
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shares the per-window budget with other tabs', async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      // Another tab already spent the whole budget a moment ago.
+      const starts = Array.from({ length: URL_PREVIEW_BUDGET }, () => Date.now() - 1_000);
+      localStorage.setItem(URL_PREVIEW_SHARED_KEY, JSON.stringify({ starts, pausedUntil: 0 }));
+
+      const fetchMeta = vi.fn((url: string) => Promise.resolve(metaFor(url)));
+      const editor = createEditor(bareLink('https://example.com/a'), { fetchMeta });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMeta).not.toHaveBeenCalled();
+      expect(editor.view.dom.querySelectorAll('.url-preview-card.is-loading')).toHaveLength(1);
+
+      // Once the other tab's starts age out of the window, this tab may fetch,
+      // and it records its own start for the other tabs to see.
+      await vi.advanceTimersByTimeAsync(URL_PREVIEW_BUDGET_WINDOW_MS);
+      expect(fetchMeta).toHaveBeenCalledTimes(1);
+      const shared = JSON.parse(localStorage.getItem(URL_PREVIEW_SHARED_KEY) ?? '{}');
+      expect(shared.starts).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('honours a pause set by another tab and publishes its own', async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      localStorage.setItem(
+        URL_PREVIEW_SHARED_KEY,
+        JSON.stringify({ starts: [], pausedUntil: Date.now() + URL_PREVIEW_RETRY_MS })
+      );
+      const fetchMeta = vi.fn((url: string) => Promise.resolve(metaFor(url)));
+      createEditor(bareLink('https://example.com/a'), { fetchMeta });
+      await vi.advanceTimersByTimeAsync(URL_PREVIEW_RETRY_MS - 1);
+      expect(fetchMeta).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchMeta).toHaveBeenCalledTimes(1);
+
+      // A failure here pauses the other tabs too.
+      const failing = vi.fn(() => Promise.reject(new Error('429')));
+      createEditor(bareLink('https://example.com/b'), { fetchMeta: failing });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(failing).toHaveBeenCalledTimes(1);
+      const shared = JSON.parse(localStorage.getItem(URL_PREVIEW_SHARED_KEY) ?? '{}');
+      expect(shared.pausedUntil).toBeGreaterThan(Date.now());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops queued fetches once previews are turned off', async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const hrefs = Array.from({ length: URL_PREVIEW_BUDGET + 3 }, (_, i) => `https://example.com/${i}`);
+      const fetchMeta = vi.fn((url: string) => Promise.resolve(metaFor(url)));
+      const editor = createEditor(bareLinks(hrefs), { fetchMeta });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMeta).toHaveBeenCalledTimes(URL_PREVIEW_BUDGET);
+
+      // Three are still queued behind the budget; turning previews off must
+      // not let them spend the next window's budget.
+      editor.view.dispatch(setUrlPreviewEnabled(editor.state.tr, false));
+      await vi.advanceTimersByTimeAsync(URL_PREVIEW_BUDGET_WINDOW_MS);
+      expect(fetchMeta).toHaveBeenCalledTimes(URL_PREVIEW_BUDGET);
+
+      // Turning them back on queues the dropped links afresh.
+      editor.view.dispatch(setUrlPreviewEnabled(editor.state.tr, true));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMeta).toHaveBeenCalledTimes(hrefs.length);
     } finally {
       vi.useRealTimers();
     }

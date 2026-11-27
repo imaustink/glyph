@@ -91,6 +91,15 @@ function refreshViewsFor(href: string): void {
 // fetch, from every editor, goes through this one queue, which caps how many
 // run at once and how many start per minute, and pauses entirely after a
 // failure instead of letting each failed URL retry on its own.
+//
+// The server limit is per *user*, not per tab, so the per-window budget and the
+// failure pause are shared across this browser's tabs through localStorage
+// (see loadShared/saveShared). Without that, every open tab would get its own
+// 10/min and a few link-heavy tabs could still use up the whole 30/min. Tabs
+// read and write the shared record without a lock, so two tabs starting in
+// the same instant can overshoot the budget by a fetch or two; the budget
+// leaves 20/min of headroom for that. When localStorage is unavailable the
+// budget falls back to this tab alone.
 
 /** Most preview unfurls in flight at once, across all editors. */
 export const URL_PREVIEW_MAX_IN_FLIGHT = 2;
@@ -108,9 +117,15 @@ interface QueueItem {
 
 const queue: QueueItem[] = [];
 let inFlight = 0;
-/** Start times of recent fetches, oldest first, for the per-window budget. */
-const recentStarts: number[] = [];
-/** The whole queue is paused until this epoch ms (after a failure). */
+/**
+ * Start times of recent fetches, oldest first, for the per-window budget.
+ * Only the fallback when localStorage is unavailable; see loadShared.
+ */
+let recentStarts: number[] = [];
+/**
+ * The whole queue is paused until this epoch ms (after a failure). Like
+ * recentStarts, mirrored to localStorage so other tabs pause too.
+ */
 let pausedUntil = 0;
 /** Failures since the last success; the pause doubles with each one. */
 let consecutiveFailures = 0;
@@ -145,9 +160,59 @@ function usableMeta(meta: LinkMeta | null): LinkMeta | undefined {
   return meta && (meta.title || meta.description || meta.image) ? meta : undefined;
 }
 
+/** localStorage key for the budget and pause shared by every tab. */
+export const URL_PREVIEW_SHARED_KEY = 'glyph:url-preview-queue';
+
+interface SharedQueueState {
+  starts: number[];
+  pausedUntil: number;
+}
+
+/**
+ * Pull the cross-tab budget and pause into recentStarts / pausedUntil. Another
+ * tab's starts replace ours (the shared record already includes them), and
+ * the later pause wins.
+ */
+function loadShared(): void {
+  try {
+    const raw = localStorage.getItem(URL_PREVIEW_SHARED_KEY);
+    if (!raw) return;
+    const shared = JSON.parse(raw) as Partial<SharedQueueState>;
+    if (Array.isArray(shared.starts)) {
+      recentStarts = shared.starts.filter((t): t is number => typeof t === 'number').sort((a, b) => a - b);
+    }
+    if (typeof shared.pausedUntil === 'number') {
+      pausedUntil = Math.max(pausedUntil, shared.pausedUntil);
+    }
+  } catch {
+    // Storage unavailable or corrupt: keep this tab's own budget.
+  }
+}
+
+/** Publish this tab's view of the budget and pause to the other tabs. */
+function saveShared(): void {
+  try {
+    localStorage.setItem(
+      URL_PREVIEW_SHARED_KEY,
+      JSON.stringify({ starts: recentStarts, pausedUntil } satisfies SharedQueueState)
+    );
+  } catch {
+    // Storage unavailable (private mode, quota): the budget stays per tab.
+  }
+}
+
+/**
+ * Whether some open editor would still render a card for `href`: it is live,
+ * has previews turned on, and its document links the URL. Queued fetches that
+ * fail this are dropped instead of spending the shared budget.
+ */
 function viewsLink(href: string): boolean {
   for (const view of liveViews) {
-    if (!view.isDestroyed && collect(view.state.doc).some((link) => link.href === href)) {
+    if (
+      !view.isDestroyed &&
+      urlPreviewPluginKey.getState(view.state)?.enabled &&
+      collect(view.state.doc).some((link) => link.href === href)
+    ) {
       return true;
     }
   }
@@ -173,6 +238,7 @@ function enqueue(href: string, fetchMeta: QueueItem['fetchMeta']): void {
 function drain(): void {
   while (queue.length > 0 && inFlight < URL_PREVIEW_MAX_IN_FLIGHT) {
     const now = Date.now();
+    loadShared();
     if (now < pausedUntil) {
       scheduleDrain(pausedUntil - now);
       return;
@@ -186,14 +252,16 @@ function drain(): void {
     }
 
     const { href, fetchMeta } = queue.shift()!;
-    // Every editor showing this link has closed while it waited: don't spend
-    // budget on it. Forget it so it's queued afresh if it's shown again.
+    // Every editor showing this link has closed, or turned previews off,
+    // while it waited: don't spend budget on it. Forget it so it's queued
+    // afresh if it's shown again.
     if (!viewsLink(href)) {
       cache.delete(href);
       continue;
     }
 
     recentStarts.push(now);
+    saveShared();
     inFlight++;
     void fetchMeta(href)
       .then(
@@ -210,7 +278,9 @@ function drain(): void {
             URL_PREVIEW_RETRY_MS * 2 ** (consecutiveFailures - 1),
             URL_PREVIEW_MAX_PAUSE_MS
           );
+          loadShared();
           pausedUntil = Math.max(pausedUntil, Date.now() + pause);
+          saveShared();
           cache.set(href, { status: 'failed', retryAt: pausedUntil });
           scheduleRetry(href, pausedUntil);
         }
@@ -228,8 +298,13 @@ export function __clearUrlPreviewCache(): void {
   cache.clear();
   queue.length = 0;
   inFlight = 0;
-  recentStarts.length = 0;
+  recentStarts = [];
   pausedUntil = 0;
+  try {
+    localStorage.removeItem(URL_PREVIEW_SHARED_KEY);
+  } catch {
+    // ignore
+  }
   consecutiveFailures = 0;
   if (drainTimer) clearTimeout(drainTimer);
   drainTimer = null;
