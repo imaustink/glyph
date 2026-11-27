@@ -148,7 +148,10 @@
         {/each}
       </div>
 
-      <div class="add-lane-col">
+      <!-- Not a snap target until the lanes have loaded: if it were the only
+           one at first layout, the browser would keep it snapped as the lanes
+           are inserted before it and open the board scrolled to the end. -->
+      <div class="add-lane-col" class:snap-target={lanesStore.loaded}>
         <button
           class="add-lane-btn"
           onclick={handleCreateLane}
@@ -342,7 +345,7 @@
       scroll-snap-type: none;
     }
 
-    .add-lane-col {
+    .add-lane-col.snap-target {
       scroll-snap-align: start;
     }
 

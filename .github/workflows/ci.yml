@@ -343,3 +343,23 @@ jobs:
     secrets:
       REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
       REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+
+  # Argo CD often deploys a preview (sha-<head commit>) before the job above
+  # has pushed that image, leaving its pods in ImagePullBackOff for up to the
+  # kubelet's 5-minute back-off. Now that the image exists, restart them.
+  # Needs the runner's ci-deployer role in glyph-preview (homelab,
+  # kubernetes/manifests/github-runner/010-glyph-preview-rbac.yaml).
+  restart-preview-pods:
+    needs: build-preview-image
+    runs-on: arc-runner-set
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.31.1
+
+      - name: Restart pods stuck pulling the new image
+        run: scripts/preview-restart-stuck-pods.sh "${{ github.event.pull_request.number }}" "sha-${{ github.event.pull_request.head.sha }}"
