@@ -18,6 +18,8 @@ name: Preview
 # PR's head commit (the same commit whose chart and migrations Argo CD
 # renders) and publishes as sha-<head commit>, so it comes up once CI has
 # passed for that push; until then the previous push's pods keep serving.
+# Argo often renders it before the image exists; ci.yml's restart-preview-pods
+# job then restarts the pods stuck in ImagePullBackOff so they pull it at once.
 
 on:
   pull_request:
