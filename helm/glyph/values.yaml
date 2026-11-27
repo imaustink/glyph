@@ -1,5 +1,12 @@
 # -- Override the chart name
 nameOverride: ""
+
+# -- Set when the chart is deployed by Argo CD rather than `helm upgrade`.
+# Argo renders with `helm template`, so Helm hooks never fire as upgrades;
+# this switches the migrate (and seed) Jobs to Argo CD sync hooks and orders
+# the database, migrations and Deployments with sync waves.
+argocd:
+  enabled: false
 # -- Override the full release name
 fullnameOverride: ""
 
@@ -200,6 +207,11 @@ cnpg:
   # uninstall` leaves it (and its data) in place.
   clusterName: ""
 
+  # -- Keep the Cluster (and its data) when the release / Argo CD app is
+  # deleted or the Cluster is pruned. Only disposable installs (PR previews)
+  # should turn this off.
+  retainOnDelete: true
+
   # Number of PostgreSQL instances (1 primary + N-1 replicas)
   instances: 3
 
@@ -223,6 +235,20 @@ cnpg:
   # protect against losing a node, not against a bug that overwrites data.
   backup:
     enabled: false
+    # How backups are taken:
+    #   plugin            - the Barman Cloud plugin (CNPG-I). Needs the plugin
+    #                       installed next to the CloudNativePG operator and
+    #                       CNPG >= 1.30. Renders an ObjectStore and lists the
+    #                       plugin in the Cluster's spec.plugins.
+    #   barmanObjectStore - CNPG's in-tree Barman Cloud support
+    #                       (spec.backup.barmanObjectStore). Deprecated and
+    #                       removed in CNPG 1.31.
+    # Both write the same layout to the same destinationPath, so switching
+    # keeps the existing backups and WAL history.
+    method: plugin
+    # Where base backups are taken from: prefer-standby (a replica when one is
+    # healthy) or primary.
+    target: prefer-standby
     # -- Guard for production values files: when true, the chart refuses to
     # render unless backups are enabled and configured.
     required: false
@@ -250,6 +276,11 @@ cnpg:
     limits:
       cpu: "1"
       memory: 1Gi
+
+  # How the primary is updated when the Cluster spec changes: switchover
+  # (promote an already-updated replica first, then restart the old primary)
+  # or restart (restart the primary in place: a short outage).
+  primaryUpdateMethod: switchover
 
   monitoring:
     # Scrape the instances (CNPG's enablePodMonitor; needs the Prometheus
@@ -280,6 +311,16 @@ migrate:
     pullPolicy: IfNotPresent
 
   imagePullSecrets: []
+
+# =============================================================================
+# Demo data (PR previews only)
+# =============================================================================
+# After every install/sync, a Job runs `/api seed-demo`: a "Glyph Demo"
+# organization full of notes, tasks, lanes and templates, which everyone who
+# signs in joins as an editor (a trigger on users). Idempotent. NEVER enable
+# this on a real install: it adds every user to a shared org.
+seed:
+  enabled: false
 
 # =============================================================================
 # PodDisruptionBudgets

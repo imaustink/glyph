@@ -19,3 +19,6 @@ playwright-report
 # Production values (scripts/deploy.sh's default --values) hold secrets; keep
 # them out of the build context that `COPY . .` sends.
 values-production.yaml
+
+# Preview sign-in state (scripts/preview-login.mjs): live session cookies.
+.preview-auth/

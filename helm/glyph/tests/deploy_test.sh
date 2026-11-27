@@ -1,8 +1,9 @@
 # shellcheck shell=bash
 # DI-18 — scripts/deploy.sh, the manual deploy path. It must never ship
 # anything but the tip of origin/main, must use the same tree-hash tags as CD
-# (not :latest under pullPolicy IfNotPresent), and must wait for the rollout
-# without rolling back on its own.
+# (not :latest under pullPolicy IfNotPresent), and must deploy the way CD does
+# (through Argo CD, scripts/argocd-deploy.sh), waiting for the rollout without
+# rolling back on its own.
 
 # _deploy_repo — a throwaway clone (with an origin) holding deploy.sh, plus
 # stub docker/helm/kubectl/gh that log their arguments to $WORK/calls.
@@ -13,6 +14,7 @@ _deploy_repo() {
   REPO="$WORK/repo"
   mkdir -p "$REPO/scripts" "$REPO/api/migrations" "$REPO/helm/glyph"
   cp "$REPO_ROOT/scripts/deploy.sh" "$REPO/scripts/deploy.sh"
+  cp "$REPO_ROOT/scripts/argocd-deploy.sh" "$REPO/scripts/argocd-deploy.sh"
   : >"$REPO/api/migrations/000001_init.up.sql"
   echo "name: glyph" >"$REPO/helm/glyph/Chart.yaml"
   # The repo's real ignore files, so the fixture can't hide what the real
@@ -42,12 +44,26 @@ exit 0
 EOF
     chmod +x "$WORK/bin/$tool"
   done
+  # kubectl: an Argo CD Application whose sync of whatever commit it was
+  # last pointed at succeeds at once.
+  cat >"$WORK/bin/kubectl" <<EOF
+#!/bin/sh
+echo "kubectl \$*" >>"$WORK/calls"
+case "\$*" in
+  *"get application"*) cat "$WORK/op-state" 2>/dev/null || echo "Succeeded|old|t0|" ;;
+  *"--type json"*)
+    sha=\$(printf '%s' "\$*" | sed -n 's/.*targetRevision", "value": "\([0-9a-f]*\)".*/\1/p')
+    echo "Succeeded|\$sha|t1|" >"$WORK/op-state" ;;
+esac
+exit 0
+EOF
+  chmod +x "$WORK/bin/kubectl"
   : >"$WORK/calls"
 }
 
 _run_deploy() {
   set +e
-  OUT="$(cd "$REPO" && PATH="$WORK/bin:$PATH" bash scripts/deploy.sh "$@" 2>&1)"
+  OUT="$(cd "$REPO" && PATH="$WORK/bin:$PATH" POLL_SECONDS=0 bash scripts/deploy.sh "$@" 2>&1)"
   STATUS=$?
   set -e
   CALLS="$(cat "$WORK/calls")"
@@ -60,7 +76,7 @@ test_deploy_refuses_unless_at_origin_main_tip() {
   "${GITC[@]}" commit -q -m "local only"
   _run_deploy
   assert_render_fails 'origin/main'
-  assert_not_contains "$CALLS" '^(docker (build|push)|helm)' "nothing built or deployed"
+  assert_not_contains "$CALLS" '^(docker (build|push)|helm|kubectl)' "nothing built or deployed"
 }
 
 test_deploy_refuses_dirty_tree() {
@@ -68,18 +84,17 @@ test_deploy_refuses_dirty_tree() {
   echo dirty >>"$REPO/helm/glyph/Chart.yaml"
   _run_deploy
   assert_render_fails 'uncommitted'
-  assert_not_contains "$CALLS" '^(docker (build|push)|helm)' "nothing built or deployed"
+  assert_not_contains "$CALLS" '^(docker (build|push)|helm|kubectl)' "nothing built or deployed"
 }
 
-# Review (PR #46): the default --values file is a local, untracked
-# values-production.yaml in the repo root; it must not trip the dirty-tree
-# guard.
-test_deploy_default_values_file_does_not_trip_dirty_guard() {
+# Review (PR #46): an operator may still keep an untracked
+# values-production.yaml in the repo root (gitignored); it must not trip the
+# dirty-tree guard.
+test_deploy_local_values_file_does_not_trip_dirty_guard() {
   _deploy_repo
   _run_deploy
   assert_ok
   assert_not_contains "$OUT" 'uncommitted' "values-production.yaml is not a local change"
-  assert_contains "$CALLS" '^helm upgrade glyph helm/glyph -f values-production.yaml ' "deployed with the default values file"
 }
 
 # The guard stays strict for other untracked files: the frontend image is
@@ -91,7 +106,7 @@ test_deploy_refuses_untracked_file() {
   echo "export const x = 1" >"$REPO/src/lib/untracked.ts"
   _run_deploy
   assert_render_fails 'uncommitted'
-  assert_not_contains "$CALLS" '^(docker (build|push)|helm)' "nothing built or deployed"
+  assert_not_contains "$CALLS" '^(docker (build|push)|helm|kubectl)' "nothing built or deployed"
 }
 
 # values-production.yaml holds production secrets; with `COPY . .` it would
@@ -107,7 +122,7 @@ test_deploy_refuses_while_cd_is_running() {
   echo "in_progress" >"$WORK/gh-runs"
   _run_deploy
   assert_render_fails 'CD'
-  assert_not_contains "$CALLS" '^helm' "nothing deployed"
+  assert_not_contains "$CALLS" '^(helm|kubectl)' "nothing deployed"
 }
 
 test_deploy_uses_tree_hash_tags_and_waits() {
@@ -118,9 +133,12 @@ test_deploy_uses_tree_hash_tags_and_waits() {
   assert_not_contains "$CALLS" ':latest' "never :latest"
   assert_contains "$CALLS" "docker push docker.io/blackmarket/glyph-api:$tree" "api pushed under the tree hash"
   assert_contains "$CALLS" "docker push docker.io/blackmarket/glyph-collab:$tree" "collab pushed under the tree hash"
-  assert_contains "$CALLS" "^helm upgrade glyph helm/glyph " "upgrades the release"
-  assert_contains "$CALLS" "^helm upgrade .*--wait" "waits for the rollout"
-  assert_contains "$CALLS" "^helm upgrade .*api.image.tag=$tree" "deploys the tree-hash tag"
+  local head; head="$("${GITC[@]}" rev-parse HEAD)"
+  assert_contains "$CALLS" "^kubectl .*patch application glyph --type json" "points the Argo CD app at the commit"
+  assert_contains "$CALLS" "targetRevision\", \"value\": \"$head\"" "chart from the deployed commit"
+  assert_contains "$CALLS" "api.image.tag\", \"value\": \"$tree\"" "deploys the tree-hash tag"
+  assert_contains "$CALLS" "^kubectl -n glyph rollout status deployment" "waits for the rollout"
+  assert_not_contains "$CALLS" '^helm' "never helm-upgrades a release Argo CD owns"
   assert_not_contains "$CALLS" 'rollout restart' "no extra restart"
 }
 
@@ -129,10 +147,8 @@ test_deploy_upgrade_does_not_roll_back_automatically() {
   _deploy_repo
   _run_deploy
   assert_ok
-  assert_contains "$CALLS" '^helm upgrade glyph helm/glyph ' "upgrade ran"
-  assert_not_contains "$CALLS" '--atomic' "no automatic rollback"
-  assert_not_contains "$CALLS" '--rollback-on-failure' "nor its Helm 4 name"
-  assert_not_contains "$CALLS" '^helm rollback' "no scripted rollback"
-  assert_contains "$CALLS" '^helm upgrade .*--wait' "waits for the rollout"
-  assert_contains "$CALLS" '^helm upgrade .*--timeout' "bounded wait"
+  assert_contains "$CALLS" 'patch application glyph' "deploy ran"
+  assert_not_contains "$CALLS" '^helm' "no helm upgrade/rollback"
+  assert_not_contains "$CALLS" 'rollback' "no scripted rollback"
+  assert_contains "$CALLS" 'rollout status .*--timeout' "bounded wait"
 }

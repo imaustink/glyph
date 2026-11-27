@@ -374,11 +374,11 @@
 
   /* Clear the fixed hamburger button (top:10 + height:44 = 54px), shown at <=768px */
   @media (max-width: 768px) {
-    .webhooks-page { padding: 56px 40px 32px; }
+    .webhooks-page { padding: 16px 40px 32px; }
   }
 
   @media (max-width: 640px) {
-    .webhooks-page { padding: 56px 16px 16px; }
+    .webhooks-page { padding: 16px 16px 16px; }
     .webhook-row { flex-direction: column; align-items: flex-start; }
     .webhook-meta { flex-wrap: wrap; }
     .field input,

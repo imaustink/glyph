@@ -36,9 +36,9 @@ test_cnpg_cluster_name_can_be_pinned() {
 test_cnpg_backup_renders_credentials_from_secret() {
   render "${BACKUP_ON[@]}"
   assert_ok
-  local c; c="$(doc Cluster glyph-db)"
-  assert_contains "$c" 's3Credentials:' "s3Credentials rendered when secretName set"
-  assert_contains "$c" 'name: glyph-backup-s3' "secret name used"
+  local o; o="$(doc ObjectStore glyph-db-backups)"
+  assert_contains "$o" 's3Credentials:' "s3Credentials rendered when secretName set"
+  assert_contains "$o" 'name: glyph-backup-s3' "secret name used"
 }
 
 test_cnpg_backup_without_credentials_fails() {
@@ -50,10 +50,10 @@ test_cnpg_backup_with_iam_role_needs_no_secret() {
   render --set cnpg.backup.enabled=true --set cnpg.backup.destinationPath=s3://bucket/glyph \
     --set cnpg.backup.s3.inheritFromIAMRole=true
   assert_ok
-  local c; c="$(doc Cluster glyph-db)"
+  local o; o="$(doc ObjectStore glyph-db-backups)"
   # CNPG puts inheritFromIAMRole under s3Credentials.
-  assert_contains "$c" 'inheritFromIAMRole: true' "IAM role credentials rendered"
-  assert_not_contains "$c" 'accessKeyId:' "no secret-based credentials"
+  assert_contains "$o" 'inheritFromIAMRole: true' "IAM role credentials rendered"
+  assert_not_contains "$o" 'accessKeyId:' "no secret-based credentials"
 }
 
 test_cnpg_backup_without_destination_fails() {
@@ -89,7 +89,9 @@ test_cnpg_backups_stay_opt_in_by_default() {
   render
   assert_ok
   assert_not_contains "$OUT" '^kind: ScheduledBackup' "no ScheduledBackup by default"
-  assert_not_contains "$(doc Cluster glyph-db)" 'barmanObjectStore' "no object store by default"
+  assert_not_contains "$OUT" '^kind: ObjectStore' "no ObjectStore by default"
+  assert_not_contains "$(doc Cluster glyph-db)" 'barmanObjectStore' "no in-tree object store by default"
+  assert_not_contains "$(doc Cluster glyph-db)" 'barman-cloud.cloudnative-pg.io' "no backup plugin by default"
 }
 
 test_cnpg_prometheus_rule_alerts_on_archiver_and_backup_age() {
@@ -99,7 +101,9 @@ test_cnpg_prometheus_rule_alerts_on_archiver_and_backup_age() {
   assert_contains "$r" 'kind: PrometheusRule' "PrometheusRule rendered"
   assert_contains "$r" 'cnpg_pg_stat_archiver_failed_count' "alerts on WAL archiving failures"
   assert_contains "$r" 'cnpg_pg_stat_archiver_seconds_since_last_archival' "alerts on stalled WAL archiving"
-  assert_contains "$r" 'cnpg_collector_last_available_backup_timestamp' "alerts on backup age"
+  assert_contains "$r" 'cnpg_collector_last_available_backup_timestamp' "backup age: in-tree metric"
+  assert_contains "$r" 'barman_cloud_cloudnative_pg_io_last_available_backup_timestamp' \
+    "backup age: Barman Cloud plugin metric (else the alert goes silent after the switch)"
   assert_contains "$r" 'pod=~"glyph-db-\[0-9\]\+"' "scoped to this cluster's pods"
 }
 
@@ -107,4 +111,67 @@ test_cnpg_prometheus_rule_off_by_default() {
   render
   assert_ok
   assert_not_contains "$OUT" '^kind: PrometheusRule' "no PrometheusRule by default"
+}
+
+# --- Barman Cloud plugin (CNPG-I) vs the in-tree barmanObjectStore ----------
+
+test_cnpg_backup_plugin_is_the_default_method() {
+  render "${BACKUP_ON[@]}"
+  assert_ok
+  local c o b
+  c="$(doc Cluster glyph-db)"; o="$(doc ObjectStore glyph-db-backups)"; b="$(doc ScheduledBackup glyph-db-backup)"
+  assert_contains "$c" 'name: barman-cloud.cloudnative-pg.io' "Cluster lists the Barman Cloud plugin"
+  assert_contains "$c" 'isWALArchiver: true' "the plugin archives WAL"
+  assert_contains "$c" 'barmanObjectName: glyph-db-backups' "the plugin points at the chart's ObjectStore"
+  assert_not_contains "$c" 'barmanObjectStore:' "no in-tree object store alongside the plugin"
+  assert_contains "$o" 'destinationPath: "s3://bucket/glyph"' "ObjectStore carries the destination"
+  assert_contains "$o" 'retentionPolicy: "30d"' "retention lives on the ObjectStore"
+  assert_contains "$b" 'method: plugin' "ScheduledBackup goes through the plugin"
+  assert_contains "$b" 'name: barman-cloud.cloudnative-pg.io' "ScheduledBackup names the plugin"
+  assert_contains "$b" 'target: prefer-standby' "base backups come from a replica"
+}
+
+test_cnpg_backup_in_tree_method_still_supported() {
+  render "${BACKUP_ON[@]}" --set cnpg.backup.method=barmanObjectStore
+  assert_ok
+  local c; c="$(doc Cluster glyph-db)"
+  assert_contains "$c" 'barmanObjectStore:' "in-tree object store rendered"
+  assert_contains "$c" 'destinationPath: "s3://bucket/glyph"' "same destination as the plugin would use"
+  assert_contains "$c" 'retentionPolicy: "30d"' "retention on the Cluster"
+  assert_not_contains "$c" 'barman-cloud.cloudnative-pg.io' "no plugin with the in-tree method"
+  assert_not_contains "$OUT" '^kind: ObjectStore' "no ObjectStore with the in-tree method"
+  assert_contains "$(doc ScheduledBackup glyph-db-backup)" 'method: barmanObjectStore' "ScheduledBackup uses the in-tree method"
+}
+
+test_cnpg_backup_unknown_method_fails() {
+  render "${BACKUP_ON[@]}" --set cnpg.backup.method=volumeSnapshot
+  assert_render_fails 'cnpg.backup.method'
+}
+
+test_cnpg_primary_update_method_defaults_to_switchover() {
+  render
+  assert_ok
+  assert_contains "$(doc Cluster glyph-db)" 'primaryUpdateMethod: switchover' \
+    "spec changes promote an updated replica instead of restarting the primary in place"
+}
+
+test_cnpg_objectstore_syncs_before_the_cluster_under_argocd() {
+  render "${BACKUP_ON[@]}" --set argocd.enabled=true \
+    --set frontend.image.tag=t --set api.image.tag=t --set collab.image.tag=t --set migrate.image.tag=t
+  assert_ok
+  assert_contains "$(doc ObjectStore glyph-db-backups)" 'argocd.argoproj.io/sync-wave: "-3"' \
+    "ObjectStore (wave -3) exists before the Cluster (wave -2) that archives into it"
+}
+
+test_cnpg_objectstore_kept_with_the_cluster() {
+  render "${BACKUP_ON[@]}"
+  assert_ok
+  local o; o="$(doc ObjectStore glyph-db-backups)"
+  assert_contains "$o" 'helm.sh/resource-policy: keep' "kept by helm uninstall, like the Cluster that archives into it"
+  assert_contains "$o" 'argocd.argoproj.io/sync-options: Delete=false' "kept by Argo prune / app deletion, like the Cluster"
+  render "${BACKUP_ON[@]}" --set cnpg.retainOnDelete=false
+  assert_ok
+  o="$(doc ObjectStore glyph-db-backups)"
+  assert_not_contains "$o" 'resource-policy' "deleted with a disposable Cluster"
+  assert_not_contains "$o" 'annotations:' "no empty annotations block"
 }

@@ -132,7 +132,45 @@ Validates the backup settings. Included by the Cluster template.
 {{- if not (or $b.s3.secretName $b.s3.inheritFromIAMRole) }}
 {{- fail "cnpg.backup.enabled is true but cnpg.backup.s3.secretName is empty (and s3.inheritFromIAMRole is false): WAL archiving would fail and WAL would fill the volume." }}
 {{- end }}
+{{- if not (has $b.method (list "plugin" "barmanObjectStore")) }}
+{{- fail (printf "cnpg.backup.method must be \"plugin\" or \"barmanObjectStore\", got %q" $b.method) }}
 {{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Name of the barmancloud.cnpg.io ObjectStore used by the Barman Cloud plugin.
+*/}}
+{{- define "glyph.cnpg.objectStoreName" -}}
+{{- printf "%s-backups" (include "glyph.cnpg.clusterName" .) }}
+{{- end }}
+
+{{/*
+Barman object-store settings, shared by the plugin's ObjectStore
+(.spec.configuration) and the in-tree Cluster .spec.backup.barmanObjectStore,
+so both methods write the same layout to the same place.
+*/}}
+{{- define "glyph.cnpg.barmanConfiguration" -}}
+{{- $b := .Values.cnpg.backup -}}
+destinationPath: {{ $b.destinationPath | quote }}
+{{- if $b.endpointURL }}
+endpointURL: {{ $b.endpointURL | quote }}
+{{- end }}
+s3Credentials:
+  {{- if $b.s3.secretName }}
+  accessKeyId:
+    name: {{ $b.s3.secretName }}
+    key: ACCESS_KEY_ID
+  secretAccessKey:
+    name: {{ $b.s3.secretName }}
+    key: ACCESS_SECRET_KEY
+  {{- else }}
+  inheritFromIAMRole: true
+  {{- end }}
+wal:
+  compression: gzip
+data:
+  compression: gzip
 {{- end }}
 
 {{/*
@@ -151,8 +189,8 @@ Migration job name — includes a hash of the migration config to re-run on chan
 {{- end }}
 
 {{/*
-ConfigMap data for the migrations: every migrations/*.sql file (synced from
-api/migrations at deploy time) plus files/glyph-migrate.sh, which the migrate
+ConfigMap data for the migrations: every migrations/*.sql file (helm/glyph/migrations is a
+symlink to api/migrations) plus files/glyph-migrate.sh, which the migrate
 Job and the API's wait-for-schema init container run.
 */}}
 {{- define "glyph.migrations.data" -}}
@@ -162,4 +200,26 @@ Job and the API's wait-for-schema init container run.
 {{- end }}
 glyph-migrate.sh: |
   {{- .Files.Get "files/glyph-migrate.sh" | nindent 2 }}
+{{- end }}
+
+{{/*
+Under Argo CD every image tag must be set explicitly: CD (or the preview
+ApplicationSet) supplies it. A missing tag means the Application was re-applied
+from git without one, and falling back to a floating tag (or appVersion) would
+quietly roll the release to whatever that is. Fail the render instead; the
+running pods are untouched. Included by the API Deployment template.
+*/}}
+{{- define "glyph.validateImageTags" -}}
+{{- if .Values.argocd.enabled }}
+{{- $images := list (list "frontend" .Values.frontend.image.tag) (list "api" .Values.api.image.tag) }}
+{{- if .Values.collab.enabled }}
+{{- $images = append $images (list "collab" .Values.collab.image.tag) }}
+{{- end }}
+{{- range $images }}
+{{- $tag := index . 1 | toString }}
+{{- if or (not $tag) (eq $tag "latest") }}
+{{- fail (printf "%s.image.tag must be an immutable tag under Argo CD (got %q). Production's is set by CD (scripts/argocd-deploy.sh): re-run it." (index . 0) $tag) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end }}

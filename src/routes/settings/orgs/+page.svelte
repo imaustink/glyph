@@ -543,11 +543,11 @@
 
   /* Clear the fixed hamburger button (top:10 + height:44 = 54px), shown at <=768px */
   @media (max-width: 768px) {
-    .orgs-page { padding: 56px 40px 32px; }
+    .orgs-page { padding: 16px 40px 32px; }
   }
 
   @media (max-width: 640px) {
-    .orgs-page { padding: 56px 16px 16px; }
+    .orgs-page { padding: 16px 16px 16px; }
     .layout { grid-template-columns: 1fr; }
   }
 </style>

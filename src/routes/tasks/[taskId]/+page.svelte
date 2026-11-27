@@ -758,7 +758,7 @@
   @media (max-width: 768px) {
     .task-detail-page {
       /* Clear the fixed hamburger button (top:10 + height:44 = 54px) */
-      padding: 56px 16px 40px;
+      padding: 16px 16px 40px;
     }
 
     .not-found {
