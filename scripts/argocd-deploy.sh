@@ -5,70 +5,76 @@
 #   scripts/argocd-deploy.sh COMMIT_SHA IMAGE_TAG
 #
 # Production is the Argo CD Application `glyph` (homelab repo,
-# kubernetes/argocd/glyph/). Its first source is this repo's chart; this
-# script points that source at COMMIT_SHA and the three images at IMAGE_TAG
-# (the commit's tree hash) in one patch, so the chart (and so the migrations)
-# and the binaries always move together. Then it waits for:
+# kubernetes/workloads/glyph/argocd/). Its first source is this repo's chart;
+# this script points that source at COMMIT_SHA and the three images at
+# IMAGE_TAG (the commit's tree hash) in one update, so the chart (and so the
+# migrations) and the binaries always move together. Then it waits for:
 #
 #   1. Argo's sync of exactly that commit to finish. The migrate Job is a Sync
 #      hook in wave -1, so a failed migration fails the sync, and this script
-#      fails with it. As with the Helm deploy it replaces, nothing is rolled
-#      back automatically (see docs/runbooks/migrations.md): the old pods keep
-#      serving.
-#   2. Every Deployment of the release to finish rolling out (what
-#      `helm upgrade --wait` used to give us).
+#      fails with it. Nothing is rolled back automatically (see
+#      docs/runbooks/migrations.md): the old pods keep serving.
+#   2. The Application to be Healthy: every Deployment rolled out.
 #
-# The Application's spec in git (homelab) leaves targetRevision and the image
-# parameters to this script; everything else about it lives there.
+# It talks to the Argo CD API with the `argocd` CLI; in CD as the Argo CD
+# account glyph-cd, which may only get, update and sync the `glyph`
+# Application. No Kubernetes credentials are involved. The homelab repo keeps the rest of the
+# Application's spec in git and ignores the two fields set here.
 #
-# Env: ARGOCD_NAMESPACE (argocd), ARGOCD_APP (glyph), APP_NAMESPACE (glyph),
+# Env: ARGOCD_AUTH_TOKEN: glyph-cd's API token (CD). Without it, the CLI's
+#        own login is used, e.g. a person after
+#        `argocd login argocd.kurpuis.com --sso --grpc-web` (scripts/deploy.sh).
+#      With the token: ARGOCD_SERVER (argocd-server.argocd.svc.cluster.local:80)
+#        and ARGOCD_OPTS (--plaintext --grpc-web: the in-cluster Service speaks
+#        plain HTTP; TLS ends at Traefik).
+#      ARGOCD_APP (glyph),
 #      REGISTRY (docker.io/blackmarket), DEPLOY_TIMEOUT_SECONDS (600),
-#      POLL_SECONDS (5), TRIGGER_AFTER_SECONDS (60), KUBECTL (kubectl).
+#      POLL_SECONDS (5), TRIGGER_AFTER_SECONDS (60), ARGOCD (argocd).
 set -euo pipefail
 
 SHA="${1:?usage: $0 COMMIT_SHA IMAGE_TAG}"
 TAG="${2:?usage: $0 COMMIT_SHA IMAGE_TAG}"
-ARGOCD_NAMESPACE="${ARGOCD_NAMESPACE:-argocd}"
+if [[ -n "${ARGOCD_AUTH_TOKEN:-}" ]]; then
+  export ARGOCD_AUTH_TOKEN
+  export ARGOCD_SERVER="${ARGOCD_SERVER:-argocd-server.argocd.svc.cluster.local:80}"
+  export ARGOCD_OPTS="${ARGOCD_OPTS:---plaintext --grpc-web}"
+fi
 APP="${ARGOCD_APP:-glyph}"
-APP_NAMESPACE="${APP_NAMESPACE:-glyph}"
 REGISTRY="${REGISTRY:-docker.io/blackmarket}"
 TIMEOUT="${DEPLOY_TIMEOUT_SECONDS:-600}"
 POLL="${POLL_SECONDS:-5}"
 TRIGGER_AFTER="${TRIGGER_AFTER_SECONDS:-60}"
-KUBECTL="${KUBECTL:-kubectl}"
+ARGOCD="${ARGOCD:-argocd}"
 CHART_REPO="https://github.com/imaustink/glyph.git"
 
 log() { echo "▸ $*"; }
 die() { echo "✗ $*" >&2; exit 1; }
 
-app() { $KUBECTL -n "$ARGOCD_NAMESPACE" "$@"; }
+app_json() { $ARGOCD app get "$APP" -o json; }
 
 # "<phase>|<first synced revision>|<startedAt>|<message>" of the app's latest
 # sync operation (empty fields when it has none yet).
 op_state() {
-  app get application "$APP" -o jsonpath='{.status.operationState.phase}|{.status.operationState.syncResult.revisions[0]}|{.status.operationState.startedAt}|{.status.operationState.message}'
+  app_json | jq -r '.status.operationState // {} |
+    [.phase // "", (.syncResult.revisions // [])[0] // "", .startedAt // "", .message // ""] | join("|")'
 }
+
+# Refuse to retarget the wrong source if someone reorders the Application's
+# sources: --source-position below is positional.
+repo="$(app_json | jq -r '.spec.sources[0].repoURL // ""')"
+[[ "$repo" == "$CHART_REPO" ]] || die "$APP's first source is '$repo', not $CHART_REPO; refusing to deploy"
 
 prev_started="$(op_state | cut -d'|' -f3)"
 
-# One JSON patch: the `test` op makes it fail loudly, instead of retargeting
-# the wrong source, if someone reorders the Application's sources.
+# One update: revision and image parameters together.
 log "Pointing $APP at $SHA (images $TAG)"
-app patch application "$APP" --type json -p "$(cat <<EOF
-[
-  {"op": "test", "path": "/spec/sources/0/repoURL", "value": "$CHART_REPO"},
-  {"op": "replace", "path": "/spec/sources/0/targetRevision", "value": "$SHA"},
-  {"op": "add", "path": "/spec/sources/0/helm/parameters", "value": [
-    {"name": "frontend.image.repository", "value": "$REGISTRY/glyph-frontend"},
-    {"name": "frontend.image.tag", "value": "$TAG"},
-    {"name": "api.image.repository", "value": "$REGISTRY/glyph-api"},
-    {"name": "api.image.tag", "value": "$TAG"},
-    {"name": "collab.image.repository", "value": "$REGISTRY/glyph-collab"},
-    {"name": "collab.image.tag", "value": "$TAG"}
-  ]}
-]
-EOF
-)"
+$ARGOCD app set "$APP" --source-position 1 --revision "$SHA" \
+  --helm-set "frontend.image.repository=$REGISTRY/glyph-frontend" \
+  --helm-set "frontend.image.tag=$TAG" \
+  --helm-set "api.image.repository=$REGISTRY/glyph-api" \
+  --helm-set "api.image.tag=$TAG" \
+  --helm-set "collab.image.repository=$REGISTRY/glyph-collab" \
+  --helm-set "collab.image.tag=$TAG"
 
 # Automated sync normally starts on its own once the spec changes. It does
 # not when nothing changed — a re-run of CD for the same commit, e.g. after a
@@ -84,8 +90,7 @@ while :; do
     esac
   elif ! $triggered && (( SECONDS - start >= TRIGGER_AFTER )); then
     log "No sync of $SHA started on its own; requesting one"
-    app patch application "$APP" --type merge \
-      -p '{"operation":{"initiatedBy":{"username":"glyph-cd"},"sync":{"syncStrategy":{"hook":{}}}}}'
+    $ARGOCD app sync "$APP" --async
     triggered=true
   fi
   if (( SECONDS - start >= TIMEOUT )); then
@@ -96,8 +101,7 @@ done
 
 remaining=$(( TIMEOUT - (SECONDS - start) ))
 (( remaining > 30 )) || remaining=30
-log "Waiting for the rollout"
-$KUBECTL -n "$APP_NAMESPACE" rollout status deployment \
-  -l "app.kubernetes.io/instance=$APP" --timeout "${remaining}s"
+log "Waiting for $APP to be healthy"
+$ARGOCD app wait "$APP" --health --timeout "$remaining"
 
 echo "✓ $APP is on $SHA"

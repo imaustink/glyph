@@ -12,10 +12,19 @@ test_cd_does_not_restart_rollouts() {
   assert_not_contains "$f" 'rollout restart' "tree-hash tags already roll the pods; a restart rolls the API twice"
 }
 
-test_cd_pins_kubectl() {
+test_cd_pins_and_verifies_the_argocd_cli() {
   local j; j="$(_cd_deploy_job)"
-  assert_contains "$j" 'setup-kubectl' "kubectl installed"
-  assert_contains "$j" 'version: v1\.' "and pinned"
+  assert_contains "$j" 'ARGOCD_VERSION: v[0-9]+\.[0-9]+\.[0-9]+' "argocd CLI pinned"
+  assert_contains "$j" 'cli_checksums\.txt' "checked against the release checksums"
+  assert_contains "$j" 'sha256sum -c' "and verified"
+}
+
+# The deploy goes through the Argo CD API with glyph-cd's token, not
+# Kubernetes credentials.
+test_cd_deploys_with_the_glyph_cd_token_and_no_kubectl() {
+  local j; j="$(_cd_deploy_job)"
+  assert_contains "$j" 'ARGOCD_AUTH_TOKEN: \$\{\{ secrets\.ARGOCD_AUTH_TOKEN \}\}' "token from the Actions secret"
+  assert_not_contains "$j" 'kubectl' "no kubectl"
 }
 
 test_cd_deploys_commit_and_tree_hash_through_argocd() {

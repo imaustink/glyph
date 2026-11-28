@@ -11,8 +11,10 @@
 #     in CD's concurrency lock, so it checks instead — needs `gh`);
 #   * images are tagged by git tree hash, like CD, so the tag changes with
 #     the content and pullPolicy IfNotPresent can't serve a stale :latest;
-#   * it deploys the same way CD does, through Argo CD
-#     (scripts/argocd-deploy.sh): the migrate Sync hook runs first and any
+#   * it deploys the same way CD does, through the Argo CD API
+#     (scripts/argocd-deploy.sh), with your own Argo CD login: run
+#     `argocd login argocd.kurpuis.com --sso --grpc-web` first (as a member of
+#     argocd-admins). The migrate Sync hook runs first and any
 #     failure fails the deploy. Nothing is rolled back automatically: the
 #     migrations have already applied, and rolling back to a revision from
 #     before PR #46 crash-loops the API (its init container runs `migrate up`

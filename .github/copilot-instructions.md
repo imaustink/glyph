@@ -499,12 +499,12 @@ Glyph deploys via GitHub Actions on push to `main`, using a self-hosted runner o
 ### How it works
 
 - **Runner**: ARC (Actions Runner Controller) v2, deployed in the `github-runner` namespace of the homelab cluster. Runners scale 0→3 on demand.
-- **Workflow**: `.github/workflows/deploy.yml` — builds Docker images, pushes to `registry.kurpuis.com:5000`, runs `helm upgrade` into the `glyph` namespace.
+- **Workflow**: `.github/workflows/cd.yml` — builds any missing images, then `scripts/argocd-deploy.sh` points the Argo CD Application `glyph` at the merged commit (chart) and its tree hash (images) and waits for the sync and for the app to be healthy. Never `helm upgrade` or `kubectl` production: Argo CD owns it.
 - **`runs-on: arc-runner-set`** — must match the Helm release name of the runner scale set. Do NOT use `self-hosted`.
 - **Docker**: available via DinD (Docker-in-Docker) sidecar in the runner pod. No extra setup needed for `docker build`/`docker push`.
-- **Helm & kubectl**: not pre-installed in the runner image. The workflow uses `azure/setup-helm@v4` and `azure/setup-kubectl@v4` to install them.
+- **argocd CLI**: not pre-installed in the runner image. `cd.yml` downloads the pinned release (same version as the server) and checks it against the release's checksums.
 - **Registry auth**: stored as GitHub Actions **repository secrets** (`REGISTRY_USERNAME`, `REGISTRY_PASSWORD`). The workflow runs `docker login` before building.
-- **Cluster auth**: the runner pod uses the `ci-deployer` ServiceAccount (bound via RoleBinding in the `glyph` namespace), which has permissions for Helm releases, deployments, services, jobs, etc. No kubeconfig needed.
+- **Argo CD auth**: the repository secret `ARGOCD_AUTH_TOKEN`, an API token for the Argo CD account `glyph-cd`, which may only get, update and sync the `glyph` Application. No Kubernetes credentials are used to deploy. Making or rotating the token: homelab `kubernetes/workloads/glyph/README.md`.
 
 ### Infrastructure location
 

@@ -6,7 +6,7 @@
 # rolling back on its own.
 
 # _deploy_repo — a throwaway clone (with an origin) holding deploy.sh, plus
-# stub docker/helm/kubectl/gh that log their arguments to $WORK/calls.
+# stub docker/helm/kubectl/argocd/gh that log their arguments to $WORK/calls.
 _deploy_repo() {
   local g=(git -c user.name=t -c user.email=t@example.com -c init.defaultBranch=main)
   "${g[@]}" init -q --bare "$WORK/origin.git"
@@ -32,7 +32,7 @@ _deploy_repo() {
   GITC=("${g[@]}" -C "$REPO")
 
   mkdir -p "$WORK/bin"
-  for tool in docker helm kubectl gh; do
+  for tool in docker helm kubectl argocd gh; do
     cat >"$WORK/bin/$tool" <<EOF
 #!/bin/sh
 echo "$tool \$*" >>"$WORK/calls"
@@ -44,20 +44,25 @@ exit 0
 EOF
     chmod +x "$WORK/bin/$tool"
   done
-  # kubectl: an Argo CD Application whose sync of whatever commit it was
-  # last pointed at succeeds at once.
-  cat >"$WORK/bin/kubectl" <<EOF
+  # argocd: an Argo CD Application whose sync of whatever commit it was last
+  # pointed at succeeds at once.
+  cat >"$WORK/bin/argocd" <<EOF
 #!/bin/sh
-echo "kubectl \$*" >>"$WORK/calls"
+echo "argocd \$*" >>"$WORK/calls"
 case "\$*" in
-  *"get application"*) cat "$WORK/op-state" 2>/dev/null || echo "Succeeded|old|t0|" ;;
-  *"--type json"*)
-    sha=\$(printf '%s' "\$*" | sed -n 's/.*targetRevision", "value": "\([0-9a-f]*\)".*/\1/p')
+  "app get glyph -o json")
+    state=\$(cat "$WORK/op-state" 2>/dev/null || echo "Succeeded|old|t0|")
+    IFS='|' read -r phase rev started msg <<STATE
+\$state
+STATE
+    printf '{"spec":{"sources":[{"repoURL":"https://github.com/imaustink/glyph.git"}]},"status":{"operationState":{"phase":"%s","startedAt":"%s","syncResult":{"revisions":["%s"]}}}}\n' "\$phase" "\$started" "\$rev" ;;
+  "app set glyph "*)
+    sha=\$(printf '%s' "\$*" | sed -n 's/.*--revision \([0-9a-f]*\).*/\1/p')
     echo "Succeeded|\$sha|t1|" >"$WORK/op-state" ;;
 esac
 exit 0
 EOF
-  chmod +x "$WORK/bin/kubectl"
+  chmod +x "$WORK/bin/argocd"
   : >"$WORK/calls"
 }
 
@@ -76,7 +81,7 @@ test_deploy_refuses_unless_at_origin_main_tip() {
   "${GITC[@]}" commit -q -m "local only"
   _run_deploy
   assert_render_fails 'origin/main'
-  assert_not_contains "$CALLS" '^(docker (build|push)|helm|kubectl)' "nothing built or deployed"
+  assert_not_contains "$CALLS" '^(docker (build|push)|helm|kubectl|argocd)' "nothing built or deployed"
 }
 
 test_deploy_refuses_dirty_tree() {
@@ -84,7 +89,7 @@ test_deploy_refuses_dirty_tree() {
   echo dirty >>"$REPO/helm/glyph/Chart.yaml"
   _run_deploy
   assert_render_fails 'uncommitted'
-  assert_not_contains "$CALLS" '^(docker (build|push)|helm|kubectl)' "nothing built or deployed"
+  assert_not_contains "$CALLS" '^(docker (build|push)|helm|kubectl|argocd)' "nothing built or deployed"
 }
 
 # Review (PR #46): an operator may still keep an untracked
@@ -106,7 +111,7 @@ test_deploy_refuses_untracked_file() {
   echo "export const x = 1" >"$REPO/src/lib/untracked.ts"
   _run_deploy
   assert_render_fails 'uncommitted'
-  assert_not_contains "$CALLS" '^(docker (build|push)|helm|kubectl)' "nothing built or deployed"
+  assert_not_contains "$CALLS" '^(docker (build|push)|helm|kubectl|argocd)' "nothing built or deployed"
 }
 
 # values-production.yaml holds production secrets; with `COPY . .` it would
@@ -122,7 +127,7 @@ test_deploy_refuses_while_cd_is_running() {
   echo "in_progress" >"$WORK/gh-runs"
   _run_deploy
   assert_render_fails 'CD'
-  assert_not_contains "$CALLS" '^(helm|kubectl)' "nothing deployed"
+  assert_not_contains "$CALLS" '^(helm|kubectl|argocd)' "nothing deployed"
 }
 
 test_deploy_uses_tree_hash_tags_and_waits() {
@@ -134,10 +139,10 @@ test_deploy_uses_tree_hash_tags_and_waits() {
   assert_contains "$CALLS" "docker push docker.io/blackmarket/glyph-api:$tree" "api pushed under the tree hash"
   assert_contains "$CALLS" "docker push docker.io/blackmarket/glyph-collab:$tree" "collab pushed under the tree hash"
   local head; head="$("${GITC[@]}" rev-parse HEAD)"
-  assert_contains "$CALLS" "^kubectl .*patch application glyph --type json" "points the Argo CD app at the commit"
-  assert_contains "$CALLS" "targetRevision\", \"value\": \"$head\"" "chart from the deployed commit"
-  assert_contains "$CALLS" "api.image.tag\", \"value\": \"$tree\"" "deploys the tree-hash tag"
-  assert_contains "$CALLS" "^kubectl -n glyph rollout status deployment" "waits for the rollout"
+  assert_contains "$CALLS" "^argocd app set glyph --source-position 1 --revision $head" "points the Argo CD app at the commit"
+  assert_contains "$CALLS" "--helm-set api.image.tag=$tree" "deploys the tree-hash tag"
+  assert_contains "$CALLS" "^argocd app wait glyph --health" "waits for the rollout"
+  assert_not_contains "$CALLS" '^kubectl' "no Kubernetes access"
   assert_not_contains "$CALLS" '^helm' "never helm-upgrades a release Argo CD owns"
   assert_not_contains "$CALLS" 'rollout restart' "no extra restart"
 }
@@ -147,8 +152,8 @@ test_deploy_upgrade_does_not_roll_back_automatically() {
   _deploy_repo
   _run_deploy
   assert_ok
-  assert_contains "$CALLS" 'patch application glyph' "deploy ran"
+  assert_contains "$CALLS" 'app set glyph' "deploy ran"
   assert_not_contains "$CALLS" '^helm' "no helm upgrade/rollback"
   assert_not_contains "$CALLS" 'rollback' "no scripted rollback"
-  assert_contains "$CALLS" 'rollout status .*--timeout' "bounded wait"
+  assert_contains "$CALLS" 'app wait glyph .*--timeout' "bounded wait"
 }
