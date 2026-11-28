@@ -4,7 +4,8 @@ How schema migrations run in the Argo CD deployment, what the failure states
 look like, and how to recover from them.
 
 Production is the Argo CD Application `glyph` (homelab repo,
-`kubernetes/argocd/glyph/`). CD (`scripts/argocd-deploy.sh`) points it at a
+`kubernetes/workloads/glyph/argocd/`). CD (`scripts/argocd-deploy.sh`, through
+the Argo CD API) points it at a
 commit of this repo for the chart and at that commit's tree hash for the
 images, then waits for the sync and the rollout. PR previews are separate
 Applications in the `glyph-preview` namespace with their own databases;
@@ -167,6 +168,7 @@ the safe state; nothing is urgent.
    api-deployment.yaml` has `wait-for-schema` and no `run-migrations`):
    ```sh
    git fetch origin && sha=<commit>
+   argocd login argocd.kurpuis.com --sso --grpc-web   # as an argocd-admins member
    scripts/argocd-deploy.sh "$sha" "$(git rev-parse "$sha^{tree}")"
    ```
    The next CD run moves it forward again. Argo CD's own rollback is

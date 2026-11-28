@@ -9,7 +9,8 @@
 #   helm/glyph/tests/run.sh              # all tests
 #   helm/glyph/tests/run.sh backup       # only tests whose name matches
 #
-# Needs helm (v3) and bash; nothing else.
+# Needs helm (v3), bash and jq (scripts/argocd-deploy.sh parses the Argo CD
+# CLI's JSON); nothing else.
 set -euo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
